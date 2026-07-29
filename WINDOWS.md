@@ -18,24 +18,69 @@ automated by **`run-windows.bat`** at the repo root - double-click it (it just r
 `Start-Eloquent.ps1` with `-ExecutionPolicy Bypass`, so it works even if PowerShell script
 execution is locked down on your machine) and it will:
 
+- **if your source checkout lives on a UNC/WSL path** (e.g. you opened this repo via
+  `\\wsl.localhost\<distro>\...` in Explorer, which is the common case when developing inside WSL) -
+  mirror it with `robocopy /MIR` to a Windows-local working copy under
+  `%LOCALAPPDATA%\WindowsEloquent\app`, and do everything below *there* instead of on the network
+  path. **Source of truth stays in WSL** - this is a one-way, repeatable sync (not a copy-once): the
+  mirror is excluded from the copy for `node_modules`, `.runtime`, `out`, `dist`, and `.git`, so
+  re-running the launcher after you change code re-syncs your changes into the same working copy,
+  without ever re-downloading the model or rebuilding the venv (those live under
+  `%LOCALAPPDATA%\WindowsEloquent`, a sibling of `app`, untouched by the sync). If instead your
+  checkout is already on a real Windows drive (e.g. you `git clone`d directly onto `C:\...` rather
+  than developing through WSL), it skips the mirror step entirely and bootstraps in place.
 - install Python 3.12 and Node.js LTS via `winget` if either is missing
 - create a `litert-lm` venv under `%LOCALAPPDATA%\WindowsEloquent\venv` and `pip install litert-lm`
   into it (skips this if already done)
-- `npm install` if `node_modules` is missing
+- `npm install` if `node_modules` is missing (in the working copy above)
 - download + import the Gemma E2B model into the app's own model store if it isn't there yet
   (reusing an existing local copy instead of re-downloading ~2.4 GiB, if one is found)
 - seed an initial `settings.json` with the real LiteRT-LM backend already enabled - **only** on the
   very first run, so it never clobbers a config you've since changed
-- run `npm run dev`
+- run `npm run dev` (in the working copy above)
 
-Re-running it is safe: every step checks what's already done and skips it.
+Re-running it is safe: every step checks what's already done and skips it - including the
+robocopy sync, which just re-mirrors whatever changed.
 
-**Honest caveat**: `Start-Eloquent.ps1` was written and reviewed carefully, but has **not been run
-against a real Windows machine** - this whole integration was done from a WSL2/Linux sandbox with
-no Windows host available to test against (see the script's own header comment). Skim it before
-your first run. If a step doesn't match your machine - a different winget package ID, an
-unexpected Python/Node install path, etc. - the manual steps below are the fallback for exactly
-that step; please fix forward and report back what didn't match so it can be corrected.
+Why the mirroring step exists at all: a Windows-native `npm`/`node`/Electron cannot run against a
+`node_modules` tree that was `npm install`ed on Linux (native addons, the Electron binary itself -
+all built for Linux), and npm's lots-of-small-files I/O pattern is slow and occasionally flaky
+against a `\\wsl.localhost\` (or any UNC) share. Mirroring to a real local Windows drive first
+avoids both problems. If you'd rather not have a second copy of the source at all, see "Alternative:
+clone natively on Windows" below.
+
+**Testing note**: `run-windows.bat`/`Start-Eloquent.ps1` were exercised from a WSL2 sandbox using
+`cmd.exe`/`powershell.exe` interop against a real Windows host (no GUI/mouse available there) - the
+UNC-path detection, the `pushd`-based cwd fix, the robocopy plan (via `ELOQUENT_DRYRUN=1`, see
+below), and the "bootstrap in place on a local drive" branch were all confirmed to resolve paths
+correctly and run cleanly. What could **not** be verified from WSL: an actual Explorer double-click
+(mouse-driven GUI interaction - the interop testing used `cmd.exe /c <fully-qualified path>`, which
+is what the "open" file-association verb Explorer uses for `.bat` files resolves to), a `winget`
+install of a missing Python/Node (deliberately not exercised to avoid mutating the test machine),
+`net use`-mapping a drive letter onto a `\\wsl.localhost\...` path specifically (Windows' `net use`
+doesn't support that provider - it's a `pushd`/Explorer/DrvFs thing, not classic SMB - so that one
+sub-case of the "mapped drive" detection is unverified, though the same WMI-based check was
+confirmed to correctly say "not remote" for an ordinary local drive), and a real end-to-end model
+download + `npm run dev` launch on Windows. Skim the script before your first real run, and please
+report back anything that doesn't match your machine so it can be corrected.
+
+Set `$env:ELOQUENT_DRYRUN` to any value other than `""`/`0` before running `run-windows.bat` (or
+`Start-Eloquent.ps1` directly) to print the resolved source/working-copy paths and the robocopy plan
+and then stop, with no side effects at all - useful for sanity-checking the path/UNC-handling logic
+on a new machine before doing anything real.
+
+### Alternative: clone natively on Windows
+
+If you'd rather avoid the WSL-mirroring step entirely, clone the repo directly onto a Windows drive
+instead of developing through a `\\wsl.localhost\...` checkout:
+
+```powershell
+git clone <repo-url> C:\src\windows-eloquent
+```
+
+Then run `run-windows.bat` from there. `Start-Eloquent.ps1` detects it's already on a local drive
+and bootstraps in place - no mirroring, no `%LOCALAPPDATA%\WindowsEloquent\app` working copy, just
+your checkout.
 
 ## 1. Install Python 3.10+
 
@@ -285,7 +330,8 @@ needs to provide, exactly as described in steps 1-3 above.
 ## Summary checklist
 
 - [ ] Easiest: double-click `run-windows.bat` and skip straight to the last two items (see
-      "Quick start: one-click launcher" above - untested on a real machine, so skim it first)
+      "Quick start: one-click launcher" above - it mirrors a UNC/WSL checkout to a local working
+      copy automatically; skim it before your first run)
 - [ ] `winget install -e --id Python.Python.3.12` (or any 3.10+)
 - [ ] `pip install litert-lm`
 - [ ] `litert-lm import --from-huggingface-repo litert-community/gemma-4-12B-it-litert-lm gemma-4-12B-it.litertlm 12b` (or e2b/e4b)

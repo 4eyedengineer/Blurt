@@ -1,23 +1,58 @@
 # Windows Eloquent - one-click idempotent bootstrap + launch for a Windows host.
 #
 # NOTE: this script was written and reviewed carefully, but has NOT been run
-# against a real Windows machine as part of this change - the environment
-# that produced it is WSL2/Linux only. Treat it as a strong first draft:
-# skim it before your first run, and please report back anything that
+# end-to-end against a real Windows machine as part of this change - the
+# environment that produced it is WSL2/Linux only (some pieces *were*
+# exercised via WSL's cmd.exe/powershell.exe interop - see WINDOWS.md for
+# exactly what was and wasn't verified that way). Treat it as a strong first
+# draft: skim it before your first run, and please report back anything that
 # doesn't match your machine so it can be fixed. See run.sh for the WSL/
 # Linux equivalent, which *was* verified end-to-end.
 #
+# Source of truth for this project's code lives wherever you cloned/checked
+# it out - for most people during development that's a WSL filesystem,
+# reached from Windows as a UNC path like \\wsl.localhost\<distro>\...  This
+# script detects that case (a UNC path, or a drive letter mapped to one) and
+# mirrors the source to a Windows-local working copy under
+# %LOCALAPPDATA%\WindowsEloquent\app using `robocopy /MIR` before doing any
+# Windows-side work there. This matters for two reasons:
+#   - Windows-native node/npm/Electron do not reliably work against a
+#     Linux-installed node_modules tree (native modules, the Electron
+#     binary itself - all built for Linux, not Windows) or the WSL Python
+#     .runtime venv - both are excluded from the sync and rebuilt fresh
+#     on the Windows side instead.
+#   - npm (lots of small file I/O) is slow and occasionally flaky when its
+#     working directory is a \\wsl.localhost\ (or any UNC) share.
+# The venv and downloaded model live under %LOCALAPPDATA%\WindowsEloquent
+# (a sibling of the mirrored `app` folder, not inside it), so re-running
+# this script re-syncs any source changes (that's the point of /MIR) without
+# ever re-downloading the model or recreating the venv.
+#
+# Alternative: skip the mirroring dance entirely by cloning this repo
+# natively onto a Windows drive (e.g. `git clone ... C:\src\windows-eloquent`)
+# and running this launcher from there - it detects it's already on a local
+# drive and bootstraps in place, no copy step, no %LOCALAPPDATA%\...\app.
+#
 # Safe to re-run: every step checks whether it's already done before doing
 # it. Steps:
+#   0. resolve the source location; if it's on a UNC/WSL path (or a drive
+#      mapped to one), mirror it to a local working copy with robocopy /MIR
 #   1. Python 3.10+ (winget install if missing)
 #   2. Node.js LTS (winget install if missing)
 #   3. a venv under %LOCALAPPDATA%\WindowsEloquent\venv with `litert-lm` pip-installed
-#   4. npm install (if node_modules is missing)
+#   4. npm install (if node_modules is missing), in the local working copy
 #   5. the Gemma E2B .litertlm file in the app's own model store
 #      (reusing any already-downloaded copy instead of re-pulling ~2.4 GiB)
 #   6. an initial settings.json enabling the real LiteRT-LM backend, but only
 #      if the app has never been configured yet
-#   7. `npm run dev`
+#   7. `npm run dev`, in the local working copy
+#
+# Set $env:ELOQUENT_DRYRUN to any value other than "" or "0" to make this
+# script print the resolved source/working-copy paths and the robocopy plan
+# (if a sync applies) and then stop - no winget, no npm install, no venv, no
+# model download, no settings write, no npm run dev. Useful for sanity
+# checking the path/UNC-handling logic on a new machine before doing
+# anything real.
 #
 # See WINDOWS.md for the manual step-by-step version of all of this and the
 # reasoning behind it (why Managed mode, why port 9379, GPU findings, etc).
@@ -35,19 +70,106 @@ function Write-Warn([string]$Message) {
     Write-Host "    WARNING: $Message" -ForegroundColor Yellow
 }
 
-$RepoRoot = $PSScriptRoot
-Set-Location $RepoRoot
+function Test-IsRemoteSource([string]$path) {
+    # Any UNC path - \\wsl.localhost\<distro>\..., \\wsl$\<distro>\..., or a
+    # plain network share - not just the WSL-specific forms, since
+    # npm/node/Electron are slow/fragile on any network share, not only a
+    # WSL one.
+    if ([string]::IsNullOrWhiteSpace($path)) { return $false }
+    if ($path -match '^\\\\') { return $true }
 
-$RuntimeBase = Join-Path $env:LOCALAPPDATA 'WindowsEloquent'
-$VenvDir     = Join-Path $RuntimeBase 'venv'
-$StagingDir  = Join-Path $RuntimeBase 'staging'
-$ModelId     = 'gemma-4-e2b'
-$ModelAlias  = 'e2b'
-$HfRepo      = 'litert-community/gemma-4-E2B-it-litert-lm'
+    # A drive letter can also be a `net use`/`pushd`-style mapping onto a
+    # UNC path (e.g. someone ran `net use Z: \\wsl.localhost\...` ahead of
+    # time, or launched this script from the temp drive letter pushd itself
+    # creates). Ask WMI/CIM what's really behind the letter.
+    if ($path -match '^([A-Za-z]):\\') {
+        $driveLetter = "$($Matches[1]):"
+        try {
+            $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$driveLetter'" -ErrorAction Stop
+            # DriveType 4 = "Network Drive"
+            if ($disk -and $disk.DriveType -eq 4) { return $true }
+        } catch {
+            # Best-effort only - if CIM/WMI isn't available, fall through
+            # and treat it as an ordinary local path rather than failing.
+        }
+    }
+    return $false
+}
+
+$DryRun = -not [string]::IsNullOrEmpty($env:ELOQUENT_DRYRUN) -and $env:ELOQUENT_DRYRUN -ne '0'
+
+# The true source location of this script (and the rest of the repo next to
+# it) - NOT necessarily the current directory: if this was launched via
+# run-windows.bat, cmd.exe may have `pushd`-ed into a temporary mapped drive
+# letter for its own purposes, but $PSScriptRoot always reflects where this
+# .ps1 file itself actually lives, UNC or not - PowerShell (unlike cmd.exe)
+# has no trouble treating a UNC path as a location.
+$SourceDir = $PSScriptRoot
+
+$RuntimeBase    = Join-Path $env:LOCALAPPDATA 'WindowsEloquent'
+$VenvDir        = Join-Path $RuntimeBase 'venv'
+$StagingDir     = Join-Path $RuntimeBase 'staging'
+$LocalMirrorDir = Join-Path $RuntimeBase 'app'
+$ModelId        = 'gemma-4-e2b'
+$ModelAlias     = 'e2b'
+$HfRepo         = 'litert-community/gemma-4-E2B-it-litert-lm'
 $AppUserDataDir = Join-Path $env:APPDATA 'windows-eloquent'
+$RobocopyExcludes = @('node_modules', '.runtime', 'out', 'dist', '.git')
 
 Write-Step "Windows Eloquent - Windows host bootstrap"
-Write-Ok "Repo: $RepoRoot"
+Write-Ok "Source dir: $SourceDir"
+
+$IsRemoteSource = Test-IsRemoteSource $SourceDir
+if ($IsRemoteSource) {
+    $RepoRoot = $LocalMirrorDir
+    Write-Ok "Source is on a UNC/network path."
+    Write-Ok "Windows-native npm/node/Electron do not reliably work against a Linux-built"
+    Write-Ok "node_modules tree or a Python venv built for WSL, and are slow over a network"
+    Write-Ok "share in general - this run will mirror the source to a local Windows folder"
+    Write-Ok "and do all Windows-side work (npm install, npm run dev, ...) there instead."
+    Write-Ok "Local working copy: $RepoRoot"
+} else {
+    $RepoRoot = $SourceDir
+    Write-Ok "Source is already on a local drive - bootstrapping in place, no mirroring."
+}
+
+if ($IsRemoteSource) {
+    Write-Step "Sync plan: mirror source -> local working copy"
+    $planArgs = @("`"$SourceDir`"", "`"$RepoRoot`"", '/MIR', '/XD') + $RobocopyExcludes + @('/R:2', '/W:2', '/MT:8')
+    Write-Ok "robocopy $($planArgs -join ' ')"
+    Write-Ok "Excluded from the sync (left alone / rebuilt fresh on the Windows side instead):"
+    Write-Ok "  $($RobocopyExcludes -join ', ')"
+    Write-Ok "Robocopy exit codes 0-7 mean success (bitmask of what it did, not an error);"
+    Write-Ok "only >=8 is a real failure - see 'robocopy /?' or Microsoft's docs."
+}
+
+if ($DryRun) {
+    Write-Step "ELOQUENT_DRYRUN is set - stopping here"
+    Write-Ok "Resolved paths:"
+    Write-Ok "  Source dir        : $SourceDir"
+    Write-Ok "  Repo root (used)  : $RepoRoot"
+    Write-Ok "  Runtime base      : $RuntimeBase"
+    Write-Ok "  Venv dir          : $VenvDir"
+    Write-Ok "  App user data dir : $AppUserDataDir"
+    Write-Ok "No winget/npm/pip/model/settings/dev-server actions were taken."
+    exit 0
+}
+
+# --- 0. Sync to a local working copy, if the source is remote ------------
+if ($IsRemoteSource) {
+    Write-Step "Syncing source to local working copy"
+    New-Item -ItemType Directory -Force -Path $RepoRoot | Out-Null
+    & robocopy $SourceDir $RepoRoot /MIR /XD @RobocopyExcludes /R:2 /W:2 /MT:8
+    $RobocopyExit = $LASTEXITCODE
+    if ($RobocopyExit -ge 8) {
+        Write-Host "ERROR: robocopy failed while syncing to $RepoRoot (exit code $RobocopyExit)." -ForegroundColor Red
+        Write-Host "  See https://learn.microsoft.com/windows-server/administration/windows-commands/robocopy#exit-return-codes" -ForegroundColor Red
+        exit 1
+    }
+    Write-Ok "Synced (robocopy exit code $RobocopyExit - codes 0-7 are all success)."
+}
+
+Set-Location $RepoRoot
 
 $HaveWinget = [bool](Get-Command winget -ErrorAction SilentlyContinue)
 if (-not $HaveWinget) {
@@ -151,7 +273,7 @@ if (-not (Test-Path $VenvLitertLm)) {
 $env:Path = "$(Join-Path $VenvDir 'Scripts');$env:Path"
 
 # --- 4. npm install --------------------------------------------------------
-Write-Step "Checking Node dependencies"
+Write-Step "Checking Node dependencies (in $RepoRoot)"
 if (-not (Test-Path (Join-Path $RepoRoot 'node_modules'))) {
     Write-Ok "node_modules missing - running npm install (this may take a minute)"
     npm install
@@ -219,5 +341,6 @@ Write-Step "Launching Windows Eloquent (dev mode)"
 Write-Ok "Run this on the Windows host (not WSL) for real microphone + GPU access - see WINDOWS.md."
 Write-Ok "Once you've run 'npm run build' + 'npm run build:win', you can instead launch the built"
 Write-Ok "installer/portable exe from .\dist\ directly - see electron-builder.yml / package.json."
+Write-Ok "Working directory: $RepoRoot"
 Write-Ok "Starting 'npm run dev' - close the app window (or Ctrl+C here) to stop."
 npm run dev

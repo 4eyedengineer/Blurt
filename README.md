@@ -21,13 +21,22 @@ model) and then start the app, safe to re-run any time:
 
 - **WSL / Linux**: `./run.sh`
 - **Windows**: double-click `run-windows.bat` (it just runs `Start-Eloquent.ps1` with
-  `-ExecutionPolicy Bypass` so it works even with script execution locked down)
+  `-ExecutionPolicy Bypass` so it works even with script execution locked down). If your checkout
+  lives on a UNC/WSL path (e.g. opened via `\\wsl.localhost\...` in Explorer - the common case when
+  developing inside WSL), it first mirrors the source to a Windows-local working copy under
+  `%LOCALAPPDATA%\WindowsEloquent\app` with `robocopy /MIR` and bootstraps there instead - source of
+  truth stays in WSL, and re-running the launcher re-syncs your changes. See
+  [WINDOWS.md](WINDOWS.md#quick-start-one-click-launcher) for details, and the alternative of
+  cloning the repo natively onto a Windows drive instead.
 
 Use the Windows one for actual dictation (real microphone, native GPU path) - see
 [WINDOWS.md](WINDOWS.md). The WSL one is verified to bring up the real UI and the real LiteRT-LM
 backend end-to-end (see [Running under WSLg](#running-under-wslg) below), but its microphone story
-is unconfirmed - **the Windows launcher has not been run against a real Windows machine** as part
-of adding it (see its own header comment); please report back anything that doesn't match.
+is unconfirmed. The Windows launcher's path handling (UNC detection, the local mirror, bootstrapping
+in place on a local drive) was exercised from WSL via `cmd.exe`/`powershell.exe` interop against a
+real Windows host; a literal Explorer double-click, a `winget` install, and a full model
+download + `npm run dev` launch were not (see WINDOWS.md's "Quick start" section for exactly what
+was and wasn't verified); please report back anything that doesn't match.
 
 ## Stack
 
