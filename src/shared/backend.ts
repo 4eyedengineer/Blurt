@@ -118,12 +118,27 @@ export interface InferenceBackend {
   /** Subscribe to streaming partial-transcript updates. Returns an unsubscribe fn. */
   onPartialTranscript(listener: (sessionId: string, text: string) => void): () => void
 
-  /** Polish a raw transcript: strip filler words, fix capitalization/punctuation. */
-  cleanup(text: string): Promise<string>
+  /**
+   * Polish a raw transcript: strip filler words, fix capitalization/punctuation.
+   * If `operationId` is given, incremental progress is emitted via
+   * `onTextStreamProgress` (keyed by that id) as the rewrite streams in -
+   * see that method's doc comment for why an id rather than the session id.
+   */
+  cleanup(text: string, operationId?: string): Promise<string>
 
-  /** Re-derive the text in a particular style. */
-  transform(text: string, mode: TransformMode): Promise<string>
+  /** Re-derive the text in a particular style. Streams progress the same way as `cleanup` when `operationId` is given. */
+  transform(text: string, mode: TransformMode, operationId?: string): Promise<string>
 
-  /** Apply a free-form spoken/typed edit command to the text. */
-  voiceEdit(text: string, command: string): Promise<string>
+  /** Apply a free-form spoken/typed edit command to the text. Streams progress the same way as `cleanup` when `operationId` is given. */
+  voiceEdit(text: string, command: string, operationId?: string): Promise<string>
+
+  /**
+   * Subscribe to incremental text for an in-flight `cleanup`/`transform`/
+   * `voiceEdit` call that was started with an `operationId`. Unlike
+   * `onPartialTranscript` (scoped to a dictation session that already
+   * exists) these calls have no natural id of their own, so the caller
+   * mints one and both sides key off it. Never fires for calls made without
+   * an `operationId`. Returns an unsubscribe fn.
+   */
+  onTextStreamProgress(listener: (operationId: string, text: string) => void): () => void
 }

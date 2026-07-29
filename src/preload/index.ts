@@ -33,19 +33,27 @@ const dictationApi = {
   endSession: (sessionId: string): Promise<string> =>
     ipcRenderer.invoke(IPC.backend.endSession, sessionId),
 
-  cleanup: (text: string): Promise<string> => ipcRenderer.invoke(IPC.backend.cleanup, text),
+  cleanup: (text: string, operationId?: string): Promise<string> =>
+    ipcRenderer.invoke(IPC.backend.cleanup, text, operationId),
 
-  transform: (text: string, mode: TransformMode): Promise<string> =>
-    ipcRenderer.invoke(IPC.backend.transform, text, mode),
+  transform: (text: string, mode: TransformMode, operationId?: string): Promise<string> =>
+    ipcRenderer.invoke(IPC.backend.transform, text, mode, operationId),
 
-  voiceEdit: (text: string, command: string): Promise<string> =>
-    ipcRenderer.invoke(IPC.backend.voiceEdit, text, command),
+  voiceEdit: (text: string, command: string, operationId?: string): Promise<string> =>
+    ipcRenderer.invoke(IPC.backend.voiceEdit, text, command, operationId),
 
   onPartialTranscript: (listener: (sessionId: string, text: string) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, sessionId: string, text: string): void =>
       listener(sessionId, text)
     ipcRenderer.on(IPC.backend.partialTranscript, handler)
     return () => ipcRenderer.removeListener(IPC.backend.partialTranscript, handler)
+  },
+
+  onTextStreamProgress: (listener: (operationId: string, text: string) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, operationId: string, text: string): void =>
+      listener(operationId, text)
+    ipcRenderer.on(IPC.backend.textStreamProgress, handler)
+    return () => ipcRenderer.removeListener(IPC.backend.textStreamProgress, handler)
   },
 
   onSessionError: (listener: (sessionId: string, error: BackendError) => void): (() => void) => {

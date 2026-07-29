@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef } from 'react'
 import { useOverlayPushToTalk } from './useOverlayPushToTalk'
+import { DiffReveal } from '../components/DiffReveal'
 import './OverlayApp.css'
 
 /** Boosted the same way MicLevelMeter boosts its bar - raw RMS reads very small even for healthy speech. */
@@ -14,7 +15,7 @@ function levelPercent(level: number): number {
  * this component is just presentation.
  */
 export function OverlayApp(): React.JSX.Element {
-  const { phase, liveText, finalText, micLevel, copied, pasted, pasteMessage } =
+  const { phase, liveText, finalText, diffTokens, micLevel, copied, pasted, pasteMessage } =
     useOverlayPushToTalk()
   const transcriptRef = useRef<HTMLDivElement>(null)
 
@@ -52,6 +53,12 @@ export function OverlayApp(): React.JSX.Element {
         )}
 
         {phase === 'cleaning' && <div className="overlay-app__status">Cleaning up…</div>}
+
+        {phase === 'revealing' && (
+          <div className="overlay-app__transcript overlay-app__transcript--final">
+            <DiffReveal tokens={diffTokens} compact />
+          </div>
+        )}
 
         {phase === 'done' && (
           <>

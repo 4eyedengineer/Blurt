@@ -62,16 +62,20 @@ export function registerBackendIpc(
     controller.getBackend().endSession(sessionId)
   )
 
-  ipcMain.handle(IPC.backend.cleanup, (_event, text: string) =>
-    controller.getBackend().cleanup(text)
+  ipcMain.handle(IPC.backend.cleanup, (_event, text: string, operationId?: string) =>
+    controller.getBackend().cleanup(text, operationId)
   )
 
-  ipcMain.handle(IPC.backend.transform, (_event, text: string, mode: TransformMode) =>
-    controller.getBackend().transform(text, mode)
+  ipcMain.handle(
+    IPC.backend.transform,
+    (_event, text: string, mode: TransformMode, operationId?: string) =>
+      controller.getBackend().transform(text, mode, operationId)
   )
 
-  ipcMain.handle(IPC.backend.voiceEdit, (_event, text: string, command: string) =>
-    controller.getBackend().voiceEdit(text, command)
+  ipcMain.handle(
+    IPC.backend.voiceEdit,
+    (_event, text: string, command: string, operationId?: string) =>
+      controller.getBackend().voiceEdit(text, command, operationId)
   )
 
   ipcMain.handle(IPC.backend.getStatus, () => controller.getStatus())
@@ -82,13 +86,19 @@ export function registerBackendIpc(
   // fail and fall back to a different concrete instance).
   let unsubscribePartial: () => void = () => {}
   let unsubscribeError: () => void = () => {}
+  let unsubscribeTextStream: () => void = () => {}
 
   function attachToBackend(backend: InferenceBackend): void {
     unsubscribePartial()
     unsubscribeError()
+    unsubscribeTextStream()
 
     unsubscribePartial = backend.onPartialTranscript((sessionId, text) => {
       broadcast(getWindows, IPC.backend.partialTranscript, sessionId, text)
+    })
+
+    unsubscribeTextStream = backend.onTextStreamProgress((operationId, text) => {
+      broadcast(getWindows, IPC.backend.textStreamProgress, operationId, text)
     })
 
     unsubscribeError = hasErrorSource(backend)

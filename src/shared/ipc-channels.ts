@@ -14,7 +14,9 @@ export const IPC = {
     partialTranscript: 'backend:partial-transcript', // main -> renderer event
     sessionError: 'backend:session-error', // main -> renderer event
     getStatus: 'backend:get-status',
-    statusChanged: 'backend:status-changed' // main -> renderer event
+    statusChanged: 'backend:status-changed', // main -> renderer event
+    /** main -> renderer event: incremental text for a cleanup/transform/voiceEdit call, keyed by the operationId the renderer passed in. */
+    textStreamProgress: 'backend:text-stream-progress'
   },
   history: {
     list: 'history:list',

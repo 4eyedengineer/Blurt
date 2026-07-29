@@ -11,6 +11,7 @@ describe('overlayReducer', () => {
       phase: 'done',
       liveText: 'stale',
       finalText: 'stale final',
+      diffTokens: [{ op: 'equal', before: 'stale', after: 'stale' }],
       copied: true,
       pasted: true,
       pasteMessage: 'stale message'
@@ -42,32 +43,63 @@ describe('overlayReducer', () => {
     expect(next).toBe(initialOverlayState)
   })
 
-  it('moves cleaning -> done on cleaned, storing the final text', () => {
+  it('moves cleaning -> revealing on cleaned, storing the final text and a word diff', () => {
     let state = overlayReducer(initialOverlayState, { type: 'start' })
     state = overlayReducer(state, { type: 'stop' })
-    state = overlayReducer(state, { type: 'cleaned', text: 'Hello world.' })
-    expect(state.phase).toBe('done')
+    state = overlayReducer(state, { type: 'cleaned', raw: 'um hello world', text: 'Hello world.' })
+    expect(state.phase).toBe('revealing')
     expect(state.finalText).toBe('Hello world.')
+    expect(state.diffTokens.length).toBeGreaterThan(0)
+    expect(state.diffTokens.some((t) => t.op === 'delete' && t.before === 'um')).toBe(true)
   })
 
   it('ignores cleaned outside the cleaning phase', () => {
-    const next = overlayReducer(initialOverlayState, { type: 'cleaned', text: 'nope' })
+    const next = overlayReducer(initialOverlayState, {
+      type: 'cleaned',
+      raw: 'nope',
+      text: 'nope'
+    })
     expect(next).toBe(initialOverlayState)
   })
 
-  it('applies paste-status only in the done phase', () => {
+  it('moves revealing -> done on settle', () => {
     let state = overlayReducer(initialOverlayState, { type: 'start' })
     state = overlayReducer(state, { type: 'stop' })
-    state = overlayReducer(state, { type: 'cleaned', text: 'text' })
-    const next = overlayReducer(state, {
+    state = overlayReducer(state, { type: 'cleaned', raw: 'hello', text: 'Hello.' })
+    const next = overlayReducer(state, { type: 'settle' })
+    expect(next.phase).toBe('done')
+    expect(next.finalText).toBe('Hello.')
+  })
+
+  it('ignores settle outside the revealing phase', () => {
+    const next = overlayReducer(initialOverlayState, { type: 'settle' })
+    expect(next).toBe(initialOverlayState)
+  })
+
+  it('applies paste-status during revealing or done, ignores it otherwise', () => {
+    let state = overlayReducer(initialOverlayState, { type: 'start' })
+    state = overlayReducer(state, { type: 'stop' })
+    state = overlayReducer(state, { type: 'cleaned', raw: 'text', text: 'Text.' })
+    expect(state.phase).toBe('revealing')
+
+    const duringReveal = overlayReducer(state, {
       type: 'paste-status',
       copied: true,
       pasted: true,
       message: 'Copied and pasted.'
     })
-    expect(next.copied).toBe(true)
-    expect(next.pasted).toBe(true)
-    expect(next.pasteMessage).toBe('Copied and pasted.')
+    expect(duringReveal.copied).toBe(true)
+    expect(duringReveal.pasted).toBe(true)
+    expect(duringReveal.pasteMessage).toBe('Copied and pasted.')
+
+    const settled = overlayReducer(duringReveal, { type: 'settle' })
+    const afterSettle = overlayReducer(settled, {
+      type: 'paste-status',
+      copied: true,
+      pasted: false,
+      message: 'Copied only.'
+    })
+    expect(afterSettle.pasteMessage).toBe('Copied only.')
 
     const ignored = overlayReducer(initialOverlayState, {
       type: 'paste-status',
@@ -92,7 +124,7 @@ describe('overlayReducer', () => {
   it('reset resets to idle from any non-idle phase, and no-ops when already idle', () => {
     let state = overlayReducer(initialOverlayState, { type: 'start' })
     state = overlayReducer(state, { type: 'stop' })
-    state = overlayReducer(state, { type: 'cleaned', text: 'text' })
+    state = overlayReducer(state, { type: 'cleaned', raw: 'text', text: 'Text.' })
     const next = overlayReducer(state, { type: 'reset' })
     expect(next).toEqual(initialOverlayState)
 

@@ -82,6 +82,8 @@ src/
       litertWire.ts             Pure request builders + SSE/JSON response parsers + WAV encoder
                                  for the LiteRT-LM sidecar's wire protocol - see below
       litertBackend.ts          InferenceBackend backed by a LiteRT-LM sidecar (HTTP/SSE)
+      streamThrottle.ts          ThrottledTextEmitter: batches a growing streamed-text callback
+                                 down to ~100ms ticks - see "Streaming partials" below
       sidecar.ts                 Spawns/monitors the litert-lm serve process (or points at an
                                  external one), health-checks it, restarts with backoff
       modelManager.ts            Downloads .litertlm models from HuggingFace, tracks progress
@@ -121,12 +123,15 @@ src/
         useModelManager.ts       Drives the Settings screen's model download UI
       screens/                 DictateScreen, HistoryScreen, SettingsScreen
       components/              RecordButton, TransformBar, StatsBar, VoiceEditBar, Sidebar,
-                               StatusPill, Toggle, Icons, MicLevelMeter
+                               StatusPill, Toggle, Icons, MicLevelMeter, DiffReveal (word-diff
+                               reveal shown after cleanup/voice-edit - see below)
       overlay/                 Push-to-talk overlay window's React tree (loaded via `#overlay`)
-        overlayState.ts          Pure phase reducer (idle/recording/cleaning/done) - unit-tested
+        overlayState.ts          Pure phase reducer (idle/recording/cleaning/revealing/done) -
+                                 unit-tested
         useOverlayPushToTalk.ts  Wires main-process ptt-* IPC to useAudioCapture + dictation IPC
         OverlayApp.tsx           The pill itself: dot, mic level, live/final transcript, status
-      lib/                     format.ts (word count / WPM / byte formatting), clipboard.ts
+      lib/                     format.ts (word count / WPM / byte formatting), clipboard.ts,
+                               wordDiff.ts (pure LCS word-diff - see below)
 ```
 
 ## The `InferenceBackend` contract
@@ -149,9 +154,12 @@ export interface InferenceBackend {
   pushAudio(sessionId: string, chunk: AudioChunk): void
   endSession(sessionId: string): Promise<string>
   onPartialTranscript(listener: (sessionId: string, text: string) => void): () => void
-  cleanup(text: string): Promise<string>
-  transform(text: string, mode: TransformMode): Promise<string>
-  voiceEdit(text: string, command: string): Promise<string>
+  // `operationId`, if given, streams incremental progress via onTextStreamProgress below -
+  // see "Streaming partials + the cleanup diff-reveal" further down.
+  cleanup(text: string, operationId?: string): Promise<string>
+  transform(text: string, mode: TransformMode, operationId?: string): Promise<string>
+  voiceEdit(text: string, command: string, operationId?: string): Promise<string>
+  onTextStreamProgress(listener: (operationId: string, text: string) => void): () => void
 }
 ```
 
@@ -174,12 +182,15 @@ Two implementations exist today, and the active one is chosen per `settings.back
   `onPartialTranscript`. This simulates a live streaming transcript without a real model.
 - `endSession` returns the accumulated transcript and tears down the session.
 - `cleanup` waits ~1s (simulating inference latency) then strips filler words (um/uh/erm/hmm),
-  fixes capitalization, and adds terminal punctuation.
+  fixes capitalization, and adds terminal punctuation. When called with an `operationId`, it reveals
+  the cleaned text word-by-word over that ~1s (via `onTextStreamProgress`) instead of popping in
+  all at once - the same streaming path `LitertBackend` uses, so the UX is demoable without a real
+  model.
 - `transform` waits ~600ms then applies a simple rule-based rewrite for `keypoints` / `formal` /
-  `short` / `long`.
+  `short` / `long` - streamed the same way when given an `operationId`.
 - `voiceEdit` recognizes a small set of command patterns (`"replace X with Y"`,
   `"delete the last sentence"`, `"delete the first sentence"`, `"add a period"`, `"uppercase
-  everything"`) and no-ops on anything else.
+  everything"`) and no-ops on anything else - also streamable via `operationId`.
 
 All of the above is in `src/main/backend/textOps.ts` and `scripts.ts` if you want to see exactly
 how the mock behaves.
@@ -188,6 +199,47 @@ The audio pipeline is shared by both backends: the renderer captures 16kHz mono 
 AudioWorklet (falling back to MediaRecorder/webm if AudioWorklet is unavailable) and forwards raw
 chunks over IPC as `AudioChunkPayload` (`{ kind: 'pcm16' | 'opaque', buffer, sampleRate }`), which
 `backendIpc.ts` converts to `Int16Array`/`Buffer` before calling `pushAudio`.
+
+## Streaming partials + the cleanup diff-reveal
+
+Two UX refinements sit on top of the base `InferenceBackend` contract, both exercised identically
+by `MockBackend` and `LitertBackend` so they're demoable without a real model:
+
+- **Real-time streaming partials.** `LitertBackend.pushAudio` fires a partial re-transcription tick
+  every `DEFAULT_PARTIAL_INTERVAL_MS` (1.5s, down from an earlier 3s) of new audio, same as before -
+  but each tick now streams its result in over the sidecar's SSE response as tokens arrive (via
+  `ThrottledTextEmitter`, `src/main/backend/streamThrottle.ts`) instead of waiting for the whole
+  re-transcription to finish and emitting once. Since each tick re-transcribes the *entire*
+  accumulated buffer (inherent to the design - there's no true incremental ASR here), each streamed
+  chunk **replaces** the previously-shown text rather than appending to it; the renderer just always
+  renders the latest string it's been sent. Emits are throttled to ~100ms batches
+  (`streamThrottleMs`) so a fast token stream doesn't spam IPC. `endSession`'s final
+  re-transcription streams the same way, over the same `onPartialTranscript`/`'partial'` event -
+  no separate channel needed since the session is already marked ended by the time it fires.
+  `cleanup`/`transform`/`voiceEdit` stream too, but via a separate, more generic mechanism: the
+  caller mints an `operationId` (any string; the renderer uses `crypto.randomUUID()`), passes it as
+  each method's optional last argument, and subscribes to `onTextStreamProgress`/the
+  `backend:text-stream-progress` IPC event, filtering on that id. `useDictationSession`
+  (`src/renderer/src/hooks/useDictationSession.ts`) uses this to show a live-growing preview while
+  cleanup/transform are in flight, with a blinking caret (`.stream-caret` in `DictateScreen.css`)
+  and a subtle shimmer before the first chunk arrives.
+- **Inline-edit reveal on cleanup.** Rather than swapping straight from the raw transcript to the
+  cleaned text, `useDictationSession.stopRecording` computes a word-level diff
+  (`src/renderer/src/lib/wordDiff.ts`, `diffWords(rawTranscript, cleanedText)`) and shows it inline
+  via `<DiffReveal>` (`src/renderer/src/components/DiffReveal.tsx`) for ~2s: removed words
+  (fillers, false starts) strike through and fade to transparent, inserted/changed words highlight
+  and fade, then it settles to the plain cleaned text. `applyVoiceEdit` gets a shorter (~1.2s)
+  version of the same treatment. Critically, this delay is **purely visual** - `displayText`,
+  history persistence, and auto-copy-on-cleanup all happen immediately once cleanup resolves; only
+  the on-screen reveal lingers. `wordDiff.ts` is a pure LCS-based diff over whitespace-tokenized
+  words: matching is case-insensitive with punctuation stripped (so a word that only gained/lost
+  punctuation, or changed case, aligns as the same word - see `diffWords`'s doc comment for exactly
+  how `'equal'` vs `'replace'` vs `'delete'`+`'insert'` are chosen), and it's unit-tested in
+  `wordDiff.test.ts` (pure deletions, insertions, replacements, identical text, empty inputs). The
+  push-to-talk overlay gets a lighter version of the same idea: `overlayState.ts` gained a
+  `'revealing'` phase between `'cleaning'` and `'done'` that shows the diff inline in the pill for
+  ~1.5s (`useOverlayPushToTalk.ts`'s `REVEAL_SETTLE_MS`) - again, the clipboard copy/paste fires
+  immediately on cleanup completion (`window.api.overlay.sendResult`), never delayed by the reveal.
 
 ## The real backend: LiteRT-LM
 
@@ -280,13 +332,14 @@ Verified against a real `litert-lm` 0.14.0 pip install and a real gemma-4-E2B mo
 
 - `startSession` allocates an in-memory buffer for the session's PCM16 audio (no request to the
   sidecar yet).
-- `pushAudio` appends to that buffer. Once ~3 seconds of *new* audio has accumulated, the entire
-  buffer-so-far is WAV-encoded, base64'd, and sent as one transcription chat-completion; the
-  result is emitted via `onPartialTranscript`. These requests are serialized - if the previous
-  partial request is still in flight when the next 3-second mark is hit, that tick is skipped
+- `pushAudio` appends to that buffer. Once ~1.5 seconds of *new* audio has accumulated, the entire
+  buffer-so-far is WAV-encoded, base64'd, and sent as one transcription chat-completion, whose SSE
+  response streams into `onPartialTranscript` as it arrives (throttled - see "Streaming partials"
+  above) rather than emitting once at the end. These requests are serialized - if the previous
+  partial request is still in flight when the next 1.5-second mark is hit, that tick is skipped
   rather than firing a second overlapping request.
 - `endSession` waits for any in-flight partial to finish, then does one final full-buffer
-  transcription and returns it.
+  transcription, streamed the same way over `onPartialTranscript`, and returns it.
 - `cleanup` sends a system prompt instructing the model to strip filler words
   (um/uh/like/you know), collapse self-corrections/repeated false starts, and fix
   punctuation/capitalization while preserving meaning - plus a custom-vocabulary hint
@@ -426,10 +479,12 @@ Gemma-4 inference through a GPU today regardless of host OS.
 
 ## App features
 
-1. **Dictate** - big record button; live streaming transcript while recording; automatic cleanup
-   pass on stop; Key Points / Formal / Short / Long transform buttons; copy-to-clipboard button;
-   optional auto-copy-on-cleanup (Settings); a small "voice edit command" box that exercises
-   `voiceEdit` (e.g. `replace foo with bar`, `delete the last sentence`).
+1. **Dictate** - big record button; live streaming transcript while recording (tokens stream in as
+   recognized, with a blinking caret - see "Streaming partials" above); automatic cleanup pass on
+   stop, briefly showing an inline word-diff of what changed before settling to the cleaned text;
+   Key Points / Formal / Short / Long transform buttons; copy-to-clipboard button; optional
+   auto-copy-on-cleanup (Settings); a small "voice edit command" box that exercises `voiceEdit`
+   (e.g. `replace foo with bar`, `delete the last sentence`), with its own brief diff-reveal.
 2. **History** - every completed dictation is persisted as JSON in Electron's `userData` dir
    (`history.json`), searchable by text, deletable, and clickable to reopen (re-loads the raw,
    cleaned, and last-transformed text plus its original stats into the Dictate screen).
@@ -458,10 +513,13 @@ while this app's window is focused) to start dictating into a small floating pil
 **Flow:** hold key down -> pill appears bottom-center of the primary display, live transcript
 streams in -> release key -> pill shows "Cleaning up…" -> cleanup pass runs -> cleaned text is
 always copied to the clipboard, then (if enabled) pasted into whichever app currently has OS focus
-via a simulated Ctrl+V -> pill shows the final text + "Copied ✓" / "Pasted ✓" -> fades out after
-~2.5s. A hold shorter than 250ms is treated as an accidental tap and silently discarded (no
-cleanup/copy/paste, pill disappears almost immediately) - this also absorbs OS key-repeat, which
-sends many keydown events for one physical press.
+via a simulated Ctrl+V **immediately** on cleanup completion -> pill briefly shows an inline
+word-diff of raw vs. cleaned text (~1.5s - see "Streaming partials + the cleanup diff-reveal"
+above) -> settles to the final text + "Copied ✓" / "Pasted ✓" -> fades out after ~2.5s total. The
+clipboard/paste step is never delayed by the diff-reveal - only the pill's visual state is. A hold
+shorter than 250ms is treated as an accidental tap and silently discarded (no cleanup/copy/paste,
+pill disappears almost immediately) - this also absorbs OS key-repeat, which sends many keydown
+events for one physical press.
 
 **Architecture:**
 

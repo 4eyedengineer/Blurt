@@ -32,6 +32,9 @@ class UnavailableBackend implements InferenceBackend {
   onPartialTranscript(): () => void {
     return () => {}
   }
+  onTextStreamProgress(): () => void {
+    return () => {}
+  }
   async cleanup(): Promise<string> {
     throw new Error(this.message)
   }

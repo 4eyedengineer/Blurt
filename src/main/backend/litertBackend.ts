@@ -28,9 +28,20 @@ import {
   stripModelPreamble,
   type ChatCompletionRequestBody
 } from './litertWire'
+import { ThrottledTextEmitter } from './streamThrottle'
 
-/** How often (ms of *new* audio, not wall-clock time) to fire a partial re-transcription. */
-const DEFAULT_PARTIAL_INTERVAL_MS = 3000
+/**
+ * How often (ms of *new* audio, not wall-clock time) to fire a partial
+ * re-transcription tick. Deliberately short (down from an earlier 3000ms) -
+ * each tick now streams its result in via SSE (see `runPartialTranscription`)
+ * rather than blocking on the whole re-transcription, so a snappier tick
+ * rate mostly just means the *next* re-transcription of the growing buffer
+ * starts sooner; `partialInFlight` still skips a tick outright if the
+ * previous one hasn't finished, so this self-throttles on slower hardware.
+ */
+const DEFAULT_PARTIAL_INTERVAL_MS = 1500
+/** How often (ms) streamed partial/cleanup/transform/voiceEdit text is allowed to reach the renderer - see ThrottledTextEmitter. */
+const DEFAULT_STREAM_THROTTLE_MS = 100
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_SAMPLE_RATE = 16000
 /**
@@ -65,6 +76,8 @@ export interface LitertBackendOptions {
   getVocabulary?: () => string[]
   partialIntervalMs?: number
   requestTimeoutMs?: number
+  /** How often (ms) streamed text is allowed to reach the renderer - see ThrottledTextEmitter. Mainly a test seam. */
+  streamThrottleMs?: number
   /**
    * Directory each session's final accumulated WAV is written to, as
    * `session-<n>.wav`, when the ELOQUENT_DEBUG_AUDIO=1 env var is set.
@@ -88,6 +101,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   private emitter = new EventEmitter()
   private readonly partialIntervalMs: number
   private readonly requestTimeoutMs: number
+  private readonly streamThrottleMs: number
   /**
    * The real `litert-lm serve` is a plain `http.server.HTTPServer` (not
    * `ThreadingHTTPServer`) - verified empirically that a second concurrent
@@ -105,6 +119,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   constructor(private readonly options: LitertBackendOptions) {
     this.partialIntervalMs = options.partialIntervalMs ?? DEFAULT_PARTIAL_INTERVAL_MS
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+    this.streamThrottleMs = options.streamThrottleMs ?? DEFAULT_STREAM_THROTTLE_MS
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -183,6 +198,45 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     }
   }
 
+  /**
+   * Re-transcribes the whole accumulated buffer so far and streams the
+   * result out via `onStreamText` as it arrives (throttled - see
+   * ThrottledTextEmitter) instead of waiting for the full completion. Each
+   * call streams the *entire* current buffer's transcript from scratch, so
+   * every call to `onStreamText` should be treated as replacing whatever was
+   * shown before, not appending to it - that's inherent to re-transcribing
+   * the whole buffer on every tick rather than doing true incremental ASR.
+   * Shared by `runPartialTranscription` (mid-recording ticks) and
+   * `endSession` (the final tick), which differ only in what they do with
+   * each streamed chunk and the final value.
+   */
+  private async transcribeSamplesStreaming(
+    session: LitertSession,
+    samples: Int16Array,
+    onStreamText: (text: string) => void
+  ): Promise<string> {
+    const wavBase64 = pcm16ToWavBase64(samples, session.sampleRate)
+    const request = buildTranscriptionRequest({
+      model: this.options.modelId,
+      wavBase64,
+      vocabulary: session.vocabulary
+    })
+    const throttled = new ThrottledTextEmitter({
+      intervalMs: this.streamThrottleMs,
+      emit: onStreamText
+    })
+    const raw = await this.enqueue(() =>
+      this.chatCompletion(request, (accumulated) => throttled.push(stripModelPreamble(accumulated)))
+    )
+    const text = stripModelPreamble(raw)
+    // Guarantees the exact final (preamble-stripped, fully-settled) value is
+    // delivered synchronously, even if the last streamed chunk differed
+    // slightly (e.g. a preamble line only becomes strippable once the whole
+    // first line has arrived) or no chunk streamed at all (non-SSE fallback).
+    throttled.flush(text)
+    return text
+  }
+
   private async runPartialTranscription(session: LitertSession): Promise<void> {
     session.partialInFlight = true
     try {
@@ -199,11 +253,12 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
         )
         return
       }
-      const text = await this.transcribeSamples(session, samples)
-      if (!session.ended) {
-        session.lastTranscript = text
-        this.emitter.emit('partial', session.id, text)
-      }
+      await this.transcribeSamplesStreaming(session, samples, (text) => {
+        if (!session.ended) {
+          session.lastTranscript = text
+          this.emitter.emit('partial', session.id, text)
+        }
+      })
     } catch (err) {
       this.emitError(session.id, err)
     } finally {
@@ -213,17 +268,6 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
 
   private isSilentBuffer(samples: Int16Array): boolean {
     return samples.length === 0 || computeRms(samples) < SILENCE_RMS_THRESHOLD
-  }
-
-  private async transcribeSamples(session: LitertSession, samples: Int16Array): Promise<string> {
-    const wavBase64 = pcm16ToWavBase64(samples, session.sampleRate)
-    const request = buildTranscriptionRequest({
-      model: this.options.modelId,
-      wavBase64,
-      vocabulary: session.vocabulary
-    })
-    const raw = await this.enqueue(() => this.chatCompletion(request))
-    return stripModelPreamble(raw)
   }
 
   /**
@@ -281,7 +325,15 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     }
 
     try {
-      return await this.transcribeSamples(session, samples)
+      // Streams the final transcription in the exact same way (and over the
+      // same 'partial' event) as a mid-recording tick - the session is
+      // already marked `ended` so this is unambiguously the last update the
+      // renderer will see for it, rather than needing a separate IPC event
+      // just for "the final one is streaming too".
+      return await this.transcribeSamplesStreaming(session, samples, (text) => {
+        session.lastTranscript = text
+        this.emitter.emit('partial', session.id, text)
+      })
     } catch (err) {
       this.emitError(sessionId, err)
       return session.lastTranscript
@@ -293,6 +345,11 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     return () => this.emitter.off('partial', listener)
   }
 
+  onTextStreamProgress(listener: (operationId: string, text: string) => void): () => void {
+    this.emitter.on('text-stream-progress', listener)
+    return () => this.emitter.off('text-stream-progress', listener)
+  }
+
   onError(listener: (sessionId: string, error: BackendError) => void): () => void {
     this.emitter.on('session-error', listener)
     return () => this.emitter.off('session-error', listener)
@@ -302,26 +359,52 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     this.emitter.emit('session-error', sessionId, toBackendError(err))
   }
 
-  async cleanup(text: string): Promise<string> {
+  async cleanup(text: string, operationId?: string): Promise<string> {
     const request = buildCleanupRequest({
       model: this.options.modelId,
       text,
       vocabulary: this.options.getVocabulary?.()
     })
-    const raw = await this.enqueue(() => this.chatCompletion(request))
-    return stripModelPreamble(raw)
+    return this.runStreamingRequest(request, operationId)
   }
 
-  async transform(text: string, mode: TransformMode): Promise<string> {
+  async transform(text: string, mode: TransformMode, operationId?: string): Promise<string> {
     const request = buildTransformRequest({ model: this.options.modelId, text, mode })
-    const raw = await this.enqueue(() => this.chatCompletion(request))
-    return stripModelPreamble(raw)
+    return this.runStreamingRequest(request, operationId)
   }
 
-  async voiceEdit(text: string, command: string): Promise<string> {
+  async voiceEdit(text: string, command: string, operationId?: string): Promise<string> {
     const request = buildVoiceEditRequest({ model: this.options.modelId, text, command })
-    const raw = await this.enqueue(() => this.chatCompletion(request))
-    return stripModelPreamble(raw)
+    return this.runStreamingRequest(request, operationId)
+  }
+
+  /**
+   * Runs a chat-completions request to completion, optionally streaming
+   * throttled progress out via the 'text-stream-progress' event (see
+   * `onTextStreamProgress`) as the response arrives - used by
+   * cleanup/transform/voiceEdit, all of which share the same "rewrite this
+   * text" shape. Skips the throttled emitter entirely when no
+   * `operationId` is given (nothing is listening for it).
+   */
+  private async runStreamingRequest(
+    request: ChatCompletionRequestBody,
+    operationId?: string
+  ): Promise<string> {
+    if (!operationId) {
+      const raw = await this.enqueue(() => this.chatCompletion(request))
+      return stripModelPreamble(raw)
+    }
+
+    const throttled = new ThrottledTextEmitter({
+      intervalMs: this.streamThrottleMs,
+      emit: (text) => this.emitter.emit('text-stream-progress', operationId, text)
+    })
+    const raw = await this.enqueue(() =>
+      this.chatCompletion(request, (accumulated) => throttled.push(stripModelPreamble(accumulated)))
+    )
+    const text = stripModelPreamble(raw)
+    throttled.flush(text)
+    return text
   }
 
   /**
@@ -329,9 +412,15 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
    * Always requests `stream: true` (per the design's SSE-first approach)
    * but defensively falls back to parsing a plain JSON body if the server
    * doesn't actually stream (e.g. content-type isn't text/event-stream) -
-   * see litertWire.ts's guards.
+   * see litertWire.ts's guards. `onProgress`, if given, is called with the
+   * accumulated (not yet preamble-stripped) text after every SSE chunk -
+   * a no-op when the server falls back to the non-streaming JSON path,
+   * since there's nothing incremental to report there.
    */
-  private async chatCompletion(body: ChatCompletionRequestBody): Promise<string> {
+  private async chatCompletion(
+    body: ChatCompletionRequestBody,
+    onProgress?: (accumulatedText: string) => void
+  ): Promise<string> {
     const baseUrl = this.options.getBaseUrl()
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs)
@@ -376,13 +465,16 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
         return content
       }
 
-      return await this.readSSEStream(res)
+      return await this.readSSEStream(res, onProgress)
     } finally {
       clearTimeout(timer)
     }
   }
 
-  private async readSSEStream(res: Response): Promise<string> {
+  private async readSSEStream(
+    res: Response,
+    onProgress?: (accumulatedText: string) => void
+  ): Promise<string> {
     const reader = res.body!.getReader()
     const decoder = new TextDecoder()
     let buffered = ''
@@ -396,13 +488,18 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       const { events, remainder } = parseSSEBuffer(buffered)
       buffered = remainder
 
+      let changed = false
       for (const evt of events) {
         if (isStreamDone(evt.data)) continue
         const json = safeJsonParse(evt.data)
         if (json === null) continue // malformed chunk - skip, don't fail the whole stream
         const delta = extractDeltaFromChatCompletionChunk(json)
-        if (delta) full += delta
+        if (delta) {
+          full += delta
+          changed = true
+        }
       }
+      if (changed) onProgress?.(full)
     }
 
     return full

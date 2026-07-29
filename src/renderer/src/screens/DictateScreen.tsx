@@ -5,11 +5,13 @@ import { StatsBar } from '../components/StatsBar'
 import { VoiceEditBar } from '../components/VoiceEditBar'
 import { MicLevelMeter } from '../components/MicLevelMeter'
 import { CopyIcon } from '../components/Icons'
+import { DiffReveal } from '../components/DiffReveal'
 import './DictateScreen.css'
 
 const STATUS_LABEL: Record<UseDictationSession['phase'], string> = {
   idle: 'Tap to start dictating',
   recording: 'Listening…',
+  finalizing: 'Finishing up…',
   cleaning: 'Cleaning up…',
   ready: 'Ready',
   transforming: 'Transforming…'
@@ -20,6 +22,7 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
     phase,
     liveText,
     displayText,
+    rawTranscript,
     displayMode,
     stats,
     copyFlash,
@@ -27,6 +30,8 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
     sessionError,
     micLevel,
     noAudioDetected,
+    streamPreview,
+    reveal,
     toggleRecording,
     applyTransform,
     applyVoiceEdit,
@@ -35,8 +40,19 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
   } = session
 
   const recording = phase === 'recording'
-  const busy = phase === 'cleaning' || phase === 'transforming'
-  const shownText = recording ? liveText : displayText
+  const streamingLive = phase === 'recording' || phase === 'finalizing'
+  const busy = phase === 'cleaning' || phase === 'transforming' || phase === 'finalizing'
+  // While streaming (live audio, or a cleanup/transform rewrite), render
+  // updates immediately with no transition on the text itself - only the
+  // shimmer/caret below are animated.
+  const shownText = streamingLive
+    ? liveText
+    : phase === 'cleaning'
+      ? streamPreview || rawTranscript
+      : phase === 'transforming'
+        ? streamPreview || displayText
+        : displayText
+  const showCaret = streamingLive || phase === 'cleaning' || phase === 'transforming'
   const placeholder = recording
     ? 'Listening for speech…'
     : 'Your dictation will appear here. Press the microphone to begin.'
@@ -56,11 +72,7 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
       </header>
 
       <div className="dictate-screen__record">
-        <RecordButton
-          recording={recording}
-          disabled={phase === 'cleaning'}
-          onToggle={toggleRecording}
-        />
+        <RecordButton recording={recording} disabled={busy} onToggle={toggleRecording} />
       </div>
 
       {recording && <MicLevelMeter level={micLevel} />}
@@ -88,9 +100,26 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
           </button>
         </div>
         <div
-          className={`dictate-screen__transcript${shownText ? '' : ' dictate-screen__transcript--empty'}`}
+          className={[
+            'dictate-screen__transcript',
+            !shownText && !reveal && 'dictate-screen__transcript--empty',
+            (phase === 'cleaning' || phase === 'transforming') &&
+              !streamPreview &&
+              'dictate-screen__transcript--busy'
+          ]
+            .filter(Boolean)
+            .join(' ')}
         >
-          {shownText || placeholder}
+          {reveal ? (
+            <DiffReveal tokens={reveal} />
+          ) : shownText ? (
+            <>
+              {shownText}
+              {showCaret && <span className="stream-caret" aria-hidden="true" />}
+            </>
+          ) : (
+            placeholder
+          )}
         </div>
       </div>
 

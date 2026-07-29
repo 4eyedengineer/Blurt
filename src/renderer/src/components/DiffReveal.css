@@ -1,0 +1,35 @@
+/* See DiffReveal.tsx - `.diff-reveal--settling` is added shortly after
+   mount so the browser paints the initial (fully visible) diff before the
+   fade-out transition below starts. */
+
+.diff-reveal__delete {
+  color: var(--color-danger);
+  text-decoration: line-through;
+  opacity: 1;
+  transition: opacity 1.4s ease;
+}
+
+.diff-reveal__insert {
+  background: rgba(129, 201, 149, 0.28);
+  border-radius: 3px;
+  padding: 0 2px;
+  transition: background-color 1.4s ease;
+}
+
+.diff-reveal--settling .diff-reveal__delete {
+  opacity: 0;
+}
+
+.diff-reveal--settling .diff-reveal__insert {
+  background-color: transparent;
+}
+
+/* Compact (overlay pill) variant: single line, shorter fade to match the overlay's shorter reveal window. */
+.diff-reveal--compact {
+  white-space: nowrap;
+}
+
+.diff-reveal--compact .diff-reveal__delete,
+.diff-reveal--compact .diff-reveal__insert {
+  transition-duration: 1s;
+}
