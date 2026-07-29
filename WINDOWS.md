@@ -29,10 +29,15 @@ execution is locked down on your machine) and it will:
   `%LOCALAPPDATA%\WindowsEloquent`, a sibling of `app`, untouched by the sync). If instead your
   checkout is already on a real Windows drive (e.g. you `git clone`d directly onto `C:\...` rather
   than developing through WSL), it skips the mirror step entirely and bootstraps in place.
-- install Python 3.12 and Node.js LTS via `winget` if either is missing
+- install Python 3.12 via `winget` if missing
+- install/upgrade Node.js via `winget` to satisfy the **Node >= 20.19 (or >= 22.12) requirement**
+  below - see "Node.js version requirement" for why this specific floor and what the script does
+  about it, both on a fresh machine and on a machine that already has a too-old Node
 - create a `litert-lm` venv under `%LOCALAPPDATA%\WindowsEloquent\venv` and `pip install litert-lm`
   into it (skips this if already done)
-- `npm install` if `node_modules` is missing (in the working copy above)
+- `npm install` if `node_modules` is missing, or if it was last installed with a different Node
+  version than the one this run resolved (in the working copy above; see "Node.js version
+  requirement" below)
 - download + import the Gemma E2B model into the app's own model store if it isn't there yet
   (reusing an existing local copy instead of re-downloading ~2.4 GiB, if one is found)
 - seed an initial `settings.json` with the real LiteRT-LM backend already enabled - **only** on the
@@ -41,6 +46,38 @@ execution is locked down on your machine) and it will:
 
 Re-running it is safe: every step checks what's already done and skips it - including the
 robocopy sync, which just re-mirrors whatever changed.
+
+### Node.js version requirement
+
+This project needs **Node.js >= 20.19.0, or >= 22.12.0** - not just "any recent Node." That's
+Vite's own `engines` requirement (`node_modules/vite/package.json` once installed), and it's a hard
+requirement, not a soft recommendation: Vite's config loader calls the Node built-in
+`crypto.hash()`, which was added in Node 21.7.0 and backported to 20.12.0. Anything in the
+20.12-20.18 or 21.0-21.6 ranges either lacks `crypto.hash()` entirely or fails Vite's own engines
+check, and `npm run dev` dies immediately on startup with:
+
+```
+TypeError: crypto.hash is not a function
+    at getHash (.../node_modules/vite/dist/node/chunks/config.js:...)
+```
+
+`Start-Eloquent.ps1` checks the resolved Node's version **on every run** (not just the first) and,
+if it's missing or too old, runs `winget install -e --id OpenJS.NodeJS.LTS` to install/upgrade it
+in place, then re-resolves `node.exe`/`npm.cmd` directly (refreshing this process's `PATH` from the
+machine+user registry, since a just-completed `winget install` doesn't update an already-running
+shell's `PATH`) rather than trusting a possibly-stale `PATH` lookup. If that still can't find a
+new-enough Node afterward (e.g. an older install shadowing the new one earlier on `PATH`), it prints
+an error and asks you to close the window and re-run in a fresh terminal.
+
+Because a stale-Node `npm install` can leave `node_modules` resolved/built against the wrong
+engines/ABI, the script also stamps the Node major.minor version used for the last successful `npm
+install` in a `.node-version-stamp` file next to `node_modules`, and re-runs `npm install`
+automatically whenever the detected Node version no longer matches that stamp (including the first
+time this check runs against a pre-existing `node_modules` with no stamp yet at all) - not just when
+`node_modules` is missing outright.
+
+Set `$env:ELOQUENT_DRYRUN` (see below) to check what Node the script would use/install without
+actually installing/upgrading anything.
 
 Why the mirroring step exists at all: a Windows-native `npm`/`node`/Electron cannot run against a
 `node_modules` tree that was `npm install`ed on Linux (native addons, the Electron binary itself -
@@ -186,6 +223,10 @@ Open the app's **Settings** tab and set:
     coincidence if you also passed `--port 8765` yourself).
 
 ## 5. Run in dev (`npm run dev`)
+
+Requires **Node.js >= 20.19.0, or >= 22.12.0** - see "Node.js version requirement" above for why;
+`run-windows.bat`/`Start-Eloquent.ps1` check and auto-upgrade this for you, but if you're running
+these commands by hand, confirm with `node --version` first.
 
 ```powershell
 npm install
@@ -333,6 +374,9 @@ needs to provide, exactly as described in steps 1-3 above.
       "Quick start: one-click launcher" above - it mirrors a UNC/WSL checkout to a local working
       copy automatically; skim it before your first run)
 - [ ] `winget install -e --id Python.Python.3.12` (or any 3.10+)
+- [ ] `winget install -e --id OpenJS.NodeJS.LTS` and confirm `node --version` is >= 20.19.0 (or
+      >= 22.12.0) - see "Node.js version requirement" above; `run-windows.bat` does this for you
+      automatically, including upgrading an existing too-old Node in place
 - [ ] `pip install litert-lm`
 - [ ] `litert-lm import --from-huggingface-repo litert-community/gemma-4-12B-it-litert-lm gemma-4-12B-it.litertlm 12b` (or e2b/e4b)
 - [ ] App Settings: Backend = LiteRT-LM, Model = the one you imported, Sidecar mode = Managed, Port = 9379

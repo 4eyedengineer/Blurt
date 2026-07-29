@@ -38,9 +38,14 @@
 #   0. resolve the source location; if it's on a UNC/WSL path (or a drive
 #      mapped to one), mirror it to a local working copy with robocopy /MIR
 #   1. Python 3.10+ (winget install if missing)
-#   2. Node.js LTS (winget install if missing)
+#   2. Node.js >= 20.19 (or >= 22.12) - winget install if missing, winget
+#      upgrade-in-place if an older Node is found (checked on every run, not
+#      just the first - see the big Node comment below for why this specific
+#      floor matters)
 #   3. a venv under %LOCALAPPDATA%\WindowsEloquent\venv with `litert-lm` pip-installed
-#   4. npm install (if node_modules is missing), in the local working copy
+#   4. npm install (if node_modules is missing, or if it was last installed
+#      with a different Node version - see the `.node-version-stamp` file),
+#      in the local working copy
 #   5. the Gemma E2B .litertlm file in the app's own model store
 #      (reusing any already-downloaded copy instead of re-pulling ~2.4 GiB)
 #   6. an initial settings.json enabling the real LiteRT-LM backend, but only
@@ -96,6 +101,75 @@ function Test-IsRemoteSource([string]$path) {
     return $false
 }
 
+# Vite (a dependency of this project, via electron-vite) requires Node
+# ^20.19.0 || >=22.12.0 - see node_modules/vite/package.json "engines" once
+# installed. That specific floor matters, not just "recent Node": Vite's
+# config loader calls the Node built-in crypto.hash(), which was added in
+# Node 21.7.0 and backported to 20.12.0 - so anything from 20.12-20.18 or
+# 21.0-21.6 either lacks crypto.hash entirely (a hard crash: "TypeError:
+# crypto.hash is not a function") or fails Vite's own engines check. This
+# project's own root package.json has no "engines" field of its own as of
+# this writing, so this floor (taken from Vite's) is what we enforce.
+$NodeFloorMajorMinor    = '20.19'
+$NodeAltFloorMajorMinor = '22.12'
+
+function Get-NodeVersion([string]$nodeExePath) {
+    if (-not $nodeExePath) { return $null }
+    try {
+        $out = & $nodeExePath --version 2>$null
+        if (-not $out) { return $null }
+        $trimmed = ($out | Select-Object -First 1).ToString().Trim().TrimStart('v')
+        return [version]$trimmed
+    } catch {
+        return $null
+    }
+}
+
+function Test-NodeVersionOk([version]$ver) {
+    if (-not $ver) { return $false }
+    if ($ver.Major -gt 22) { return $true }
+    if ($ver.Major -eq 22) { return $ver.Minor -ge 12 }
+    if ($ver.Major -eq 20) { return $ver.Minor -ge 19 }
+    return $false
+}
+
+function Resolve-NodeExe {
+    # Prefer whatever's actually on PATH right now; fall back to the
+    # standard per-machine install location, since a just-completed winget
+    # install may not be visible on this process's PATH yet even after a
+    # refresh from the registry (e.g. if winget wrote a slightly different
+    # PATH entry, or the refresh raced the installer's own PATH update).
+    $cmd = Get-Command node.exe -ErrorAction SilentlyContinue
+    if (-not $cmd) { $cmd = Get-Command node -ErrorAction SilentlyContinue }
+    if ($cmd) { return $cmd.Source }
+    $guess = Join-Path $env:ProgramFiles 'nodejs\node.exe'
+    if (Test-Path $guess) { return $guess }
+    return $null
+}
+
+function Resolve-NpmCmd([string]$nodeExePath) {
+    # npm rides along with node - it should be right next to node.exe. Only
+    # fall back to PATH lookup if that's somehow not the case.
+    if ($nodeExePath) {
+        $guess = Join-Path (Split-Path $nodeExePath -Parent) 'npm.cmd'
+        if (Test-Path $guess) { return $guess }
+    }
+    $cmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $cmd) { $cmd = Get-Command npm -ErrorAction SilentlyContinue }
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+function Update-SessionPathFromRegistry {
+    # winget updates the machine/user PATH in the registry, but this
+    # process's own $env:Path won't see it until a new shell/process -
+    # refresh it directly from the registry instead of relying on that, so a
+    # same-session continue (no "close and reopen the window") can work.
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $userPath    = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = "$machinePath;$userPath;$env:Path"
+}
+
 $DryRun = -not [string]::IsNullOrEmpty($env:ELOQUENT_DRYRUN) -and $env:ELOQUENT_DRYRUN -ne '0'
 
 # The true source location of this script (and the rest of the repo next to
@@ -144,6 +218,12 @@ if ($IsRemoteSource) {
     Write-Ok "only >=8 is a real failure - see 'robocopy /?' or Microsoft's docs."
 }
 
+# Detect Node.js (read-only - no installs/upgrades here) up front so the
+# dry-run report below can show it too, not just the path-resolution logic.
+$NodeExe   = Resolve-NodeExe
+$NodeVer   = Get-NodeVersion $NodeExe
+$NodeVerOk = Test-NodeVersionOk $NodeVer
+
 if ($DryRun) {
     Write-Step "ELOQUENT_DRYRUN is set - stopping here"
     Write-Ok "Resolved paths:"
@@ -152,6 +232,17 @@ if ($DryRun) {
     Write-Ok "  Runtime base      : $RuntimeBase"
     Write-Ok "  Venv dir          : $VenvDir"
     Write-Ok "  App user data dir : $AppUserDataDir"
+    $NodeDetected = if ($NodeExe) { "$NodeExe (v$NodeVer)" } else { "NOT FOUND" }
+    $NodeVerdict = if ($NodeVerOk) {
+        "OK"
+    } elseif ($NodeExe) {
+        "TOO OLD - would upgrade in place via 'winget install -e --id OpenJS.NodeJS.LTS'"
+    } else {
+        "MISSING - would install via 'winget install -e --id OpenJS.NodeJS.LTS'"
+    }
+    Write-Ok "  Node.js required  : >= $NodeFloorMajorMinor or >= $NodeAltFloorMajorMinor (Vite's own engines requirement)"
+    Write-Ok "  Node.js detected  : $NodeDetected"
+    Write-Ok "  Node version check: $NodeVerdict"
     Write-Ok "No winget/npm/pip/model/settings/dev-server actions were taken."
     exit 0
 }
@@ -226,29 +317,71 @@ if (-not $PythonExe) {
 $pyVer = (& $PythonExe --version)
 Write-Ok "Using $PythonExe ($pyVer)"
 
-# --- 2. Node.js ------------------------------------------------------------
-Write-Step "Checking for Node.js"
-$NodeCmd = Get-Command node -ErrorAction SilentlyContinue
-if (-not $NodeCmd) {
-    if ($HaveWinget) {
-        Write-Ok "Node.js not found - installing via winget (LTS)..."
-        winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
-        $guess = Join-Path $env:ProgramFiles 'nodejs'
-        if (Test-Path (Join-Path $guess 'node.exe')) {
-            $env:Path = "$guess;$env:Path"
-        } else {
-            Write-Warn "Installed Node via winget, but couldn't find it on the expected path."
-            Write-Warn "Close this window, open a NEW terminal, and re-run this script."
-            exit 1
-        }
+# --- 2. Node.js (>= $NodeFloorMajorMinor / $NodeAltFloorMajorMinor) --------
+# A too-old Node here is exactly the failure mode this check exists to
+# catch: `npm run dev` bootstraps fine (node/npm just need to exist), but
+# Vite's config loader then dies with "TypeError: crypto.hash is not a
+# function" the moment it starts - see the big comment near the top of this
+# file for why 20.19/22.12 specifically. This must be re-checked on every
+# run (not just when Node is first installed), since a machine can have an
+# old Node sitting on PATH from before this check existed.
+Write-Step "Checking for Node.js >= $NodeFloorMajorMinor (or >= $NodeAltFloorMajorMinor)"
+
+if ($NodeExe -and $NodeVerOk) {
+    Write-Ok "Found $NodeExe (v$NodeVer) - OK"
+} else {
+    if ($NodeExe -and $NodeVer) {
+        Write-Warn "Found Node v$NodeVer at $NodeExe, but this project needs >= $NodeFloorMajorMinor (or >= $NodeAltFloorMajorMinor)."
+        Write-Warn "(Vite's config loader uses crypto.hash(), added in Node 21.7 / backported to 20.12, and Vite's own"
+        Write-Warn "package.json 'engines' field additionally requires >= 20.19 specifically - see WINDOWS.md.)"
+    } elseif ($NodeExe -and -not $NodeVer) {
+        Write-Warn "Found $NodeExe but couldn't determine its version - treating as too old to trust."
     } else {
-        Write-Host "ERROR: Node.js is required and winget isn't available to install it." -ForegroundColor Red
+        Write-Warn "Node.js not found."
+    }
+
+    if (-not $HaveWinget) {
+        Write-Host "ERROR: Node.js >= $NodeFloorMajorMinor (or >= $NodeAltFloorMajorMinor) is required and winget isn't available to install/upgrade it." -ForegroundColor Red
         Write-Host "  Install it manually from https://nodejs.org/ (LTS), then re-run this script." -ForegroundColor Red
         exit 1
     }
-} else {
-    Write-Ok "Found $($NodeCmd.Source) ($(node --version))"
+
+    $verb = if ($NodeExe) { "Upgrading" } else { "Installing" }
+    Write-Ok "$verb Node.js via winget (OpenJS.NodeJS.LTS) - this upgrades an existing too-old install in place..."
+    winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
+
+    Update-SessionPathFromRegistry
+    $NodeExe = Resolve-NodeExe
+    $NodeVer = Get-NodeVersion $NodeExe
+    $NodeVerOk = Test-NodeVersionOk $NodeVer
+
+    if (-not $NodeExe) {
+        Write-Host "ERROR: winget reported installing/upgrading Node.js, but node.exe still can't be found," -ForegroundColor Red
+        Write-Host "  even after refreshing PATH from the registry and probing '$env:ProgramFiles\nodejs'." -ForegroundColor Red
+        Write-Host "  Close this window, open a NEW terminal, and double-click run-windows.bat again." -ForegroundColor Red
+        exit 1
+    }
+    if (-not $NodeVerOk) {
+        Write-Host "ERROR: after installing/upgrading via winget, Node is still v$NodeVer at $NodeExe" -ForegroundColor Red
+        Write-Host "  (needs >= $NodeFloorMajorMinor or >= $NodeAltFloorMajorMinor). This can happen if an older Node install" -ForegroundColor Red
+        Write-Host "  earlier on PATH is shadowing the new one, or the winget upgrade didn't take." -ForegroundColor Red
+        Write-Host "  Close this window, open a NEW terminal, and double-click run-windows.bat again; if that still fails," -ForegroundColor Red
+        Write-Host "  uninstall old Node.js versions manually (Settings > Apps) and re-run." -ForegroundColor Red
+        exit 1
+    }
+    Write-Ok "Now using $NodeExe (v$NodeVer)"
 }
+
+# npm rides with node - re-resolve it alongside whichever node.exe we ended
+# up with above (same reasoning as node itself: don't trust a possibly-stale
+# PATH, resolve explicitly and use full paths for every invocation below).
+$NpmCmd = Resolve-NpmCmd $NodeExe
+if (-not $NpmCmd) {
+    Write-Host "ERROR: found node.exe at $NodeExe but couldn't find npm(.cmd) alongside it or on PATH." -ForegroundColor Red
+    exit 1
+}
+Write-Ok "Using npm at $NpmCmd"
+$NodeMajorMinor = "$($NodeVer.Major).$($NodeVer.Minor)"
 
 # --- 3. Persistent venv + litert-lm --------------------------------------
 Write-Step "Checking litert-lm venv ($VenvDir)"
@@ -275,11 +408,45 @@ $env:Path = "$(Join-Path $VenvDir 'Scripts');$env:Path"
 
 # --- 4. npm install --------------------------------------------------------
 Write-Step "Checking Node dependencies (in $RepoRoot)"
-if (-not (Test-Path (Join-Path $RepoRoot 'node_modules'))) {
+$NodeModulesDir = Join-Path $RepoRoot 'node_modules'
+# Stamps the major.minor Node version used for the last successful `npm
+# install`, next to node_modules. If a stale-Node install already ran (the
+# bug this whole version check exists for: npm install completing "fine" on
+# an old Node, then Vite dying at dev-server startup), the deps on disk may
+# have been resolved/built against the wrong engines/ABI - so a Node version
+# change (including "no stamp yet", which covers exactly that prior-bug
+# case) forces one re-install rather than trusting the existing node_modules.
+$NodeVersionStampFile = Join-Path $RepoRoot '.node-version-stamp'
+$StampedNodeVersion = $null
+if (Test-Path $NodeVersionStampFile) {
+    $StampedNodeVersion = (Get-Content -Path $NodeVersionStampFile -Raw -ErrorAction SilentlyContinue)
+    if ($StampedNodeVersion) { $StampedNodeVersion = $StampedNodeVersion.Trim() }
+}
+
+$NeedsNpmInstall = $false
+if (-not (Test-Path $NodeModulesDir)) {
     Write-Ok "node_modules missing - running npm install (this may take a minute)"
-    npm install
+    $NeedsNpmInstall = $true
+} elseif ($StampedNodeVersion -ne $NodeMajorMinor) {
+    if ($StampedNodeVersion) {
+        Write-Warn "node_modules was last installed with Node $StampedNodeVersion, but this run is using Node $NodeMajorMinor."
+    } else {
+        Write-Warn "node_modules exists but predates this script's Node-version tracking (no stamp file)."
+    }
+    Write-Warn "Re-running npm install to avoid stale-Node engine/ABI mismatches."
+    $NeedsNpmInstall = $true
 } else {
-    Write-Ok "node_modules already present - skipping npm install"
+    Write-Ok "node_modules already present and matches Node $NodeMajorMinor - skipping npm install"
+}
+
+if ($NeedsNpmInstall) {
+    & $NpmCmd install
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: npm install failed (exit code $LASTEXITCODE)." -ForegroundColor Red
+        exit 1
+    }
+    Set-Content -Path $NodeVersionStampFile -Value $NodeMajorMinor -Encoding UTF8 -NoNewline
+    Write-Ok "Stamped $NodeVersionStampFile with Node $NodeMajorMinor"
 }
 
 # --- 5. Model file in the app's own model store --------------------------
@@ -344,4 +511,4 @@ Write-Ok "Once you've run 'npm run build' + 'npm run build:win', you can instead
 Write-Ok "installer/portable exe from .\dist\ directly - see electron-builder.yml / package.json."
 Write-Ok "Working directory: $RepoRoot"
 Write-Ok "Starting 'npm run dev' - close the app window (or Ctrl+C here) to stop."
-npm run dev
+& $NpmCmd run dev
