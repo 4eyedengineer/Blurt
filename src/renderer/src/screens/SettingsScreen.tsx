@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import type { ModelId, SidecarMode } from '@shared/types'
+import { useEffect, useState } from 'react'
+import type { ModelId, PushToTalkStatus, SidecarMode } from '@shared/types'
+import { PTT_KEY_OPTIONS } from '@shared/types'
 import type { ModelDownloadState } from '@shared/models'
 import { getCatalogEntry } from '@shared/models'
 import { useSettings } from '../context/SettingsContext'
@@ -125,6 +126,17 @@ export function SettingsScreen(): React.JSX.Element {
   const [vocabInput, setVocabInput] = useState('')
   const [hotkeyInput, setHotkeyInput] = useState(settings.hotkey)
   const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus>('idle')
+  const [pttStatus, setPttStatus] = useState<PushToTalkStatus | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.pushToTalk.getStatus().then((status) => {
+      if (!cancelled) setPttStatus(status)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Keep the hotkey field in sync with settings loaded/changed elsewhere,
   // without a setState-in-effect: adjust during render (React's recommended
@@ -362,6 +374,93 @@ export function SettingsScreen(): React.JSX.Element {
             <li className="settings-screen__vocab-empty">No custom words yet.</li>
           )}
         </ul>
+      </div>
+
+      <div className="settings-screen__group">
+        <h2>Push to talk</h2>
+        <p className="settings-screen__hint">
+          Hold a key anywhere to show a small floating toolbar and dictate - releasing it cleans up
+          the text, copies it to your clipboard, and (if enabled) pastes it into whatever
+          application currently has focus. Modeled on the macOS Eloquent app&apos;s system-wide
+          flow.
+        </p>
+
+        {pttStatus && !pttStatus.available && (
+          <p className="settings-screen__status settings-screen__status--error">
+            Not available on this machine: {pttStatus.reason ?? 'unknown error'}. Push-to-talk will
+            stay off no matter what&apos;s set below.
+          </p>
+        )}
+        {pttStatus?.isWSL && (
+          <p className="settings-screen__hint">
+            Running under WSL: the key hook only sees keys while an X11/WSLg window is focused
+            (native Windows apps are invisible to it), and paste-injection only reaches X apps - see
+            README &quot;Known limitations&quot; for the full story. True system-wide push-to-talk
+            into arbitrary Windows apps needs the app running natively on Windows.
+          </p>
+        )}
+        {pttStatus?.platform === 'linux' && pttStatus.xdotoolAvailable === false && (
+          <p className="settings-screen__hint">
+            <code>xdotool</code> wasn&apos;t found on PATH - auto-paste will fall back to
+            clipboard-only (install <code>xdotool</code> to enable it here).
+          </p>
+        )}
+
+        <label className="settings-screen__toggle-row">
+          <span>
+            <strong>Enable push to talk</strong>
+            <p className="settings-screen__hint">Hold the key below anywhere to dictate.</p>
+          </span>
+          <Toggle
+            checked={settings.pushToTalk.enabled}
+            onChange={(checked) =>
+              void update({ pushToTalk: { ...settings.pushToTalk, enabled: checked } })
+            }
+            label="Enable push to talk"
+          />
+        </label>
+
+        <p className="settings-screen__field-label">Key</p>
+        <div className="settings-screen__radio-group">
+          {PTT_KEY_OPTIONS.map((opt) => (
+            <label key={opt.id} className="settings-screen__radio">
+              <input
+                type="radio"
+                name="ptt-key"
+                checked={settings.pushToTalk.key === opt.id}
+                onChange={() =>
+                  void update({ pushToTalk: { ...settings.pushToTalk, key: opt.id } })
+                }
+              />
+              <div>
+                <span className="settings-screen__radio-title">{opt.label}</span>
+                {opt.id === 'AltRight' && (
+                  <span className="settings-screen__radio-desc">
+                    Note: this is the &quot;AltGr&quot; key on many non-US keyboard layouts - pick a
+                    different key below if you use it to type special characters.
+                  </span>
+                )}
+              </div>
+            </label>
+          ))}
+        </div>
+
+        <label className="settings-screen__toggle-row">
+          <span>
+            <strong>Auto-paste</strong>
+            <p className="settings-screen__hint">
+              Simulate Ctrl+V into the focused app after copying. Turn off to only copy to the
+              clipboard.
+            </p>
+          </span>
+          <Toggle
+            checked={settings.pushToTalk.autoPaste}
+            onChange={(checked) =>
+              void update({ pushToTalk: { ...settings.pushToTalk, autoPaste: checked } })
+            }
+            label="Auto-paste"
+          />
+        </label>
       </div>
 
       <div className="settings-screen__group">

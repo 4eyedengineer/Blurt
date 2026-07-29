@@ -47,6 +47,8 @@ was and wasn't verified); please report back anything that doesn't match.
   `src/renderer/src/assets`
 - **electron-builder** configured for a Windows NSIS installer + portable exe (config only; not
   run in this environment)
+- **uiohook-napi** for the optional system-wide push-to-talk key hook (main process only) - see
+  [Push-to-talk overlay](#push-to-talk-overlay-system-wide-hold-to-talk) below
 
 ## Project layout
 
@@ -63,6 +65,16 @@ src/
     index.ts                  App bootstrap: creates the window, wires backend controller +
                                model manager + stores + IPC, registers the global hotkey
     hotkey.ts                  globalShortcut register/unregister helper
+    overlay.ts                 Creates/positions the push-to-talk overlay BrowserWindow
+    overlayController.ts       State machine: PushToTalkController events -> overlay IPC ->
+                               clipboard/paste injection - see Push-to-talk overlay below
+    paste.ts                   clipboard.writeText + platform-specific Ctrl+V injection
+    wsl.ts                      /proc/version-based WSL detection (explains PTT limitations)
+    pushToTalk/
+      keyMap.ts                 Key-id <-> uiohook keycode table, debounce predicate (pure)
+      uiohookLoader.ts           Defensive `require('uiohook-napi')` - never throws
+      pushToTalkController.ts    Wraps uiohook keydown/keyup into hold-start/hold-end/
+                                 accidental-tap events
     backend/
       mockBackend.ts           MockBackend: canned-script InferenceBackend, no real model
       textOps.ts                cleanup / transform / voiceEdit text logic used by MockBackend
@@ -86,10 +98,11 @@ src/
       settingsIpc.ts               Wires SettingsStore <-> ipcMain (+ re-registers hotkey,
                                    triggers a backend rebuild on backend-relevant changes)
       modelManagerIpc.ts           Wires ModelManager (list/download/cancel/remove) <-> ipcMain
+      pushToTalkIpc.ts             Exposes PushToTalkStatus (available/reason/isWSL/xdotool) to Settings
 
   preload/                  contextBridge boundary
     index.ts                  Exposes a typed `window.api` (dictation / history / settings /
-                               hotkey / models)
+                               hotkey / models / pushToTalk / overlay)
     index.d.ts                 Global Window typing for `window.api`
 
   renderer/                 The React app
@@ -98,6 +111,8 @@ src/
                                  see comments in the file for why it's not bundled)
     src/
       App.tsx                   Tab shell (Dictate / History / Settings)
+      main.tsx                   Renderer entry point - also routes to OverlayApp when loaded
+                                 with a `#overlay` hash (see Push-to-talk overlay below)
       context/SettingsContext.tsx
       hooks/
         useAudioCapture.ts       Mic capture: AudioWorklet 16kHz PCM16, MediaRecorder/webm fallback
@@ -106,7 +121,11 @@ src/
         useModelManager.ts       Drives the Settings screen's model download UI
       screens/                 DictateScreen, HistoryScreen, SettingsScreen
       components/              RecordButton, TransformBar, StatsBar, VoiceEditBar, Sidebar,
-                               StatusPill, Toggle, Icons
+                               StatusPill, Toggle, Icons, MicLevelMeter
+      overlay/                 Push-to-talk overlay window's React tree (loaded via `#overlay`)
+        overlayState.ts          Pure phase reducer (idle/recording/cleaning/done) - unit-tested
+        useOverlayPushToTalk.ts  Wires main-process ptt-* IPC to useAudioCapture + dictation IPC
+        OverlayApp.tsx           The pill itself: dot, mic level, live/final transcript, status
       lib/                     format.ts (word count / WPM / byte formatting), clipboard.ts
 ```
 
@@ -425,6 +444,117 @@ Gemma-4 inference through a GPU today regardless of host OS.
 5. **Backend status pill** - a small pill at the bottom of the sidebar showing the active
    backend's connectivity state (mock / starting / ready / error, with the error message as a
    tooltip), fed by `useBackendStatus` (`src/renderer/src/hooks/useBackendStatus.ts`).
+6. **Push-to-talk overlay** - hold a configurable key (default Right Alt) anywhere to pop up a
+   small always-on-top toolbar and dictate; release to clean up, copy, and (optionally)
+   auto-paste into whatever app had focus. See
+   [Push-to-talk overlay](#push-to-talk-overlay-system-wide-hold-to-talk) below - **and its "Known
+   limitations" subsection in particular** before relying on this under WSL.
+
+## Push-to-talk overlay (system-wide hold-to-talk)
+
+Modeled on the macOS Eloquent app's system-wide dictation flow: hold a key anywhere (not just
+while this app's window is focused) to start dictating into a small floating pill, release to stop.
+
+**Flow:** hold key down -> pill appears bottom-center of the primary display, live transcript
+streams in -> release key -> pill shows "Cleaning up…" -> cleanup pass runs -> cleaned text is
+always copied to the clipboard, then (if enabled) pasted into whichever app currently has OS focus
+via a simulated Ctrl+V -> pill shows the final text + "Copied ✓" / "Pasted ✓" -> fades out after
+~2.5s. A hold shorter than 250ms is treated as an accidental tap and silently discarded (no
+cleanup/copy/paste, pill disappears almost immediately) - this also absorbs OS key-repeat, which
+sends many keydown events for one physical press.
+
+**Architecture:**
+
+```
+uiohook-napi (global keydown/keyup, main process only)
+        │
+        ▼
+PushToTalkController (src/main/pushToTalk/pushToTalkController.ts)
+  - collapses key-repeat into one hold-start per physical press
+  - <250ms hold -> 'accidental-tap'; otherwise -> 'hold-start' / 'hold-end'
+  - entirely optional: if uiohook-napi fails to load, `getAvailability().available` is false and
+    the controller is a permanent no-op (see "Known limitations" below)
+        │
+        ▼
+OverlayController (src/main/overlayController.ts)
+  - shows/positions the overlay window (src/main/overlay.ts) on hold-start
+  - sends 'overlay:ptt-start' / 'overlay:ptt-stop' / 'overlay:ptt-cancel' IPC to it
+  - on the overlay renderer's 'overlay:result' (cleaned text), calls paste.ts, then sends back
+    'overlay:paste-status' and schedules the ~2.5s auto-hide ('overlay:reset')
+        │
+        ▼
+Overlay window's own renderer (src/renderer/src/overlay/*, loaded via a `#overlay` hash route on
+the exact same renderer bundle the main window uses - no separate build target)
+  - useOverlayPushToTalk.ts calls window.api.dictation.startSession/pushAudio/endSession/cleanup -
+    the *same* IPC surface (src/main/ipc/backendIpc.ts) the main Dictate screen uses, so there is
+    exactly one place that talks to the active InferenceBackend
+  - reuses useAudioCapture (src/renderer/src/hooks/useAudioCapture.ts) unmodified for mic capture
+    and live level metering - getUserMedia doesn't require window focus, and no
+    setPermissionRequestHandler is registered anywhere in main/index.ts, so there's nothing
+    blocking a non-focused window's webContents from requesting the microphone either
+```
+
+The overlay `BrowserWindow` (`src/main/overlay.ts`) is frameless, transparent, `skipTaskbar`,
+`alwaysOnTop` at the `'screen-saver'` level, `resizable: false`, and critically **`focusable:
+false`, shown only via `showInactive()`** - this is what makes the later simulated Ctrl+V land in
+the app the user was actually dictating into instead of the pill itself.
+
+**Paste injection** (`src/main/paste.ts`) is platform-specific and always copies to the clipboard
+first regardless of whether injection succeeds:
+
+| Platform | Mechanism |
+|---|---|
+| Windows | Spawns `powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')"` |
+| macOS | `osascript -e 'tell application "System Events" to keystroke "v" using command down'` |
+| Linux | `xdotool key --clearmodifiers ctrl+v`, only if `xdotool` is found on `PATH` (probed once, cached) |
+
+Because the user is still physically releasing the push-to-talk key when this runs, a naive paste
+could be received as e.g. Ctrl+Alt+V if that key were still logically "down" - mitigated with a
+150ms settle delay after the real uiohook keyup event before injecting anything, plus
+`--clearmodifiers` on the `xdotool` path. If injection is unavailable or fails for any reason, the
+app falls back to clipboard-only and the pill shows "Copied — press Ctrl+V to paste" instead of
+"Pasted ✓".
+
+**Settings** ("Push to talk" section): enable/disable, key picker (Right Alt / Right Ctrl / F9 -
+`PTT_KEY_OPTIONS` in `src/shared/types.ts`), and an auto-paste toggle (clipboard-only vs.
+clipboard + simulated paste). If the native key hook failed to load, Settings explains why instead
+of the feature silently doing nothing.
+
+### Known limitations
+
+- **The native key hook (`uiohook-napi`) may not load at all on some machines.** Verified
+  empirically in this project's own dev container: it ships prebuilt N-API binaries (no
+  `electron-rebuild` needed in principle), but the `linux-x64` prebuild requires glibc >= 2.34,
+  and this container has glibc 2.31 - `require('uiohook-napi')` throws
+  `ERR_DLOPEN_FAILED: ... GLIBC_2.34 not found`, reproduced identically under Electron's own
+  bundled Node. The app handles this the same way it handles a missing/failed LiteRT-LM sidecar:
+  push-to-talk is entirely optional, `PushToTalkController.getAvailability()` is checked before
+  ever starting the OS hook, and Settings surfaces the exact error instead of the feature just
+  doing nothing. Separately, `electron-builder install-app-deps` (this project's `postinstall`)
+  always attempts a from-source rebuild of native deps regardless of `npmRebuild` in
+  `electron-builder.yml` (that setting only affects the `build`/`pack` commands) - in this same
+  container that rebuild fails too (`X11/extensions/record.h: No such file or directory` - the
+  X11 dev headers aren't installed), so `postinstall` tolerates a failed rebuild
+  (`|| echo ...`) rather than breaking `npm install` outright, since the rebuild isn't actually
+  needed for N-API modules on a properly-matched host anyway.
+- **Under WSL/WSLg specifically, this feature cannot be truly system-wide.** `uiohook-napi`'s
+  Linux backend hooks X11's RECORD extension - it only observes keys while an X11/WSLg-hosted
+  window has input focus. Keystrokes typed into native Windows applications (anything not running
+  inside the WSL/WSLg X server) are invisible to it. Likewise, `xdotool`'s paste injection can only
+  target X11 windows, so even if the key hook fired, there'd be nothing to paste into for a native
+  Windows app. Practically: under WSL, push-to-talk only works while dictating into an
+  X11/WSLg-hosted app (including this Electron app's own window); **true system-wide push-to-talk
+  into arbitrary native Windows applications requires running the app natively on Windows** (see
+  [WINDOWS.md](WINDOWS.md)), where `uiohook-napi`'s Win32 backend and the SendKeys-based paste
+  injection are both genuinely global. Settings shows a muted hint explaining this whenever
+  `/proc/version` indicates WSL (`src/main/wsl.ts`).
+- Right Alt (the default key) is the "AltGr" key on many non-US keyboard layouts, used to type
+  accented/special characters - Settings notes this next to the Right Alt option so affected users
+  know to pick Right Ctrl or F9 instead (or just disable the feature).
+- `xdotool` was not installed in this project's dev container, so the Linux paste-injection path
+  itself (as opposed to the key hook) could not be exercised live here either - `checkXdotoolAvailable()`
+  correctly reports it missing and the app falls back to clipboard-only, but this is worth a real
+  test on a Linux box that has it installed.
 
 ## Local storage
 
@@ -433,7 +563,8 @@ Under Electron's `app.getPath('userData')` (on Windows, typically `%APPDATA%/win
 - `history.json` - array of `DictationEntry` (raw transcript, cleaned text, current display text,
   which transform (if any) produced it, word count, duration, WPM, timestamp)
 - `settings.json` - the `Settings` object (backend selection, model id, sidecar config,
-  offline/cloud mode, auto-copy, custom vocabulary, hotkey accelerator)
+  offline/cloud mode, auto-copy, custom vocabulary, hotkey accelerator, push-to-talk
+  enable/key/auto-paste)
 - `models/<modelId>.litertlm` - downloaded model files (see [Model downloads](#model-downloads));
   `models/<modelId>.litertlm.part` for an in-progress or interrupted download
 
@@ -445,7 +576,9 @@ npm run dev          # electron-vite dev server + Electron, with HMR
 npm run typecheck    # tsc --noEmit for both the node (main/preload) and web (renderer) tsconfigs
 npm run lint          # eslint (flat config, includes prettier + react-hooks rules)
 npm test               # vitest - unit tests for litertWire.ts (request/response/SSE parsing,
-                       # WAV encoding) and sidecar.ts's command templating, all pure functions
+                       # WAV encoding), sidecar.ts's command templating, push-to-talk's key-map/
+                       # debounce/controller/WSL-detection/paste-command logic, and the overlay's
+                       # phase reducer - all pure or dependency-injected, no native module needed
 npm run build         # typecheck, then electron-vite build (main + preload + renderer)
 npm run build:win     # build, then electron-builder --win (NSIS + portable) - not run in CI/dev
                        # containers without Windows/Wine; config lives in electron-builder.yml

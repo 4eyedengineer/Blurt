@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, globalShortcut } from 'electron'
+import { app, shell, BrowserWindow, globalShortcut, ipcMain } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -11,9 +11,15 @@ import { registerBackendIpc } from './ipc/backendIpc'
 import { registerHistoryIpc } from './ipc/historyIpc'
 import { registerSettingsIpc } from './ipc/settingsIpc'
 import { registerModelManagerIpc } from './ipc/modelManagerIpc'
+import { registerPushToTalkIpc } from './ipc/pushToTalkIpc'
 import { applyGlobalShortcut } from './hotkey'
+import { createOverlayWindow } from './overlay'
+import { OverlayController } from './overlayController'
+import { PushToTalkController } from './pushToTalk/pushToTalkController'
 
 let mainWindow: BrowserWindow | null = null
+let overlayWindow: BrowserWindow | null = null
+let pushToTalkController: PushToTalkController | null = null
 
 const historyStore = new HistoryStore(app.getPath('userData'))
 const settingsStore = new SettingsStore(app.getPath('userData'))
@@ -83,12 +89,21 @@ app.whenReady().then(() => {
 
   mainWindow = createWindow()
 
-  registerBackendIpc(backendController, () => mainWindow)
+  overlayWindow = createOverlayWindow()
+  console.log('[overlay] window created')
+
+  pushToTalkController = new PushToTalkController(settingsStore.get().pushToTalk.key)
+  pushToTalkController.applySettings(settingsStore.get().pushToTalk)
+  new OverlayController(pushToTalkController, () => overlayWindow, settingsStore, ipcMain)
+  registerPushToTalkIpc(pushToTalkController)
+
+  registerBackendIpc(backendController, () => [mainWindow, overlayWindow])
   registerHistoryIpc(historyStore)
   registerSettingsIpc(
     settingsStore,
     (accelerator) => applyGlobalShortcut(accelerator, toggleRecordingFromHotkey),
-    () => void backendController.rebuild()
+    () => void backendController.rebuild(),
+    (pushToTalkSettings) => pushToTalkController?.applySettings(pushToTalkSettings)
   )
   registerModelManagerIpc(modelManager, settingsStore, () => mainWindow)
 
@@ -123,4 +138,5 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   backendController.dispose()
+  pushToTalkController?.dispose()
 })

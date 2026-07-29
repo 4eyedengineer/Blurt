@@ -1,0 +1,103 @@
+/* The overlay window itself is transparent + frameless (see src/main/overlay.ts) -
+   this stylesheet keeps the app shell see-through so only the pill renders. */
+:root.overlay-shell,
+:root.overlay-shell body,
+.overlay-shell #root {
+  background: transparent !important;
+}
+
+.overlay-app {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  border-radius: var(--radius-lg);
+  background: rgba(24, 25, 29, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: var(--shadow-2);
+  color: var(--color-text);
+  -webkit-app-region: no-drag;
+}
+
+.overlay-app--hidden {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.overlay-app__dot {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-danger);
+}
+
+.overlay-app__dot--pulse {
+  animation: overlay-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes overlay-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.25);
+  }
+}
+
+.overlay-app__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+
+.overlay-app__level-track {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.overlay-app__level-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-primary);
+  transition: width 80ms linear;
+}
+
+.overlay-app__transcript {
+  white-space: nowrap;
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.3;
+  color: var(--color-text);
+}
+
+.overlay-app__transcript--final {
+  color: var(--color-text);
+  text-overflow: ellipsis;
+}
+
+.overlay-app__status {
+  font-size: 14px;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.overlay-app__badge {
+  align-self: flex-start;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-success);
+}

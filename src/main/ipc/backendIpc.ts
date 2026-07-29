@@ -29,9 +29,26 @@ function hasErrorSource(
  * backend instance) is picked up transparently - see
  * src/main/backend/backendController.ts.
  */
+/**
+ * Broadcasts a main -> renderer event to every currently-live window that
+ * wants it (the main window, and - for dictation session events - the
+ * push-to-talk overlay window too, since it drives its own dictation
+ * session over the exact same IPC surface - see
+ * src/renderer/src/overlay/useOverlayPushToTalk.ts).
+ */
+function broadcast(
+  getWindows: () => Array<BrowserWindow | null>,
+  channel: string,
+  ...args: unknown[]
+): void {
+  for (const window of getWindows()) {
+    if (window && !window.isDestroyed()) window.webContents.send(channel, ...args)
+  }
+}
+
 export function registerBackendIpc(
   controller: BackendController,
-  getWindow: () => BrowserWindow | null
+  getWindows: () => Array<BrowserWindow | null>
 ): void {
   ipcMain.handle(IPC.backend.startSession, (_event, opts?: StartSessionOptions) =>
     controller.getBackend().startSession(opts)
@@ -71,12 +88,12 @@ export function registerBackendIpc(
     unsubscribeError()
 
     unsubscribePartial = backend.onPartialTranscript((sessionId, text) => {
-      getWindow()?.webContents.send(IPC.backend.partialTranscript, sessionId, text)
+      broadcast(getWindows, IPC.backend.partialTranscript, sessionId, text)
     })
 
     unsubscribeError = hasErrorSource(backend)
       ? backend.onError((sessionId, error) => {
-          getWindow()?.webContents.send(IPC.backend.sessionError, sessionId, error)
+          broadcast(getWindows, IPC.backend.sessionError, sessionId, error)
         })
       : () => {}
   }
@@ -85,6 +102,6 @@ export function registerBackendIpc(
   controller.on('backend-changed', attachToBackend)
 
   controller.on('status', (status) => {
-    getWindow()?.webContents.send(IPC.backend.statusChanged, status)
+    broadcast(getWindows, IPC.backend.statusChanged, status)
   })
 }

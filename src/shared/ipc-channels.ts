@@ -39,5 +39,17 @@ export const IPC = {
     cancelDownload: 'models:cancel-download',
     remove: 'models:remove',
     progress: 'models:progress' // main -> renderer event
+  },
+  pushToTalk: {
+    getStatus: 'push-to-talk:get-status'
+  },
+  /** Coordinates the push-to-talk overlay window - see src/main/overlayController.ts. */
+  overlay: {
+    pttStart: 'overlay:ptt-start', // main -> overlay renderer: key was pressed, start dictating
+    pttStop: 'overlay:ptt-stop', // main -> overlay renderer: key was released, stop + clean up
+    pttCancel: 'overlay:ptt-cancel', // main -> overlay renderer: accidental tap (<250ms), abort
+    reset: 'overlay:reset', // main -> overlay renderer: auto-hide finished, go back to idle
+    result: 'overlay:result', // overlay renderer -> main: cleaned text ready to copy/paste
+    pasteStatus: 'overlay:paste-status' // main -> overlay renderer: clipboard/paste outcome
   }
 } as const

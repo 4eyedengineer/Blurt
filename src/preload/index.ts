@@ -8,7 +8,13 @@ import type {
   TransformMode,
   AudioChunkPayload
 } from '../shared/backend'
-import type { ModelId, NewDictationEntry, Settings } from '../shared/types'
+import type {
+  ModelId,
+  NewDictationEntry,
+  PasteOutcome,
+  PushToTalkStatus,
+  Settings
+} from '../shared/types'
 import type { InstalledModelInfo, ModelDownloadProgress } from '../shared/models'
 
 /**
@@ -105,12 +111,56 @@ const modelsApi = {
   }
 }
 
+const pushToTalkApi = {
+  getStatus: (): Promise<PushToTalkStatus> => ipcRenderer.invoke(IPC.pushToTalk.getStatus)
+}
+
+/**
+ * Bridge used only by the overlay window's renderer (src/renderer/src/overlay/*)
+ * to receive start/stop/cancel/reset commands from OverlayController and to
+ * report its cleaned-text result back for clipboard/paste handling - see
+ * src/main/overlayController.ts.
+ */
+const overlayApi = {
+  onPttStart: (listener: () => void): (() => void) => {
+    const handler = (): void => listener()
+    ipcRenderer.on(IPC.overlay.pttStart, handler)
+    return () => ipcRenderer.removeListener(IPC.overlay.pttStart, handler)
+  },
+  onPttStop: (listener: () => void): (() => void) => {
+    const handler = (): void => listener()
+    ipcRenderer.on(IPC.overlay.pttStop, handler)
+    return () => ipcRenderer.removeListener(IPC.overlay.pttStop, handler)
+  },
+  onPttCancel: (listener: () => void): (() => void) => {
+    const handler = (): void => listener()
+    ipcRenderer.on(IPC.overlay.pttCancel, handler)
+    return () => ipcRenderer.removeListener(IPC.overlay.pttCancel, handler)
+  },
+  onReset: (listener: () => void): (() => void) => {
+    const handler = (): void => listener()
+    ipcRenderer.on(IPC.overlay.reset, handler)
+    return () => ipcRenderer.removeListener(IPC.overlay.reset, handler)
+  },
+  onPasteStatus: (listener: (status: PasteOutcome) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: PasteOutcome): void =>
+      listener(status)
+    ipcRenderer.on(IPC.overlay.pasteStatus, handler)
+    return () => ipcRenderer.removeListener(IPC.overlay.pasteStatus, handler)
+  },
+  sendResult: (payload: { rawTranscript: string; cleanedText: string }): void => {
+    ipcRenderer.send(IPC.overlay.result, payload)
+  }
+}
+
 const api = {
   dictation: dictationApi,
   history: historyApi,
   settings: settingsApi,
   hotkey: hotkeyApi,
-  models: modelsApi
+  models: modelsApi,
+  pushToTalk: pushToTalkApi,
+  overlay: overlayApi
 }
 
 export type Api = typeof api

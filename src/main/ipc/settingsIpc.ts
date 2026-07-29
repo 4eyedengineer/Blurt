@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
-import type { Settings } from '../../shared/types'
+import type { PushToTalkSettings, Settings } from '../../shared/types'
 import type { SettingsStore } from '../store/settingsStore'
 
 function backendRelevantFieldsChanged(prev: Settings, next: Settings): boolean {
@@ -11,11 +11,17 @@ function backendRelevantFieldsChanged(prev: Settings, next: Settings): boolean {
   )
 }
 
+function pushToTalkSettingsChanged(prev: Settings, next: Settings): boolean {
+  return JSON.stringify(prev.pushToTalk) !== JSON.stringify(next.pushToTalk)
+}
+
 export function registerSettingsIpc(
   settingsStore: SettingsStore,
   applyHotkey: (accelerator: string) => boolean,
   /** Called (fire-and-forget from the caller's perspective) whenever a settings update touches backend/model/sidecar fields, so the active InferenceBackend can be hot-swapped. */
-  onBackendSettingsChanged: () => void
+  onBackendSettingsChanged: () => void,
+  /** Called whenever a settings update touches `pushToTalk`, so PushToTalkController can start/stop its OS-level hook or switch keys. */
+  onPushToTalkSettingsChanged: (settings: PushToTalkSettings) => void
 ): void {
   ipcMain.handle(IPC.settings.get, () => settingsStore.get())
 
@@ -24,6 +30,9 @@ export function registerSettingsIpc(
     const next = settingsStore.update(patch)
     if (backendRelevantFieldsChanged(prev, next)) {
       onBackendSettingsChanged()
+    }
+    if (pushToTalkSettingsChanged(prev, next)) {
+      onPushToTalkSettingsChanged(next.pushToTalk)
     }
     return next
   })
