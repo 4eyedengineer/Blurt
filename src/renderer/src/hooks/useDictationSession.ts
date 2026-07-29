@@ -18,6 +18,7 @@ export interface UseDictationSession {
   stats: SessionStats | null
   copyFlash: boolean
   audioWarning: string | null
+  sessionError: string | null
   toggleRecording: () => void
   applyTransform: (mode: TransformMode) => Promise<void>
   applyVoiceEdit: (command: string) => Promise<void>
@@ -40,6 +41,7 @@ export function useDictationSession(): UseDictationSession {
   const [stats, setStats] = useState<SessionStats | null>(null)
   const [entryId, setEntryId] = useState<string | null>(null)
   const [copyFlash, setCopyFlash] = useState(false)
+  const [sessionError, setSessionError] = useState<string | null>(null)
 
   const sessionIdRef = useRef<string | null>(null)
   const startTimeRef = useRef(0)
@@ -71,6 +73,7 @@ export function useDictationSession(): UseDictationSession {
 
   const startRecording = useCallback(async () => {
     startNew()
+    setSessionError(null)
     setPhase('recording')
 
     const sessionId = await window.api.dictation.startSession({
@@ -80,9 +83,16 @@ export function useDictationSession(): UseDictationSession {
     sessionIdRef.current = sessionId
     startTimeRef.current = Date.now()
 
-    unsubscribePartialRef.current = window.api.dictation.onPartialTranscript((sid, text) => {
+    const unsubscribePartial = window.api.dictation.onPartialTranscript((sid, text) => {
       if (sid === sessionId) setLiveText(text)
     })
+    const unsubscribeError = window.api.dictation.onSessionError((sid, error) => {
+      if (sid === sessionId) setSessionError(error.message)
+    })
+    unsubscribePartialRef.current = () => {
+      unsubscribePartial()
+      unsubscribeError()
+    }
 
     await audio.start()
   }, [audio, settings.customVocabulary, startNew])
@@ -209,6 +219,7 @@ export function useDictationSession(): UseDictationSession {
     stats,
     copyFlash,
     audioWarning: audio.warning,
+    sessionError,
     toggleRecording,
     applyTransform,
     applyVoiceEdit,

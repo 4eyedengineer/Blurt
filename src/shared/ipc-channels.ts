@@ -11,7 +11,10 @@ export const IPC = {
     cleanup: 'backend:cleanup',
     transform: 'backend:transform',
     voiceEdit: 'backend:voice-edit',
-    partialTranscript: 'backend:partial-transcript' // main -> renderer event
+    partialTranscript: 'backend:partial-transcript', // main -> renderer event
+    sessionError: 'backend:session-error', // main -> renderer event
+    getStatus: 'backend:get-status',
+    statusChanged: 'backend:status-changed' // main -> renderer event
   },
   history: {
     list: 'history:list',
@@ -29,5 +32,12 @@ export const IPC = {
   },
   hotkey: {
     toggleRecording: 'hotkey:toggle-recording' // main -> renderer event
+  },
+  models: {
+    list: 'models:list',
+    download: 'models:download',
+    cancelDownload: 'models:cancel-download',
+    remove: 'models:remove',
+    progress: 'models:progress' // main -> renderer event
   }
 } as const

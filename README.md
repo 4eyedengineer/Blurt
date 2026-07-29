@@ -4,10 +4,15 @@ A Windows-targeted desktop clone of Google AI Edge Eloquent - an offline-first A
 Record speech, get a live streaming transcript, an automatic cleanup pass, and one-tap transforms
 (Key Points / Formal / Short / Long), all backed by an on-device model.
 
-This repo is a **scaffold**: the app is fully wired end-to-end - UI, IPC, audio capture, local
-history, settings, global hotkey - against a **mocked** inference backend, so it's runnable and
-demoable today. The real model (Google LiteRT-LM running Gemma) is being integrated separately as
-a drop-in replacement for the mock; see [Slotting in the real backend](#slotting-in-the-real-backend).
+The app is fully wired end-to-end - UI, IPC, audio capture, local history, settings, global
+hotkey - and ships with two `InferenceBackend` implementations, switchable from Settings:
+
+- **Mock** - replays canned demo transcripts and rule-based text ops. No download, no external
+  process, works everywhere. Good for demoing the UI without any setup.
+- **LiteRT-LM** - a real on-device Gemma model, run via Google's `litert-lm` runtime as a local
+  HTTP sidecar process. Requires downloading a `.litertlm` model (Settings does this for you) and
+  either a `litert-lm` binary the app can spawn, or a `litert-lm serve` instance you already have
+  running. See [The real backend: LiteRT-LM](#the-real-backend-litert-lm) below.
 
 ## Stack
 
@@ -25,29 +30,42 @@ a drop-in replacement for the mock; see [Slotting in the real backend](#slotting
 src/
   shared/                  Code shared between main and renderer (types, IPC channel names,
                             the InferenceBackend contract). No Electron/Node/DOM APIs here.
-    backend.ts                InferenceBackend interface + wire types
-    types.ts                  Settings, DictationEntry, etc.
+    backend.ts                InferenceBackend interface + wire types + BackendStatus/BackendError
+    types.ts                  Settings (incl. backend/sidecar config), DictationEntry, etc.
+    models.ts                  Model catalog (HF repo per ModelId) + download-progress types
     ipc-channels.ts           Centralized IPC channel name constants
 
   main/                     Electron main process (Node context)
-    index.ts                  App bootstrap: creates the window, wires backend + stores + IPC,
-                               registers the global hotkey
+    index.ts                  App bootstrap: creates the window, wires backend controller +
+                               model manager + stores + IPC, registers the global hotkey
     hotkey.ts                  globalShortcut register/unregister helper
     backend/
-      mockBackend.ts           MockBackend: the only InferenceBackend implementation today
+      mockBackend.ts           MockBackend: canned-script InferenceBackend, no real model
       textOps.ts                cleanup / transform / voiceEdit text logic used by MockBackend
       scripts.ts                 Canned "recognized speech" used to fake streaming transcripts
+      litertWire.ts             Pure request builders + SSE/JSON response parsers + WAV encoder
+                                 for the LiteRT-LM sidecar's wire protocol - see below
+      litertBackend.ts          InferenceBackend backed by a LiteRT-LM sidecar (HTTP/SSE)
+      sidecar.ts                 Spawns/monitors the litert-lm serve process (or points at an
+                                 external one), health-checks it, restarts with backoff
+      modelManager.ts            Downloads .litertlm models from HuggingFace, tracks progress
+      backendController.ts       Builds the active InferenceBackend from settings and hot-swaps
+                                 it when backend/model/sidecar settings change
     store/
       jsonStore.ts               Tiny generic JSON-file-backed store
       historyStore.ts            Dictation history persisted to userData/history.json
       settingsStore.ts           App settings persisted to userData/settings.json
     ipc/
-      backendIpc.ts               Wires InferenceBackend <-> ipcMain
+      backendIpc.ts               Wires the active InferenceBackend <-> ipcMain (re-attaches
+                                   listeners across hot-swaps), status + session-error events
       historyIpc.ts               Wires HistoryStore <-> ipcMain
-      settingsIpc.ts               Wires SettingsStore <-> ipcMain (+ re-registers hotkey on change)
+      settingsIpc.ts               Wires SettingsStore <-> ipcMain (+ re-registers hotkey,
+                                   triggers a backend rebuild on backend-relevant changes)
+      modelManagerIpc.ts           Wires ModelManager (list/download/cancel/remove) <-> ipcMain
 
   preload/                  contextBridge boundary
-    index.ts                  Exposes a typed `window.api` (dictation / history / settings / hotkey)
+    index.ts                  Exposes a typed `window.api` (dictation / history / settings /
+                               hotkey / models)
     index.d.ts                 Global Window typing for `window.api`
 
   renderer/                 The React app
@@ -60,9 +78,12 @@ src/
       hooks/
         useAudioCapture.ts       Mic capture: AudioWorklet 16kHz PCM16, MediaRecorder/webm fallback
         useDictationSession.ts   Orchestrates record -> cleanup -> transform -> history lifecycle
+        useBackendStatus.ts      Subscribes to the header status pill's backend state
+        useModelManager.ts       Drives the Settings screen's model download UI
       screens/                 DictateScreen, HistoryScreen, SettingsScreen
-      components/              RecordButton, TransformBar, StatsBar, VoiceEditBar, Sidebar, Toggle, Icons
-      lib/                     format.ts (word count / WPM), clipboard.ts
+      components/              RecordButton, TransformBar, StatsBar, VoiceEditBar, Sidebar,
+                               StatusPill, Toggle, Icons
+      lib/                     format.ts (word count / WPM / byte formatting), clipboard.ts
 ```
 
 ## The `InferenceBackend` contract
@@ -95,7 +116,12 @@ This interface only ever runs in the **main process**. The renderer never touche
 it goes through the typed IPC bridge in `src/preload/index.ts` (`window.api.dictation.*`), which
 is wired to the concrete backend instance in `src/main/ipc/backendIpc.ts`.
 
-Today the only implementation is `MockBackend` (`src/main/backend/mockBackend.ts`):
+Two implementations exist today, and the active one is chosen per `settings.backend`
+(`'mock' | 'litert'`), built and hot-swapped by `BackendController`
+(`src/main/backend/backendController.ts`) - see
+[The real backend: LiteRT-LM](#the-real-backend-litert-lm) below for the second one.
+
+`MockBackend` (`src/main/backend/mockBackend.ts`):
 
 - `startSession` picks one of a handful of canned "raw ASR" scripts (lowercase, unpunctuated,
   sprinkled with "um"/"uh") and returns a session id.
@@ -115,38 +141,159 @@ Today the only implementation is `MockBackend` (`src/main/backend/mockBackend.ts
 All of the above is in `src/main/backend/textOps.ts` and `scripts.ts` if you want to see exactly
 how the mock behaves.
 
-## Slotting in the real backend
-
-The real backend (Google LiteRT-LM running Gemma 4, per the model-selection placeholders in
-Settings) is expected to run as a **subprocess sidecar** - spawned by the main process, talked to
-over stdio or a local socket, its output adapted into partial/final transcripts and text
-transforms.
-
-To swap it in:
-
-1. Implement a class, e.g. `LiteRtBackend implements InferenceBackend`, in
-   `src/main/backend/liteRtBackend.ts`. It should:
-   - spawn the sidecar process in its constructor (or lazily on first `startSession`)
-   - implement `startSession`/`pushAudio`/`endSession` by streaming audio to the sidecar and
-     parsing partial-transcript messages back out, re-emitting them via the same
-     `onPartialTranscript` subscribe/unsubscribe shape `MockBackend` uses
-   - implement `cleanup`/`transform`/`voiceEdit` as prompts to the sidecar's generation endpoint
-2. In `src/main/index.ts`, change:
-   ```ts
-   const backend = new MockBackend()
-   ```
-   to:
-   ```ts
-   const backend = new LiteRtBackend(/* model path, settings, etc. */)
-   ```
-3. Nothing else changes. `src/main/ipc/backendIpc.ts`, the preload bridge, and every React
-   component/hook only depend on the `InferenceBackend` interface, not on `MockBackend`.
-
-The audio pipeline is already designed for this: the renderer captures 16kHz mono PCM16 via an
+The audio pipeline is shared by both backends: the renderer captures 16kHz mono PCM16 via an
 AudioWorklet (falling back to MediaRecorder/webm if AudioWorklet is unavailable) and forwards raw
 chunks over IPC as `AudioChunkPayload` (`{ kind: 'pcm16' | 'opaque', buffer, sampleRate }`), which
-`backendIpc.ts` converts to `Int16Array`/`Buffer` before calling `pushAudio`. A real backend that
-wants raw PCM bytes for LiteRT-LM already gets them in the preferred format.
+`backendIpc.ts` converts to `Int16Array`/`Buffer` before calling `pushAudio`.
+
+## The real backend: LiteRT-LM
+
+`LitertBackend` (`src/main/backend/litertBackend.ts`) implements `InferenceBackend` by talking to
+[Google's LiteRT-LM runtime](https://github.com/google-ai-edge/LiteRT-LM), run out-of-process as
+`litert-lm serve` - an OpenAI-compatible HTTP/SSE server. This is Option A from the
+runtime's own de-risking notes: `litert-lm serve` already *is* the "wrapper exposing HTTP" this
+app needs, so the app just spawns/talks to it rather than re-implementing an FFI binding.
+
+### Architecture
+
+```
+Settings (backend, modelId, sidecar.*)
+        │
+        ▼
+BackendController (src/main/backend/backendController.ts)
+  - reads settings, decides Mock vs LiteRT-LM
+  - owns the current Sidecar + LitertBackend, hot-swaps on settings changes
+  - exposes getStatus()/'status' events -> header status pill
+        │
+        ▼
+Sidecar (src/main/backend/sidecar.ts)          ModelManager (src/main/backend/modelManager.ts)
+  - 'managed': spawns `litert-lm serve ...`      - resolves + downloads .litertlm files from
+    from a configurable command template           HuggingFace, tracks progress, lists installed
+  - 'external': just points at a URL you gave it   models
+  - polls GET /v1/models until ready, restarts
+    a managed process with backoff on crash
+        │
+        ▼
+LitertBackend (src/main/backend/litertBackend.ts)
+  - accumulates PCM16 audio per session, periodically re-transcribes the whole buffer so far
+    (partial transcripts) and again on endSession (final transcript)
+  - cleanup/transform/voiceEdit as chat-completions prompts
+  - all wire-format assumptions isolated in:
+litertWire.ts (pure, unit-tested)
+  - request builders: buildTranscriptionRequest / buildCleanupRequest / buildTransformRequest /
+    buildVoiceEditRequest
+  - response parsing: parseSSEBuffer, extractDeltaFromChatCompletionChunk,
+    extractContentFromChatCompletionResponse, stripModelPreamble
+  - audio encoding: concatInt16, pcm16ToWavBuffer/Base64
+```
+
+Because the exact request/response shape of a given `litert-lm serve` build can vary, **every**
+wire-format assumption lives in `litertWire.ts` as small pure functions - nothing else in the app
+touches JSON/SSE shapes directly. If a real server turns out to disagree with an assumption here
+(e.g. a different content-part key for audio, or a non-standard SSE chunk shape), only this one
+file needs to change; `src/main/backend/litertWire.test.ts` covers it with unit tests you can run
+with `npm test`.
+
+### What it assumes about the sidecar
+
+- `POST /v1/chat/completions`, OpenAI-compatible, `stream: true` giving SSE
+  (`text/event-stream`) `chat.completion.chunk`-shaped events, terminated by a `data: [DONE]`
+  event. If the sidecar instead returns a normal JSON body (non-SSE), `litertBackend.ts` falls
+  back to parsing that directly (see `extractContentFromChatCompletionResponse`).
+- Audio is sent as a user-message content part:
+  `{ type: 'input_audio', input_audio: { data: '<base64 wav>', format: 'wav' } }`, alongside a
+  `{ type: 'text', text: '<transcription prompt>' }` part.
+- `GET /v1/models` is used purely as a "is the server up yet" health check.
+
+### Session lifecycle mapping
+
+- `startSession` allocates an in-memory buffer for the session's PCM16 audio (no request to the
+  sidecar yet).
+- `pushAudio` appends to that buffer. Once ~3 seconds of *new* audio has accumulated, the entire
+  buffer-so-far is WAV-encoded, base64'd, and sent as one transcription chat-completion; the
+  result is emitted via `onPartialTranscript`. These requests are serialized - if the previous
+  partial request is still in flight when the next 3-second mark is hit, that tick is skipped
+  rather than firing a second overlapping request.
+- `endSession` waits for any in-flight partial to finish, then does one final full-buffer
+  transcription and returns it.
+- `cleanup` sends a system prompt instructing the model to strip filler words
+  (um/uh/like/you know), collapse self-corrections/repeated false starts, and fix
+  punctuation/capitalization while preserving meaning - plus a custom-vocabulary hint
+  ("the user commonly uses these terms, spell them correctly: ...") built from
+  `settings.customVocabulary`. Output is expected to be the cleaned text only.
+- `transform` sends a mode-specific prompt (Key Points / Formal / Short / Long).
+- `voiceEdit` sends the text + the spoken/typed command and expects only the edited text back.
+- All four strip a defensive `stripModelPreamble()` pass over the response - it removes
+  `<think>...</think>` blocks, unwraps a single wrapping markdown code fence, drops a leading
+  "Here is the cleaned text:"-style preamble line, and strips wrapping quotes - in case the model
+  doesn't perfectly follow the "output only the text" instruction.
+
+### Robustness
+
+- Every sidecar request has a timeout (default 30s) via `AbortController`.
+- SSE/JSON parsing never throws on malformed input - malformed chunks are skipped, not fatal.
+- If the sidecar dies mid-session (crash, or `endSession`/`cleanup`/etc. can't reach it), the
+  Promise-returning methods reject with a message; `pushAudio`'s periodic partial-transcription
+  requests have no Promise to reject, so `LitertBackend` additionally implements an `onError`
+  hook (`BackendErrorSource` in `src/shared/backend.ts`) that `backendIpc.ts` forwards to the
+  renderer as a `backend:session-error` event (surfaced next to the audio-capture warning on the
+  Dictate screen).
+- `Sidecar` (`src/main/backend/sidecar.ts`) auto-restarts a managed process up to 3 times with
+  exponential backoff before giving up and reporting a fatal error; the header status pill
+  reflects `starting` / `ready` / `error` throughout.
+
+### Settings that control it
+
+All under `Settings.sidecar` (`src/shared/types.ts`), editable from the Settings screen's
+"Backend"/"Model"/"Sidecar" groups:
+
+| Setting | Meaning |
+|---|---|
+| `backend` | `'mock'` or `'litert'` - which `InferenceBackend` to construct. |
+| `modelId` | `'gemma-4-e2b' \| 'gemma-4-e4b' \| 'gemma-4-12b'` - which model `ModelManager` downloads/uses. |
+| `sidecar.mode` | `'managed'` (app spawns the process) or `'external'` (you already have one running). |
+| `sidecar.managedCommand` | Command template for managed mode, e.g. `litert-lm serve --model {modelPath} --port {port}` - `{modelPath}`/`{port}` are substituted, then split into argv (quote-aware) and spawned directly (no shell). This is a setting rather than a hardcoded invocation because the exact CLI flags can differ per `litert-lm` build/install. |
+| `sidecar.externalUrl` | Base URL for external mode, e.g. `http://127.0.0.1:8765`. |
+| `sidecar.port` | Port used to build the local URL in managed mode, and substituted into `managedCommand`. |
+
+### Model downloads
+
+`ModelManager` (`src/main/backend/modelManager.ts`) downloads from the **ungated**
+`litert-community/*` HuggingFace mirrors (Apache-2.0, no HF account/token needed):
+
+| Model | HF repo | ~Size |
+|---|---|---|
+| Gemma 4 E2B | `litert-community/gemma-4-E2B-it-litert-lm` | ~2.4 GiB |
+| Gemma 4 E4B | `litert-community/gemma-4-E4B-it-litert-lm` | ~3.4 GiB |
+| Gemma 4 12B | `litert-community/gemma-4-12B-it-litert-lm` | ~6.1 GiB |
+
+The actual `.litertlm` filename inside each repo is **resolved at download time** via
+`https://huggingface.co/api/models/<repo>` rather than hardcoded (repo maintainers can rename
+files across releases), then downloaded from that repo's `resolve/main/<filename>` URL and stored
+locally as `<userData>/models/<modelId>.litertlm` - so "is this installed" is a plain file-exists
+check, not a separate manifest. Downloads stream to a `.part` file and `rename()` into place only
+on success; if a `.part` file already exists, the next download attempt resumes via an HTTP
+`Range` request (falling back to a clean restart if the server doesn't honor it). Progress
+(bytes received/total, state) is pushed to the Settings screen over IPC as it downloads.
+
+### Building/installing `litert-lm` on Windows
+
+This app doesn't bundle `litert-lm` - it's a separate install the user (or your installer/setup
+script) provides, referenced by `sidecar.managedCommand`. A documented from-source Windows build
+recipe exists upstream (see [google-ai-edge/LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM),
+`docs/getting-started/build-and-run.md`): Visual Studio 2022 ("Desktop development with C++"),
+Bazel via Bazelisk, Git for Windows (its bundled `bash.exe` is required - some build steps shell
+out to it), Python 3.13, a JDK, and enabling NTFS long paths (`LongPathsEnabled` registry key,
+since Bazel's output tree nests deep). CPU builds are `bazelisk build //runtime/engine:litert_lm_main --config=windows`;
+GPU (WebGPU/Dawn/D3D12) builds additionally need
+`--define=litert_runtime_link_mode=dynamic --define=resolve_symbols_in_exec=false` and require
+copying the prebuilt accelerator DLLs (`prebuilt/windows_x86_64/*.dll`) plus Dawn's
+`dxcompiler.dll`/`dxil.dll` (fetched hermetically by Bazel from Microsoft's
+DirectXShaderCompiler releases) into the same directory as the built binary - a hand-built binary
+doesn't get these copied automatically the way the upstream Python-wheel build target does.
+Simpler alternative for most users: the `litert-lm` Python CLI (`pip install litert-lm` /
+`uv tool install litert-lm`) ships a working `litert-lm serve` without a from-source build - point
+`sidecar.managedCommand` at whichever one you have installed.
 
 ## App features
 
@@ -157,23 +304,28 @@ wants raw PCM bytes for LiteRT-LM already gets them in the preferred format.
 2. **History** - every completed dictation is persisted as JSON in Electron's `userData` dir
    (`history.json`), searchable by text, deletable, and clickable to reopen (re-loads the raw,
    cleaned, and last-transformed text plus its original stats into the Dictate screen).
-3. **Settings** - model placeholder (Gemma 4 E2B / E4B / 12B), offline/cloud toggle placeholder,
-   custom vocabulary list (add/remove, persisted in `settings.json`), auto-copy toggle, and a
-   global hotkey field that calls `globalShortcut.register` in the main process for real (default
-   `Ctrl+Shift+Space`) - triggering it brings the window to front and toggles recording from
-   anywhere in Windows.
+3. **Settings** - backend selection (Mock / LiteRT-LM), model choice (Gemma 4 E2B / E4B / 12B)
+   with per-model download/install state and a progress bar, sidecar mode/command/URL/port fields
+   (only shown when LiteRT-LM is selected), offline/cloud toggle placeholder, custom vocabulary
+   list (add/remove, persisted in `settings.json`), auto-copy toggle, and a global hotkey field
+   that calls `globalShortcut.register` in the main process for real (default `Ctrl+Shift+Space`)
+   - triggering it brings the window to front and toggles recording from anywhere in Windows.
 4. **Session stats** - word count and words-per-minute, computed from the cleaned transcript and
    wall-clock recording duration, shown after every dictation.
+5. **Backend status pill** - a small pill at the bottom of the sidebar showing the active
+   backend's connectivity state (mock / starting / ready / error, with the error message as a
+   tooltip), fed by `useBackendStatus` (`src/renderer/src/hooks/useBackendStatus.ts`).
 
 ## Local storage
 
-Both stores are flat JSON files under Electron's `app.getPath('userData')` (on Windows, typically
-`%APPDATA%/windows-eloquent/`):
+Under Electron's `app.getPath('userData')` (on Windows, typically `%APPDATA%/windows-eloquent/`):
 
 - `history.json` - array of `DictationEntry` (raw transcript, cleaned text, current display text,
   which transform (if any) produced it, word count, duration, WPM, timestamp)
-- `settings.json` - the `Settings` object (model id, offline/cloud mode, auto-copy, custom
-  vocabulary, hotkey accelerator)
+- `settings.json` - the `Settings` object (backend selection, model id, sidecar config,
+  offline/cloud mode, auto-copy, custom vocabulary, hotkey accelerator)
+- `models/<modelId>.litertlm` - downloaded model files (see [Model downloads](#model-downloads));
+  `models/<modelId>.litertlm.part` for an in-progress or interrupted download
 
 ## Development
 
@@ -182,6 +334,8 @@ npm install
 npm run dev          # electron-vite dev server + Electron, with HMR
 npm run typecheck    # tsc --noEmit for both the node (main/preload) and web (renderer) tsconfigs
 npm run lint          # eslint (flat config, includes prettier + react-hooks rules)
+npm test               # vitest - unit tests for litertWire.ts (request/response/SSE parsing,
+                       # WAV encoding) and sidecar.ts's command templating, all pure functions
 npm run build         # typecheck, then electron-vite build (main + preload + renderer)
 npm run build:win     # build, then electron-builder --win (NSIS + portable) - not run in CI/dev
                        # containers without Windows/Wine; config lives in electron-builder.yml
@@ -204,12 +358,21 @@ remove it if you don't hit that issue.
   demo, but a real backend should resample defensively rather than assume exactly 16kHz.
 - The MediaRecorder/webm fallback path (used only if `AudioWorklet` is unavailable) forwards
   opaque compressed bytes; `MockBackend` treats each chunk as "some audio arrived" rather than
-  decoding it. A real backend would need to either decode webm/opus itself or prefer the PCM path.
+  decoding it. `LitertBackend` can't decode it either (no bundled codec) and simply drops those
+  chunks - the AudioWorklet/PCM16 path is the one that actually reaches the real model.
 - `voiceEdit` has no dedicated screen mock-up in the original spec - it's exposed here as a small
   text-command input on the Dictate screen so the full `InferenceBackend` contract is actually
   exercised by the UI, not just implemented.
-- This environment has no display server, so the Electron GUI itself was never launched here.
-  Verification is `npm run typecheck` + `npm run build` succeeding; the actual window, mic
-  capture, and global hotkey behavior should be manually smoke-tested on a real Windows machine.
+- This environment has no display server and no working `litert-lm` install (WSL2, no GPU
+  passthrough), so `LitertBackend` has never been run against a live sidecar here. Verification is
+  `npm run typecheck` + `npm run lint` + `npm test` + `npm run build` succeeding, plus the pure
+  `litertWire.ts`/`sidecar.ts` unit tests; the actual sidecar process, real transcription/cleanup
+  output, and end-to-end audio pipeline should be smoke-tested against a real `litert-lm serve`
+  build on a real Windows machine. All wire-format assumptions are isolated in `litertWire.ts`
+  specifically so that smoke-testing only needs to adjust one small file if reality disagrees.
+- `BackendController`'s hot-swap doesn't cancel an in-flight `startSession`/`cleanup`/etc. call
+  against the *old* backend when settings change mid-call - it only stops accepting new work on
+  the old instance and stops the old sidecar process once the new one is ready. A dictation
+  session started just before a backend switch should still be allowed to finish naturally.
 - Packaging (`npm run build:win`) was intentionally **not** run - only the `electron-builder.yml`
   config (NSIS + portable, x64) was written and validated as parseable YAML.

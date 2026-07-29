@@ -23,6 +23,7 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
     stats,
     copyFlash,
     audioWarning,
+    sessionError,
     toggleRecording,
     applyTransform,
     applyVoiceEdit,
@@ -60,6 +61,7 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
       </div>
 
       {audioWarning && <p className="dictate-screen__warning">{audioWarning}</p>}
+      {sessionError && <p className="dictate-screen__warning">{sessionError}</p>}
 
       <div className="dictate-screen__transcript-wrap">
         <div className="dictate-screen__transcript-toolbar">

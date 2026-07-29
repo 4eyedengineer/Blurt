@@ -3,22 +3,29 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { IPC } from '../shared/ipc-channels'
-import { MockBackend } from './backend/mockBackend'
+import { BackendController } from './backend/backendController'
+import { ModelManager } from './backend/modelManager'
 import { HistoryStore } from './store/historyStore'
 import { SettingsStore } from './store/settingsStore'
 import { registerBackendIpc } from './ipc/backendIpc'
 import { registerHistoryIpc } from './ipc/historyIpc'
 import { registerSettingsIpc } from './ipc/settingsIpc'
+import { registerModelManagerIpc } from './ipc/modelManagerIpc'
 import { applyGlobalShortcut } from './hotkey'
 
 let mainWindow: BrowserWindow | null = null
 
-// Swap MockBackend for the real LiteRT-LM sidecar backend here once it's
-// ready - everything downstream (IPC, renderer) only depends on the
-// InferenceBackend interface, not on this concrete class.
-const backend = new MockBackend()
 const historyStore = new HistoryStore(app.getPath('userData'))
 const settingsStore = new SettingsStore(app.getPath('userData'))
+const modelManager = new ModelManager(app.getPath('userData'))
+
+// The single seam that knows about both MockBackend and LitertBackend -
+// which concrete InferenceBackend is active is driven entirely by
+// settingsStore ('backend' / 'modelId' / 'sidecar' fields) and can change
+// at runtime (see registerSettingsIpc's onBackendSettingsChanged hook).
+// Everything downstream (IPC, renderer) only depends on the
+// InferenceBackend interface via backendController.getBackend().
+const backendController = new BackendController(settingsStore, modelManager)
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -72,12 +79,30 @@ app.whenReady().then(() => {
 
   mainWindow = createWindow()
 
-  registerBackendIpc(backend, () => mainWindow)
+  registerBackendIpc(backendController, () => mainWindow)
   registerHistoryIpc(historyStore)
-  registerSettingsIpc(settingsStore, (accelerator) =>
-    applyGlobalShortcut(accelerator, toggleRecordingFromHotkey)
+  registerSettingsIpc(
+    settingsStore,
+    (accelerator) => applyGlobalShortcut(accelerator, toggleRecordingFromHotkey),
+    () => void backendController.rebuild()
   )
+  registerModelManagerIpc(modelManager, () => mainWindow)
 
+  // If a model finishes downloading while it's the currently-selected model
+  // and the backend is sitting in an error state (most likely because that
+  // exact model wasn't installed yet), automatically retry rather than
+  // requiring the user to re-toggle a setting.
+  modelManager.on('progress', (progress) => {
+    if (
+      progress.state === 'done' &&
+      progress.modelId === settingsStore.get().modelId &&
+      backendController.getStatus().state === 'error'
+    ) {
+      void backendController.rebuild()
+    }
+  })
+
+  void backendController.rebuild()
   applyGlobalShortcut(settingsStore.get().hotkey, toggleRecordingFromHotkey)
 
   app.on('activate', function () {
@@ -93,4 +118,5 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
+  backendController.dispose()
 })

@@ -1,4 +1,6 @@
 import { HistoryIcon, MicIcon, SettingsIcon } from './Icons'
+import { StatusPill } from './StatusPill'
+import { useBackendStatus } from '../hooks/useBackendStatus'
 import './Sidebar.css'
 
 export type TabId = 'dictate' | 'history' | 'settings'
@@ -15,6 +17,8 @@ const TABS: Array<{ id: TabId; label: string; Icon: typeof MicIcon }> = [
 ]
 
 export function Sidebar({ active, onSelect }: SidebarProps): React.JSX.Element {
+  const status = useBackendStatus()
+
   return (
     <nav className="sidebar">
       <div className="sidebar__brand">
@@ -35,6 +39,9 @@ export function Sidebar({ active, onSelect }: SidebarProps): React.JSX.Element {
           </li>
         ))}
       </ul>
+      <div className="sidebar__footer">
+        <StatusPill status={status} />
+      </div>
     </nav>
   )
 }

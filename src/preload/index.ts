@@ -1,8 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import { IPC } from '../shared/ipc-channels'
-import type { StartSessionOptions, TransformMode, AudioChunkPayload } from '../shared/backend'
-import type { NewDictationEntry, Settings } from '../shared/types'
+import type {
+  BackendError,
+  BackendStatus,
+  StartSessionOptions,
+  TransformMode,
+  AudioChunkPayload
+} from '../shared/backend'
+import type { ModelId, NewDictationEntry, Settings } from '../shared/types'
+import type { InstalledModelInfo, ModelDownloadProgress } from '../shared/models'
 
 /**
  * The renderer-facing API surface. Renderer code never touches Electron or
@@ -33,6 +40,25 @@ const dictationApi = {
       listener(sessionId, text)
     ipcRenderer.on(IPC.backend.partialTranscript, handler)
     return () => ipcRenderer.removeListener(IPC.backend.partialTranscript, handler)
+  },
+
+  onSessionError: (listener: (sessionId: string, error: BackendError) => void): (() => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      sessionId: string,
+      error: BackendError
+    ): void => listener(sessionId, error)
+    ipcRenderer.on(IPC.backend.sessionError, handler)
+    return () => ipcRenderer.removeListener(IPC.backend.sessionError, handler)
+  },
+
+  getStatus: (): Promise<BackendStatus> => ipcRenderer.invoke(IPC.backend.getStatus),
+
+  onStatusChanged: (listener: (status: BackendStatus) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: BackendStatus): void =>
+      listener(status)
+    ipcRenderer.on(IPC.backend.statusChanged, handler)
+    return () => ipcRenderer.removeListener(IPC.backend.statusChanged, handler)
   }
 }
 
@@ -64,11 +90,27 @@ const hotkeyApi = {
   }
 }
 
+const modelsApi = {
+  list: (): Promise<{ installed: InstalledModelInfo[]; progress: ModelDownloadProgress[] }> =>
+    ipcRenderer.invoke(IPC.models.list),
+  download: (modelId: ModelId): Promise<void> => ipcRenderer.invoke(IPC.models.download, modelId),
+  cancelDownload: (modelId: ModelId): Promise<void> =>
+    ipcRenderer.invoke(IPC.models.cancelDownload, modelId),
+  remove: (modelId: ModelId): Promise<void> => ipcRenderer.invoke(IPC.models.remove, modelId),
+  onProgress: (listener: (progress: ModelDownloadProgress) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: ModelDownloadProgress): void =>
+      listener(progress)
+    ipcRenderer.on(IPC.models.progress, handler)
+    return () => ipcRenderer.removeListener(IPC.models.progress, handler)
+  }
+}
+
 const api = {
   dictation: dictationApi,
   history: historyApi,
   settings: settingsApi,
-  hotkey: hotkeyApi
+  hotkey: hotkeyApi,
+  models: modelsApi
 }
 
 export type Api = typeof api

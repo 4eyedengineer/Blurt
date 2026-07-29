@@ -1,0 +1,322 @@
+/**
+ * All assumptions about the LiteRT-LM sidecar's wire protocol live in this
+ * one file, by design (see README "Slotting in the real backend"): every
+ * function here is pure (no fetch/spawn/fs) so it's trivial to unit test
+ * and trivial to adjust once the exact request/response shapes are
+ * verified empirically against a real `litert-lm serve` instance.
+ *
+ * Baseline assumed here (per the LiteRT-LM de-risking report):
+ *   - `litert-lm serve` exposes an OpenAI-compatible
+ *     `POST /v1/chat/completions`, with `stream: true` giving SSE
+ *     (`text/event-stream`) chunks shaped like OpenAI's
+ *     `chat.completion.chunk` objects.
+ *   - Audio input is a user-message content part:
+ *     `{ type: "input_audio", input_audio: { data: "<base64>", format: "wav" } }`.
+ *   - `GET /v1/models` is available and used as the "is the server up yet"
+ *     health check (see sidecar.ts).
+ */
+import type { TransformMode } from '../../shared/backend'
+
+// ---------------------------------------------------------------------------
+// Request types + builders
+// ---------------------------------------------------------------------------
+
+export type ChatMessageContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'input_audio'; input_audio: { data: string; format: 'wav' } }
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string | ChatMessageContentPart[]
+}
+
+export interface ChatCompletionRequestBody {
+  model: string
+  messages: ChatMessage[]
+  stream: boolean
+  temperature?: number
+}
+
+const TRANSCRIPTION_PROMPT =
+  'Transcribe the following audio verbatim, exactly as spoken. Output only the raw transcription text - no commentary, no preamble, no quotation marks, no markdown formatting.'
+
+function vocabularyHint(vocabulary: string[] | undefined): string {
+  const words = (vocabulary ?? []).map((w) => w.trim()).filter(Boolean)
+  if (words.length === 0) return ''
+  return ` The speaker commonly uses these terms - spell them correctly if you hear them: ${words.join(', ')}.`
+}
+
+export interface BuildTranscriptionRequestParams {
+  model: string
+  wavBase64: string
+  vocabulary?: string[]
+}
+
+/** Builds a chat-completions request carrying a WAV blob as an `input_audio` content part. */
+export function buildTranscriptionRequest(
+  params: BuildTranscriptionRequestParams
+): ChatCompletionRequestBody {
+  return {
+    model: params.model,
+    stream: true,
+    temperature: 0,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: TRANSCRIPTION_PROMPT + vocabularyHint(params.vocabulary) },
+          { type: 'input_audio', input_audio: { data: params.wavBase64, format: 'wav' } }
+        ]
+      }
+    ]
+  }
+}
+
+const CLEANUP_SYSTEM_PROMPT = `You are a dictation cleanup assistant, in the style of Google's Eloquent app. You are given raw, unpunctuated speech-to-text output. Rewrite it into clean, readable text by:
+- Removing filler words (um, uh, erm, like, you know) that are not meaningful content.
+- Removing false starts, self-corrections, and repeated words/phrases (e.g. "I want- I want to go" -> "I want to go"; keep only the corrected version).
+- Adding correct capitalization and punctuation.
+- Preserving the speaker's meaning, wording, and tone otherwise - do not paraphrase, summarize, or add information.
+Output ONLY the cleaned text. No preamble, no explanation, no quotation marks, no markdown.`
+
+export interface BuildCleanupRequestParams {
+  model: string
+  text: string
+  vocabulary?: string[]
+}
+
+export function buildCleanupRequest(params: BuildCleanupRequestParams): ChatCompletionRequestBody {
+  const vocab = vocabularyHint(params.vocabulary)
+  return {
+    model: params.model,
+    stream: true,
+    temperature: 0.2,
+    messages: [
+      { role: 'system', content: CLEANUP_SYSTEM_PROMPT + (vocab ? `\n\n${vocab.trim()}` : '') },
+      { role: 'user', content: params.text }
+    ]
+  }
+}
+
+const TRANSFORM_PROMPTS: Record<TransformMode, string> = {
+  keypoints:
+    'Rewrite the following text as a concise bullet-point summary of its key points, one bullet per point, using "- " as the bullet marker. Output ONLY the bullet list, nothing else.',
+  formal:
+    'Rewrite the following text in a more formal, professional register - expand contractions, remove slang, and tighten wording. Preserve the original meaning. Output ONLY the rewritten text, nothing else.',
+  short:
+    'Rewrite the following text to be significantly shorter and more concise, keeping only the essential meaning. Output ONLY the shortened text, nothing else.',
+  long: 'Rewrite the following text with more detail and elaboration, expanding on its ideas while staying faithful to the original meaning. Output ONLY the expanded text, nothing else.'
+}
+
+export interface BuildTransformRequestParams {
+  model: string
+  text: string
+  mode: TransformMode
+}
+
+export function buildTransformRequest(
+  params: BuildTransformRequestParams
+): ChatCompletionRequestBody {
+  return {
+    model: params.model,
+    stream: true,
+    temperature: 0.3,
+    messages: [
+      { role: 'system', content: TRANSFORM_PROMPTS[params.mode] },
+      { role: 'user', content: params.text }
+    ]
+  }
+}
+
+export interface BuildVoiceEditRequestParams {
+  model: string
+  text: string
+  command: string
+}
+
+export function buildVoiceEditRequest(
+  params: BuildVoiceEditRequestParams
+): ChatCompletionRequestBody {
+  return {
+    model: params.model,
+    stream: true,
+    temperature: 0,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You apply a spoken or typed edit command to a piece of text and return the edited result. Apply exactly what the command asks (e.g. replacing words, deleting a sentence, changing case) and change nothing else. Output ONLY the edited text, nothing else - no preamble, no explanation, no quotation marks.'
+      },
+      { role: 'user', content: `Text:\n${params.text}\n\nCommand: ${params.command}` }
+    ]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Response / SSE parsing
+// ---------------------------------------------------------------------------
+
+export interface SSEEvent {
+  event?: string
+  data: string
+}
+
+/**
+ * Splits a growing text buffer into complete SSE events (separated by a
+ * blank line, per the SSE spec) plus whatever incomplete tail remains.
+ * Pure/stateless: callers own the buffer and feed the returned remainder
+ * back in on the next chunk.
+ */
+export function parseSSEBuffer(buffer: string): { events: SSEEvent[]; remainder: string } {
+  const normalized = buffer.replace(/\r\n/g, '\n')
+  const parts = normalized.split('\n\n')
+  const remainder = parts.pop() ?? ''
+  const events: SSEEvent[] = []
+
+  for (const part of parts) {
+    if (!part.trim()) continue
+    let event: string | undefined
+    const dataLines: string[] = []
+    for (const line of part.split('\n')) {
+      if (line.startsWith('event:')) {
+        event = line.slice('event:'.length).trim()
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice('data:'.length).replace(/^ /, ''))
+      }
+      // Other SSE fields (id:, retry:, comments starting with ':') are
+      // intentionally ignored - not needed for this protocol.
+    }
+    if (dataLines.length > 0) {
+      events.push({ event, data: dataLines.join('\n') })
+    }
+  }
+
+  return { events, remainder }
+}
+
+export function isStreamDone(rawData: string): boolean {
+  return rawData.trim() === '[DONE]'
+}
+
+/** Defensive JSON.parse - never throws, returns null on malformed input. */
+export function safeJsonParse(raw: string): unknown | null {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+interface ChatCompletionChunkShape {
+  choices?: Array<{
+    delta?: { content?: string | null }
+    message?: { content?: string | null }
+  }>
+}
+
+/**
+ * Extracts the incremental text delta from one `chat.completion.chunk`-like
+ * SSE payload. Falls back to `choices[0].message.content` (some servers
+ * send the full message on the final chunk instead of a delta) so a minor
+ * shape deviation doesn't silently drop output.
+ */
+export function extractDeltaFromChatCompletionChunk(json: unknown): string | null {
+  const obj = json as ChatCompletionChunkShape
+  const delta = obj?.choices?.[0]?.delta?.content
+  if (typeof delta === 'string') return delta
+  const full = obj?.choices?.[0]?.message?.content
+  if (typeof full === 'string') return full
+  return null
+}
+
+interface ChatCompletionResponseShape {
+  choices?: Array<{ message?: { content?: string | null } }>
+}
+
+/** Extracts the full assistant reply from a non-streamed (single JSON body) chat-completions response. */
+export function extractContentFromChatCompletionResponse(json: unknown): string | null {
+  const obj = json as ChatCompletionResponseShape
+  const content = obj?.choices?.[0]?.message?.content
+  return typeof content === 'string' ? content : null
+}
+
+const PREAMBLE_LINE_PATTERN =
+  /^(here('s| is)|sure[,!]?|certainly[,!]?|okay[,!]?|of course[,!]?)\b.*[:-]\s*$/i
+
+/**
+ * Best-effort cleanup of model output that ignores "output only the text"
+ * instructions: strips `<think>...</think>` reasoning blocks, unwraps a
+ * single wrapping markdown code fence, strips wrapping quotes, and drops a
+ * leading "Here is the cleaned text:"-style preamble line if present.
+ */
+export function stripModelPreamble(text: string): string {
+  let out = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+
+  const fenceMatch = out.match(/^```[a-zA-Z0-9]*\n([\s\S]*?)\n?```$/)
+  if (fenceMatch) {
+    out = fenceMatch[1].trim()
+  }
+
+  const lines = out.split('\n')
+  if (lines.length > 1 && PREAMBLE_LINE_PATTERN.test(lines[0].trim())) {
+    lines.shift()
+    out = lines.join('\n').trim()
+  }
+
+  if (out.length >= 2 && out.startsWith('"') && out.endsWith('"')) {
+    out = out.slice(1, -1).trim()
+  }
+
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Audio encoding
+// ---------------------------------------------------------------------------
+
+/** Concatenates PCM16 mono sample chunks (in push order) into one buffer. */
+export function concatInt16(chunks: Int16Array[]): Int16Array {
+  const total = chunks.reduce((sum, c) => sum + c.length, 0)
+  const out = new Int16Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.length
+  }
+  return out
+}
+
+/** Encodes mono PCM16 samples as a standard 44-byte-header WAV file. */
+export function pcm16ToWavBuffer(samples: Int16Array, sampleRate = 16000): Buffer {
+  const numChannels = 1
+  const bitsPerSample = 16
+  const bytesPerSample = bitsPerSample / 8
+  const blockAlign = numChannels * bytesPerSample
+  const byteRate = sampleRate * blockAlign
+  const dataSize = samples.length * bytesPerSample
+
+  const buffer = Buffer.alloc(44 + dataSize)
+  buffer.write('RIFF', 0, 'ascii')
+  buffer.writeUInt32LE(36 + dataSize, 4)
+  buffer.write('WAVE', 8, 'ascii')
+  buffer.write('fmt ', 12, 'ascii')
+  buffer.writeUInt32LE(16, 16) // fmt chunk size
+  buffer.writeUInt16LE(1, 20) // audio format: 1 = PCM
+  buffer.writeUInt16LE(numChannels, 22)
+  buffer.writeUInt32LE(sampleRate, 24)
+  buffer.writeUInt32LE(byteRate, 28)
+  buffer.writeUInt16LE(blockAlign, 32)
+  buffer.writeUInt16LE(bitsPerSample, 34)
+  buffer.write('data', 36, 'ascii')
+  buffer.writeUInt32LE(dataSize, 40)
+
+  for (let i = 0; i < samples.length; i++) {
+    buffer.writeInt16LE(samples[i], 44 + i * bytesPerSample)
+  }
+
+  return buffer
+}
+
+export function pcm16ToWavBase64(samples: Int16Array, sampleRate = 16000): string {
+  return pcm16ToWavBuffer(samples, sampleRate).toString('base64')
+}

@@ -60,3 +60,12 @@
   background: var(--color-surface-raised);
   color: var(--color-primary);
 }
+
+.sidebar__footer {
+  margin-top: auto;
+  padding: 12px 4px 4px;
+}
+
+.sidebar__footer .status-pill {
+  width: 100%;
+}

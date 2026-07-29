@@ -58,6 +58,44 @@ export interface StartSessionOptions {
  *   6. optionally `voiceEdit(text, command)` to apply a spoken edit command
  *      such as "delete the last sentence" or "replace foo with bar"
  */
+/**
+ * Backend connectivity state, surfaced to the renderer as a small status
+ * pill in the app header. `MockBackend` is always 'mock'/'ready'-ish (it
+ * never fails); the LiteRT-LM sidecar backend moves through
+ * starting -> ready, or -> error if the sidecar process fails to spawn,
+ * never answers, or dies mid-session.
+ */
+export type BackendStatusState = 'mock' | 'starting' | 'ready' | 'error'
+
+export interface BackendStatus {
+  state: BackendStatusState
+  /** Human-readable detail, set when state is 'error' (or transiently while retrying). */
+  message?: string
+}
+
+/**
+ * A typed error surfaced out-of-band (not as a rejected Promise) for
+ * failures that happen during a live session - e.g. a periodic partial
+ * transcription request failing while the user is still recording, where
+ * there's no Promise for the failure to reject. Emitted via the optional
+ * `onError` hook some backends (the LiteRT-LM one) implement in addition to
+ * the base `InferenceBackend` contract.
+ */
+export interface BackendError {
+  code: 'sidecar_unreachable' | 'request_failed' | 'timeout' | 'parse_error' | 'unknown'
+  message: string
+}
+
+/**
+ * Optional extra surface a backend may implement alongside
+ * `InferenceBackend` to report out-of-band session errors. Checked with an
+ * `in` guard at the IPC wiring layer (`src/main/ipc/backendIpc.ts`) so
+ * `MockBackend` isn't required to implement it.
+ */
+export interface BackendErrorSource {
+  onError(listener: (sessionId: string, error: BackendError) => void): () => void
+}
+
 export interface InferenceBackend {
   /** Begin a new dictation session. Returns an opaque session id. */
   startSession(opts?: StartSessionOptions): Promise<string>
