@@ -14,6 +14,21 @@ hotkey - and ships with two `InferenceBackend` implementations, switchable from 
   either a `litert-lm` binary the app can spawn, or a `litert-lm serve` instance you already have
   running. See [The real backend: LiteRT-LM](#the-real-backend-litert-lm) below.
 
+## Quick start
+
+One-click launchers that bootstrap everything (Node deps, a `litert-lm` Python venv, the Gemma E2B
+model) and then start the app, safe to re-run any time:
+
+- **WSL / Linux**: `./run.sh`
+- **Windows**: double-click `run-windows.bat` (it just runs `Start-Eloquent.ps1` with
+  `-ExecutionPolicy Bypass` so it works even with script execution locked down)
+
+Use the Windows one for actual dictation (real microphone, native GPU path) - see
+[WINDOWS.md](WINDOWS.md). The WSL one is verified to bring up the real UI and the real LiteRT-LM
+backend end-to-end (see [Running under WSLg](#running-under-wslg) below), but its microphone story
+is unconfirmed - **the Windows launcher has not been run against a real Windows machine** as part
+of adding it (see its own header comment); please report back anything that doesn't match.
+
 ## Stack
 
 - **Electron** (main/preload/renderer split, context isolation on, `nodeIntegration: false`)
@@ -334,6 +349,53 @@ Simpler alternative for most users: the `litert-lm` Python CLI (`pip install lit
 `uv tool install litert-lm`) ships a working `litert-lm serve` without a from-source build - point
 `sidecar.managedCommand` at whichever one you have installed.
 
+## Running under WSLg
+
+Contrary to an earlier draft of this doc (see the last bullet of
+[Known deviations / notes](#known-deviations--notes) for the original claim), this was later
+re-checked on a WSL2 box that turned out to have **WSLg** (`DISPLAY`, `WAYLAND_DISPLAY`, and
+`/tmp/.X11-unix` all present, plus a WSLg PulseAudio server at `/mnt/wslg/PulseServer`) - so the
+Electron UI, and the real LiteRT-LM backend, were both actually run headed, not just verified at
+the wire-protocol level. `./run.sh` automates everything below.
+
+**What was confirmed, empirically, on that box:**
+
+- The Electron window opens and renders normally under WSLg's X11 server - confirmed via
+  `webContents.capturePage()` screenshots taken right after `ready-to-show` (temporary
+  instrumentation, not shipped). One flag was required: `--noSandbox` (electron-vite's own flag,
+  passed through as `npm run dev -- --noSandbox`) - `node_modules/electron/dist/chrome-sandbox`
+  isn't setuid-root in a plain `npm install`, fixing that needs `sudo chown root:root
+  chrome-sandbox && sudo chmod 4755 chrome-sandbox`, and passwordless `sudo` isn't a safe thing to
+  assume. `run.sh` detects this (checks the binary's owner/permission bits) and only adds
+  `--noSandbox` when the setuid helper actually isn't usable, so a properly-configured Linux
+  desktop keeps the real sandbox.
+- The full real backend works end-to-end in this mode too: a persistent `litert-lm` venv
+  (`./.runtime/venv`, gitignored, created by `run.sh`) puts a real `litert-lm` binary on `PATH`,
+  the app's managed sidecar spawns `litert-lm serve` from it, imports the Gemma E2B model into its
+  own sandboxed `LITERT_LM_DIR`, and the status pill reaches **"LiteRT-LM ready"** - captured on
+  screen within ~5 seconds of window-show (the model file was pre-copied into the app's own
+  `userData/models/` directory rather than re-downloaded, since it was already on disk from
+  extending this integration; a first run for someone else pays the one-time ~2.4 GiB HuggingFace
+  download `run.sh` does automatically).
+- `dbus` connection errors in the log (`Failed to connect to the bus: ...`) are harmless noise from
+  running without a system/session bus - they don't stop the window from opening or the backend
+  from working.
+
+**Microphone - the honest, unresolved part:** WSLg exposes a PulseAudio source named `RDPSource`
+(`pactl list sources short`). It's `SUSPENDED` at idle (normal PulseAudio behavior) but transitions
+to `RUNNING` and produces genuinely non-silent sample data when captured with `parecord` - so
+WSLg's OS-level audio-bridge plumbing is real, not a stub. What this *doesn't* prove: whether that
+picks up an actual physical microphone on the Windows host (muted/absent input devices would still
+pass the same `parecord` check with just noise-floor samples), and whether Chromium's
+`getUserMedia()` inside Electron binds to it cleanly - that specific path wasn't separately
+exercised here. Practically: treat WSL/WSLg as good enough for UI and backend development/demoing,
+and use the Windows host ([WINDOWS.md](WINDOWS.md)) as the path for dictation you actually trust to
+capture real speech.
+
+GPU acceleration has the same CPU-only caveat here as documented for Windows in
+[WINDOWS.md](WINDOWS.md#6-gpu-acceleration---honest-findings) - `litert-lm serve` doesn't route
+Gemma-4 inference through a GPU today regardless of host OS.
+
 ## App features
 
 1. **Dictate** - big record button; live streaming transcript while recording; automatic cleanup
@@ -402,17 +464,21 @@ remove it if you don't hit that issue.
 - `voiceEdit` has no dedicated screen mock-up in the original spec - it's exposed here as a small
   text-command input on the Dictate screen so the full `InferenceBackend` contract is actually
   exercised by the UI, not just implemented.
-- This environment has no display server (so the Electron UI itself/audio capture/`build:win`
-  packaging were never exercised here), but the wire protocol **has** been verified live: a real
-  `litert-lm` 0.14.0 CLI was pip-installed into a throwaway venv, a real `gemma-4-E2B` model was
+- **Superseded note**: an earlier draft of this doc said "this environment has no display server,
+  so the Electron UI itself was never exercised here." That was true of the box this app was
+  originally scaffolded on, but not of every environment it's since been run in - see
+  [Running under WSLg](#running-under-wslg) above for a headed run (real window, real backend
+  reaching "ready", screenshots captured) on a WSLg-enabled WSL2 box. What's *still* unexercised
+  anywhere so far: real end-to-end dictation through an actually-confirmed physical microphone (see
+  the WSLg section's honest caveat about `RDPSource`), and `npm run build:win` packaging (needs a
+  real Windows/electron-builder toolchain - see the last bullet below). Independent of all that,
+  the wire protocol itself **has** been verified live against a real server regardless of any UI:
+  a real `litert-lm` 0.14.0 CLI was pip-installed into a venv, a real `gemma-4-E2B` model was
   imported and served, and `scripts/integration-live.mjs` (a plain-Node script that replicates
   `litertWire.ts`'s exact request builders/SSE parsing) was run against it end-to-end: health
   check, SSE streaming completion, WAV transcription (perfect verbatim output), filler-word
   cleanup, and a Key Points transform all passed against the real server - see
-  `scratchpad/sidecar-verification.md` for the full raw captures this was based on. What's still
-  untested here specifically: the Electron UI itself (real mic capture, real end-to-end recording
-  -> cleanup -> transform through the actual renderer), and `npm run build:win` packaging - both
-  require a real Windows/display-server host; see [WINDOWS.md](WINDOWS.md) for that setup. All
+  `scratchpad/sidecar-verification.md` for the full raw captures this was based on. All
   wire-format assumptions remain isolated in `litertWire.ts` specifically so future drift only
   needs one file to change.
 - `BackendController`'s hot-swap doesn't cancel an in-flight `startSession`/`cleanup`/etc. call

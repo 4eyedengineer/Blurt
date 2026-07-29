@@ -10,7 +10,14 @@ export default defineConfig(
     // 'scripts/**': plain, untyped Node utility scripts (e.g. integration-live.mjs) run directly
     // with `node`, not part of the app's TS build - same rationale as excluding
     // src/renderer/public/** (plain JS that runs outside the normal bundling/type-checking path).
-    ignores: ['**/node_modules', '**/dist', '**/out', 'src/renderer/public/**', 'scripts/**']
+    ignores: [
+      '**/node_modules',
+      '**/dist',
+      '**/out',
+      'src/renderer/public/**',
+      'scripts/**',
+      '.runtime/**'
+    ]
   },
   tseslint.configs.recommended,
   eslintPluginReact.configs.flat.recommended,

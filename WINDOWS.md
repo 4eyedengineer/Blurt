@@ -11,6 +11,32 @@ guessed from documentation. The one thing *not* independently verified on this m
 GPU execution, since the dev sandbox this app was built in has no Vulkan-capable GPU; the "GPU
 acceleration" section below is explicit about what's confirmed vs. inferred.
 
+## Quick start: one-click launcher
+
+Steps 1-4 below (Python, the `litert-lm` CLI, importing a model, configuring the app) are
+automated by **`run-windows.bat`** at the repo root - double-click it (it just runs
+`Start-Eloquent.ps1` with `-ExecutionPolicy Bypass`, so it works even if PowerShell script
+execution is locked down on your machine) and it will:
+
+- install Python 3.12 and Node.js LTS via `winget` if either is missing
+- create a `litert-lm` venv under `%LOCALAPPDATA%\WindowsEloquent\venv` and `pip install litert-lm`
+  into it (skips this if already done)
+- `npm install` if `node_modules` is missing
+- download + import the Gemma E2B model into the app's own model store if it isn't there yet
+  (reusing an existing local copy instead of re-downloading ~2.4 GiB, if one is found)
+- seed an initial `settings.json` with the real LiteRT-LM backend already enabled - **only** on the
+  very first run, so it never clobbers a config you've since changed
+- run `npm run dev`
+
+Re-running it is safe: every step checks what's already done and skips it.
+
+**Honest caveat**: `Start-Eloquent.ps1` was written and reviewed carefully, but has **not been run
+against a real Windows machine** - this whole integration was done from a WSL2/Linux sandbox with
+no Windows host available to test against (see the script's own header comment). Skim it before
+your first run. If a step doesn't match your machine - a different winget package ID, an
+unexpected Python/Node install path, etc. - the manual steps below are the fallback for exactly
+that step; please fix forward and report back what didn't match so it can be corrected.
+
 ## 1. Install Python 3.10+
 
 `litert-lm` (the pip package) requires Python **3.10 or newer**. Install it with `winget`:
@@ -258,6 +284,8 @@ needs to provide, exactly as described in steps 1-3 above.
 
 ## Summary checklist
 
+- [ ] Easiest: double-click `run-windows.bat` and skip straight to the last two items (see
+      "Quick start: one-click launcher" above - untested on a real machine, so skim it first)
 - [ ] `winget install -e --id Python.Python.3.12` (or any 3.10+)
 - [ ] `pip install litert-lm`
 - [ ] `litert-lm import --from-huggingface-repo litert-community/gemma-4-12B-it-litert-lm gemma-4-12B-it.litertlm 12b` (or e2b/e4b)
