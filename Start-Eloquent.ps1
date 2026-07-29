@@ -113,6 +113,7 @@ $LocalMirrorDir = Join-Path $RuntimeBase 'app'
 $ModelId        = 'gemma-4-e2b'
 $ModelAlias     = 'e2b'
 $HfRepo         = 'litert-community/gemma-4-E2B-it-litert-lm'
+$HfFileName     = 'gemma-4-E2B-it.litertlm'
 $AppUserDataDir = Join-Path $env:APPDATA 'windows-eloquent'
 $RobocopyExcludes = @('node_modules', '.runtime', 'out', 'dist', '.git')
 
@@ -304,7 +305,7 @@ if (Test-Path $ModelFile) {
         Write-Ok "(~2.4 GiB, ungated, no HF token needed - this can take a while)"
         New-Item -ItemType Directory -Force -Path $StagingDir | Out-Null
         $env:LITERT_LM_DIR = $StagingDir
-        & $VenvLitertLm import --from-huggingface-repo $HfRepo "$ModelId.litertlm" $ModelAlias
+        & $VenvLitertLm import --from-huggingface-repo $HfRepo $HfFileName $ModelAlias
         Remove-Item Env:\LITERT_LM_DIR
         Copy-Item (Join-Path $StagingDir "models\$ModelAlias\model.litertlm") $ModelFile
     }
