@@ -6,7 +6,12 @@ import eslintPluginReactHooks from 'eslint-plugin-react-hooks'
 import eslintPluginReactRefresh from 'eslint-plugin-react-refresh'
 
 export default defineConfig(
-  { ignores: ['**/node_modules', '**/dist', '**/out', 'src/renderer/public/**'] },
+  {
+    // 'scripts/**': plain, untyped Node utility scripts (e.g. integration-live.mjs) run directly
+    // with `node`, not part of the app's TS build - same rationale as excluding
+    // src/renderer/public/** (plain JS that runs outside the normal bundling/type-checking path).
+    ignores: ['**/node_modules', '**/dist', '**/out', 'src/renderer/public/**', 'scripts/**']
+  },
   tseslint.configs.recommended,
   eslintPluginReact.configs.flat.recommended,
   eslintPluginReact.configs.flat['jsx-runtime'],

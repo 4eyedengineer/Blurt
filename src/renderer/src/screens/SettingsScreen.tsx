@@ -32,6 +32,8 @@ function modelStateLabel(state: ModelDownloadState): string {
       return 'Looking up download…'
     case 'downloading':
       return 'Downloading…'
+    case 'importing':
+      return 'Registering with litert-lm…'
     case 'done':
       return 'Installed'
     case 'error':
@@ -213,9 +215,10 @@ export function SettingsScreen(): React.JSX.Element {
           <h2>Sidecar</h2>
           <p className="settings-screen__hint">
             How the app talks to litert-lm. &quot;Managed&quot; spawns the process itself using the
-            command below (<code>{'{modelPath}'}</code> and <code>{'{port}'}</code> are
-            substituted); &quot; External&quot; connects to a litert-lm server you already have
-            running.
+            command below (<code>{'{port}'}</code> is substituted; <code>{'{modelPath}'}</code> is
+            also available for custom wrapper scripts, though the stock <code>litert-lm serve</code>{' '}
+            takes no model flag - the model is selected per-request by its imported alias);
+            &quot;External&quot; connects to a litert-lm server you already have running.
           </p>
           <div className="settings-screen__radio-group">
             {(['managed', 'external'] as SidecarMode[]).map((mode) => (
@@ -264,7 +267,7 @@ export function SettingsScreen(): React.JSX.Element {
                   value={settings.sidecar.port}
                   onChange={(e) =>
                     void update({
-                      sidecar: { ...settings.sidecar, port: Number(e.target.value) || 8765 }
+                      sidecar: { ...settings.sidecar, port: Number(e.target.value) || 9379 }
                     })
                   }
                 />
@@ -279,7 +282,7 @@ export function SettingsScreen(): React.JSX.Element {
                 <input
                   id="sidecar-url"
                   type="text"
-                  placeholder="http://127.0.0.1:8765"
+                  placeholder="http://127.0.0.1:9379"
                   value={settings.sidecar.externalUrl}
                   onChange={(e) =>
                     void update({

@@ -8,6 +8,7 @@ import {
   type WriteStream
 } from 'fs'
 import { join } from 'path'
+import { spawn } from 'child_process'
 import { EventEmitter } from 'events'
 import type { ModelId } from '../../shared/types'
 import {
@@ -47,15 +48,36 @@ function closeStream(stream: WriteStream): Promise<void> {
  * `<modelId>.litertlm` regardless of the upstream filename, so "is this
  * model installed" is a plain existence check - no separate manifest to
  * keep in sync.
+ *
+ * A downloaded file isn't enough on its own, though: the real `litert-lm
+ * serve` only recognizes models that appear in `litert-lm list` (i.e. that
+ * have gone through `litert-lm import <file> <alias>`), and selects between
+ * them per-request via the JSON body's `model` field set to that alias -
+ * see `ModelCatalogEntry.alias` and scratchpad/sidecar-verification.md §2/§3.
+ * `litert-lm import` on a local file is just `shutil.copy(source, dest)`
+ * under the hood (confirmed by reading the installed
+ * `litert_lm_cli/commands/import.py`) into
+ * `$LITERT_LM_DIR/models/<alias>/model.litertlm` (`$LITERT_LM_DIR` defaults
+ * to `~/.litert-lm` but is fully overridable via that env var - also
+ * confirmed by reading `litert_lm_cli/model.py::get_cli_base_dir`). Rather
+ * than reimplementing that copy ourselves (and risking drifting from
+ * whatever `import` does in a future litert-lm release), this class shells
+ * out to the real `litert-lm import` CLI after every successful download,
+ * with `LITERT_LM_DIR` pointed at a directory under our own `userData` (so
+ * we never touch the user's real `~/.litert-lm`), and the same directory is
+ * exported for `Sidecar` to pass through when it spawns `litert-lm serve` -
+ * see `BackendController.rebuild()`.
  */
 export class ModelManager extends EventEmitter {
   private readonly modelsDir: string
+  private readonly litertLmDir: string
   private readonly progress = new Map<ModelId, ModelDownloadProgress>()
   private readonly abortControllers = new Map<ModelId, AbortController>()
 
   constructor(userDataDir: string) {
     super()
     this.modelsDir = join(userDataDir, 'models')
+    this.litertLmDir = join(userDataDir, 'litert-lm-home')
     mkdirSync(this.modelsDir, { recursive: true })
   }
 
@@ -70,6 +92,61 @@ export class ModelManager extends EventEmitter {
   getInstalledModelPath(modelId: ModelId): string | null {
     const path = this.finalPath(modelId)
     return existsSync(path) ? path : null
+  }
+
+  /** The `LITERT_LM_DIR` this ModelManager imports models into - pass this through as an env var to any spawned `litert-lm` process (import or serve) so they agree on where models live. */
+  getLitertLmDir(): string {
+    return this.litertLmDir
+  }
+
+  private importedModelPath(modelId: ModelId): string {
+    const alias = getCatalogEntry(modelId).alias
+    return join(this.litertLmDir, 'models', alias, 'model.litertlm')
+  }
+
+  /** Whether `modelId` has already been `litert-lm import`-ed into our sandboxed LITERT_LM_DIR (i.e. `litert-lm list` against that dir would show its alias). */
+  isImported(modelId: ModelId): boolean {
+    return existsSync(this.importedModelPath(modelId))
+  }
+
+  /**
+   * Runs `<cliBinary> import <downloadedFile> <alias>` (see class doc) so the
+   * sidecar can find this model by alias. No-ops if already imported. Safe
+   * to call even if the underlying file hasn't changed - `import` just
+   * re-copies it.
+   */
+  async importModel(modelId: ModelId, cliBinary: string): Promise<void> {
+    const filePath = this.finalPath(modelId)
+    if (!existsSync(filePath)) {
+      throw new Error(`Cannot import ${modelId}: ${filePath} does not exist (download it first).`)
+    }
+    const alias = getCatalogEntry(modelId).alias
+
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(cliBinary, ['import', filePath, alias], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, LITERT_LM_DIR: this.litertLmDir }
+      })
+      let stderr = ''
+      child.stdout?.on('data', () => {})
+      child.stderr?.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf-8')
+      })
+      child.on('error', (err) => {
+        reject(new Error(`Failed to run '${cliBinary} import': ${err.message}`))
+      })
+      child.on('close', (code) => {
+        if (code === 0) resolve()
+        else
+          reject(
+            new Error(
+              `'${cliBinary} import ${filePath} ${alias}' exited with code ${code}${
+                stderr ? `: ${stderr.trim().slice(0, 500)}` : ''
+              }`
+            )
+          )
+      })
+    })
   }
 
   listInstalled(): InstalledModelInfo[] {
@@ -126,8 +203,18 @@ export class ModelManager extends EventEmitter {
     return { url, totalBytes }
   }
 
-  /** Starts (or resumes, via HTTP Range, if a .part file already exists) a download. Progress is emitted via 'progress'. */
-  async download(modelId: ModelId): Promise<void> {
+  /**
+   * Starts (or resumes, via HTTP Range, if a .part file already exists) a
+   * download, then registers the result with `litert-lm import` (see class
+   * doc) so it's immediately usable by a managed sidecar - the Settings
+   * screen's single "Download" button covers both steps, surfaced as the
+   * 'downloading' -> 'importing' -> 'done' progression. `cliBinary` is the
+   * `litert-lm` executable to run for the import step (defaults to the
+   * bare command, resolved via PATH) - pass the same binary your managed
+   * sidecar command uses so the import lands somewhere `serve` will find it.
+   * Progress is emitted via 'progress'.
+   */
+  async download(modelId: ModelId, cliBinary = 'litert-lm'): Promise<void> {
     if (this.getProgress(modelId).state === 'downloading') return
 
     this.setProgress({ modelId, state: 'resolving', receivedBytes: 0, totalBytes: null })
@@ -177,6 +264,17 @@ export class ModelManager extends EventEmitter {
       const finalPath = this.finalPath(modelId)
       if (existsSync(finalPath)) unlinkSync(finalPath)
       renameSync(partPath, finalPath)
+
+      this.setProgress({ modelId, state: 'importing', receivedBytes: received, totalBytes })
+      try {
+        await this.importModel(modelId, cliBinary)
+      } catch (importErr) {
+        throw new Error(
+          `Downloaded but failed to register with litert-lm: ${
+            importErr instanceof Error ? importErr.message : String(importErr)
+          }`
+        )
+      }
 
       this.setProgress({
         modelId,

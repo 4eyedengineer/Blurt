@@ -196,14 +196,42 @@ with `npm test`.
 
 ### What it assumes about the sidecar
 
+Verified against a real `litert-lm` 0.14.0 pip install and a real gemma-4-E2B model (see
+`scratchpad/sidecar-verification.md` for the full raw captures, and
+`scripts/integration-live.mjs` for a repeatable live check against a running server):
+
 - `POST /v1/chat/completions`, OpenAI-compatible, `stream: true` giving SSE
   (`text/event-stream`) `chat.completion.chunk`-shaped events, terminated by a `data: [DONE]`
   event. If the sidecar instead returns a normal JSON body (non-SSE), `litertBackend.ts` falls
-  back to parsing that directly (see `extractContentFromChatCompletionResponse`).
+  back to parsing that directly (see `extractContentFromChatCompletionResponse`). **Confirmed
+  exact match**, including streaming - no adjustments needed.
 - Audio is sent as a user-message content part:
   `{ type: 'input_audio', input_audio: { data: '<base64 wav>', format: 'wav' } }`, alongside a
-  `{ type: 'text', text: '<transcription prompt>' }` part.
-- `GET /v1/models` is used purely as a "is the server up yet" health check.
+  `{ type: 'text', text: '<transcription prompt>' }` part. **Confirmed**, with two gotchas: the
+  `format` field is read but never validated - the engine just requires `data` to decode to a real
+  RIFF/WAV container (any declared sample rate works; no client-side resampling needed), and
+  **headerless raw PCM16 silently returns `content: null`** (HTTP 200, no error) rather than
+  failing loudly - `pcm16ToWavBuffer` always emits a proper WAV header for exactly this reason.
+- `GET /v1/models` is used purely as a "is the server up yet" health check - **confirmed**, but
+  note it responds 200 within ~1-2s of process start well before the model is actually loaded into
+  memory (loading is lazy, on the first real inference request - see `buildWarmupRequest` below).
+- No `usage`/token-count field appears in any response, streamed or not - if the app ever wants to
+  show/log token counts, they'd need to be estimated client-side.
+- The reference server (`http.server.HTTPServer`, not `ThreadingHTTPServer`) is single-threaded -
+  a second concurrent request just blocks on the TCP accept until the first fully completes.
+  `LitertBackend` funnels every outgoing request through one serial promise-chain queue for this
+  reason (see the `enqueue`/`requestQueue` private members in `litertBackend.ts`) rather than
+  assuming the sidecar can service overlapping calls.
+- Model selection is per-request via the JSON body's `"model"` field, but that field must be the
+  **alias** the model was registered under via `litert-lm import <file> <alias>` (see
+  `ModelCatalogEntry.alias` in `src/shared/models.ts`) - not this app's own `ModelId` (e.g.
+  `"gemma-4-e2b"`). `serve` itself takes no model-selection flag at all; `BackendController`
+  resolves the alias and imports the model (via `ModelManager.importModel`) before starting the
+  sidecar if it hasn't been already.
+- `buildWarmupRequest` (`litertWire.ts`) builds a minimal throwaway completion used to force the
+  lazy model load to happen right after the sidecar comes up (`LitertBackend.warmup()`, fired by
+  `BackendController` once the sidecar is ready) instead of on the user's first real utterance -
+  empirically, a cold first request pays ~5.6s extra vs. ~1.4s once warm (E2B/CPU).
 
 ### Session lifecycle mapping
 
@@ -252,8 +280,8 @@ All under `Settings.sidecar` (`src/shared/types.ts`), editable from the Settings
 | `backend` | `'mock'` or `'litert'` - which `InferenceBackend` to construct. |
 | `modelId` | `'gemma-4-e2b' \| 'gemma-4-e4b' \| 'gemma-4-12b'` - which model `ModelManager` downloads/uses. |
 | `sidecar.mode` | `'managed'` (app spawns the process) or `'external'` (you already have one running). |
-| `sidecar.managedCommand` | Command template for managed mode, e.g. `litert-lm serve --model {modelPath} --port {port}` - `{modelPath}`/`{port}` are substituted, then split into argv (quote-aware) and spawned directly (no shell). This is a setting rather than a hardcoded invocation because the exact CLI flags can differ per `litert-lm` build/install. |
-| `sidecar.externalUrl` | Base URL for external mode, e.g. `http://127.0.0.1:8765`. |
+| `sidecar.managedCommand` | Command template for managed mode. Default: `litert-lm serve --host 127.0.0.1 --port {port}` - `{port}` is substituted, then split into argv (quote-aware) and spawned directly (no shell). `{modelPath}` is also substituted if present, for custom wrapper scripts, but the real `litert-lm serve` CLI takes no model-selection flag at all (verified - see "What it assumes about the sidecar" above); this is a setting rather than a hardcoded invocation mainly so a non-default `litert-lm` install location or extra flags (e.g. `--cors-origin`) can be configured without a code change. |
+| `sidecar.externalUrl` | Base URL for external mode, e.g. `http://127.0.0.1:9379` (litert-lm's real default port). |
 | `sidecar.port` | Port used to build the local URL in managed mode, and substituted into `managedCommand`. |
 
 ### Model downloads
@@ -261,11 +289,11 @@ All under `Settings.sidecar` (`src/shared/types.ts`), editable from the Settings
 `ModelManager` (`src/main/backend/modelManager.ts`) downloads from the **ungated**
 `litert-community/*` HuggingFace mirrors (Apache-2.0, no HF account/token needed):
 
-| Model | HF repo | ~Size |
-|---|---|---|
-| Gemma 4 E2B | `litert-community/gemma-4-E2B-it-litert-lm` | ~2.4 GiB |
-| Gemma 4 E4B | `litert-community/gemma-4-E4B-it-litert-lm` | ~3.4 GiB |
-| Gemma 4 12B | `litert-community/gemma-4-12B-it-litert-lm` | ~6.1 GiB |
+| Model | HF repo | Sidecar alias | ~Size |
+|---|---|---|---|
+| Gemma 4 E2B | `litert-community/gemma-4-E2B-it-litert-lm` | `e2b` | ~2.4 GiB |
+| Gemma 4 E4B | `litert-community/gemma-4-E4B-it-litert-lm` | `e4b` | ~3.4 GiB |
+| Gemma 4 12B | `litert-community/gemma-4-12B-it-litert-lm` | `12b` | ~6.1 GiB |
 
 The actual `.litertlm` filename inside each repo is **resolved at download time** via
 `https://huggingface.co/api/models/<repo>` rather than hardcoded (repo maintainers can rename
@@ -274,9 +302,20 @@ locally as `<userData>/models/<modelId>.litertlm` - so "is this installed" is a 
 check, not a separate manifest. Downloads stream to a `.part` file and `rename()` into place only
 on success; if a `.part` file already exists, the next download attempt resumes via an HTTP
 `Range` request (falling back to a clean restart if the server doesn't honor it). Progress
-(bytes received/total, state) is pushed to the Settings screen over IPC as it downloads.
+(bytes received/total, state) is pushed to the Settings screen over IPC as it downloads, including
+a final `'importing'` state (before `'done'`): once the file lands, `ModelManager` shells out to
+the real `litert-lm import <file> <alias>` CLI (using the alias from the table above), pointed at
+`LITERT_LM_DIR=<userData>/litert-lm-home` - a sandbox entirely separate from your real
+`~/.litert-lm` - so the model is immediately servable by alias without a separate manual step. See
+`ModelManager`'s class doc comment in `modelManager.ts` for why this shells out to the real CLI
+rather than reimplementing the (simple, but version-coupled) import logic itself.
 
 ### Building/installing `litert-lm` on Windows
+
+**See [WINDOWS.md](WINDOWS.md) for the complete, step-by-step Windows setup guide** (Python/pip
+install, model import, Settings configuration, dev run, `build:win`, and an honest writeup of
+what's actually confirmed about GPU acceleration on the pip-installed CLI vs. what would require
+the from-source build below). The rest of this section is a quick summary.
 
 This app doesn't bundle `litert-lm` - it's a separate install the user (or your installer/setup
 script) provides, referenced by `sidecar.managedCommand`. A documented from-source Windows build
@@ -363,13 +402,19 @@ remove it if you don't hit that issue.
 - `voiceEdit` has no dedicated screen mock-up in the original spec - it's exposed here as a small
   text-command input on the Dictate screen so the full `InferenceBackend` contract is actually
   exercised by the UI, not just implemented.
-- This environment has no display server and no working `litert-lm` install (WSL2, no GPU
-  passthrough), so `LitertBackend` has never been run against a live sidecar here. Verification is
-  `npm run typecheck` + `npm run lint` + `npm test` + `npm run build` succeeding, plus the pure
-  `litertWire.ts`/`sidecar.ts` unit tests; the actual sidecar process, real transcription/cleanup
-  output, and end-to-end audio pipeline should be smoke-tested against a real `litert-lm serve`
-  build on a real Windows machine. All wire-format assumptions are isolated in `litertWire.ts`
-  specifically so that smoke-testing only needs to adjust one small file if reality disagrees.
+- This environment has no display server (so the Electron UI itself/audio capture/`build:win`
+  packaging were never exercised here), but the wire protocol **has** been verified live: a real
+  `litert-lm` 0.14.0 CLI was pip-installed into a throwaway venv, a real `gemma-4-E2B` model was
+  imported and served, and `scripts/integration-live.mjs` (a plain-Node script that replicates
+  `litertWire.ts`'s exact request builders/SSE parsing) was run against it end-to-end: health
+  check, SSE streaming completion, WAV transcription (perfect verbatim output), filler-word
+  cleanup, and a Key Points transform all passed against the real server - see
+  `scratchpad/sidecar-verification.md` for the full raw captures this was based on. What's still
+  untested here specifically: the Electron UI itself (real mic capture, real end-to-end recording
+  -> cleanup -> transform through the actual renderer), and `npm run build:win` packaging - both
+  require a real Windows/display-server host; see [WINDOWS.md](WINDOWS.md) for that setup. All
+  wire-format assumptions remain isolated in `litertWire.ts` specifically so future drift only
+  needs one file to change.
 - `BackendController`'s hot-swap doesn't cancel an in-flight `startSession`/`cleanup`/etc. call
   against the *old* backend when settings change mid-call - it only stops accepting new work on
   the old instance and stops the old sidecar process once the new one is ready. A dictation

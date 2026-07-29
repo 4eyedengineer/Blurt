@@ -13,6 +13,7 @@ import {
   buildTranscriptionRequest,
   buildTransformRequest,
   buildVoiceEditRequest,
+  buildWarmupRequest,
   concatInt16,
   extractContentFromChatCompletionResponse,
   extractDeltaFromChatCompletionChunk,
@@ -66,10 +67,47 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   private emitter = new EventEmitter()
   private readonly partialIntervalMs: number
   private readonly requestTimeoutMs: number
+  /**
+   * The real `litert-lm serve` is a plain `http.server.HTTPServer` (not
+   * `ThreadingHTTPServer`) - verified empirically that a second concurrent
+   * request just blocks on the TCP accept until the first fully completes
+   * (scratchpad/sidecar-verification.md gotcha 2). Every outgoing request
+   * (transcription, cleanup, transform, voice-edit, warmup) is funneled
+   * through this one promise chain so we never have two fetches in flight
+   * at once, each racing its own timeout clock while actually queued
+   * server-side.
+   */
+  private requestQueue: Promise<void> = Promise.resolve()
 
   constructor(private readonly options: LitertBackendOptions) {
     this.partialIntervalMs = options.partialIntervalMs ?? DEFAULT_PARTIAL_INTERVAL_MS
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+  }
+
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this.requestQueue.then(fn, fn)
+    this.requestQueue = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
+  }
+
+  /**
+   * Best-effort: sends a throwaway minimal request through the same serial
+   * queue as real requests, to force the sidecar's lazy model load (see
+   * scratchpad/sidecar-verification.md §3/gotcha 5 - ~5.6s cold vs ~1.4s warm
+   * for E2B on CPU) to happen right after the sidecar comes up instead of
+   * blocking the user's first real utterance. Failures are swallowed - a
+   * failed warmup just means the first real request pays the cold-start
+   * cost instead of this one.
+   */
+  async warmup(): Promise<void> {
+    try {
+      await this.enqueue(() => this.chatCompletion(buildWarmupRequest(this.options.modelId)))
+    } catch {
+      // Best-effort only - see doc comment above.
+    }
   }
 
   async startSession(opts?: StartSessionOptions): Promise<string> {
@@ -132,7 +170,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       wavBase64,
       vocabulary: session.vocabulary
     })
-    const raw = await this.chatCompletion(request)
+    const raw = await this.enqueue(() => this.chatCompletion(request))
     return stripModelPreamble(raw)
   }
 
@@ -181,19 +219,19 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       text,
       vocabulary: this.options.getVocabulary?.()
     })
-    const raw = await this.chatCompletion(request)
+    const raw = await this.enqueue(() => this.chatCompletion(request))
     return stripModelPreamble(raw)
   }
 
   async transform(text: string, mode: TransformMode): Promise<string> {
     const request = buildTransformRequest({ model: this.options.modelId, text, mode })
-    const raw = await this.chatCompletion(request)
+    const raw = await this.enqueue(() => this.chatCompletion(request))
     return stripModelPreamble(raw)
   }
 
   async voiceEdit(text: string, command: string): Promise<string> {
     const request = buildVoiceEditRequest({ model: this.options.modelId, text, command })
-    const raw = await this.chatCompletion(request)
+    const raw = await this.enqueue(() => this.chatCompletion(request))
     return stripModelPreamble(raw)
   }
 

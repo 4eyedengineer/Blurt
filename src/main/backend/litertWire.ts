@@ -5,15 +5,34 @@
  * and trivial to adjust once the exact request/response shapes are
  * verified empirically against a real `litert-lm serve` instance.
  *
- * Baseline assumed here (per the LiteRT-LM de-risking report):
+ * Verified against a real `litert-lm` 0.14.0 pip-installed server (see
+ * scratchpad/sidecar-verification.md for the full raw req/resp captures):
  *   - `litert-lm serve` exposes an OpenAI-compatible
  *     `POST /v1/chat/completions`, with `stream: true` giving SSE
  *     (`text/event-stream`) chunks shaped like OpenAI's
- *     `chat.completion.chunk` objects.
+ *     `chat.completion.chunk` objects, terminated by `data: [DONE]`. Matches
+ *     exactly - no adjustments needed here.
  *   - Audio input is a user-message content part:
  *     `{ type: "input_audio", input_audio: { data: "<base64>", format: "wav" } }`.
+ *     Confirmed correct, BUT: `format` is read and never validated/branched
+ *     on server-side - the engine just base64-decodes `data` and requires it
+ *     to be a real RIFF/WAV container (any declared sample rate works,
+ *     no need to resample to 16kHz). Headerless/raw PCM16 (even with
+ *     `format:"pcm16"` set) silently returns `content: null` - HTTP 200, no
+ *     error. `pcm16ToWavBuffer` below already emits a proper 44-byte RIFF
+ *     header, so this was correct from the start; documented here as a
+ *     tripwire for anyone tempted to "optimize" it away.
  *   - `GET /v1/models` is available and used as the "is the server up yet"
- *     health check (see sidecar.ts).
+ *     health check (see sidecar.ts) - confirmed, though note it returns 200
+ *     almost immediately even before the model is actually loaded (loading
+ *     is lazy, on first real inference request).
+ *   - No `usage`/token-count field in any response, streamed or not - if
+ *     that's ever needed, it has to be estimated client-side.
+ *   - The server (`http.server.HTTPServer`, not `ThreadingHTTPServer`) is
+ *     single-threaded: a second request literally blocks on the TCP accept
+ *     until the first fully completes. `LitertBackend` enqueues every
+ *     outgoing request through one app-wide serial queue for this reason -
+ *     see `litertBackend.ts`.
  */
 import type { TransformMode } from '../../shared/backend'
 
@@ -125,6 +144,23 @@ export function buildTransformRequest(
       { role: 'system', content: TRANSFORM_PROMPTS[params.mode] },
       { role: 'user', content: params.text }
     ]
+  }
+}
+
+/**
+ * A minimal, non-streaming request whose only purpose is to force the
+ * sidecar's lazy model load to happen up front instead of on the user's
+ * first real utterance. Verified empirically that the first request against
+ * a cold engine pays a multi-second load cost (~5.6s for E2B on CPU) vs.
+ * ~1.4s once warm - see scratchpad/sidecar-verification.md §3. Non-streaming
+ * so the caller doesn't need SSE plumbing just to throw the result away.
+ */
+export function buildWarmupRequest(model: string): ChatCompletionRequestBody {
+  return {
+    model,
+    stream: false,
+    temperature: 0,
+    messages: [{ role: 'user', content: 'Hi' }]
   }
 }
 

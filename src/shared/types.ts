@@ -22,12 +22,16 @@ export interface SidecarSettings {
   /**
    * Command template for 'managed' mode, split on whitespace (quoted
    * segments are respected) and spawned directly - no shell involved.
-   * `{modelPath}` and `{port}` are substituted at spawn time. The exact CLI
-   * shape can vary per litert-lm install/build, so this is a setting rather
-   * than a hardcoded invocation.
+   * `{port}` is substituted at spawn time; `{modelPath}` is also supported
+   * for custom wrapper scripts but the real `litert-lm serve` CLI takes no
+   * model-selection flag at all (verified empirically - see
+   * scratchpad/sidecar-verification.md §3) - the model is selected
+   * per-request via the JSON body's `model` field (the alias it was
+   * `litert-lm import`-ed as, see `ModelCatalogEntry.alias`), which is why
+   * the default template below doesn't reference `{modelPath}`.
    */
   managedCommand: string
-  /** Base URL for 'external' mode, e.g. "http://127.0.0.1:8765". */
+  /** Base URL for 'external' mode, e.g. "http://127.0.0.1:9379" (litert-lm's default port). */
   externalUrl: string
   /** Port used to build the local URL in 'managed' mode, and substituted into managedCommand. */
   port: number
@@ -35,9 +39,9 @@ export interface SidecarSettings {
 
 export const DEFAULT_SIDECAR_SETTINGS: SidecarSettings = {
   mode: 'managed',
-  managedCommand: 'litert-lm serve --model {modelPath} --port {port}',
-  externalUrl: 'http://127.0.0.1:8765',
-  port: 8765
+  managedCommand: 'litert-lm serve --host 127.0.0.1 --port {port}',
+  externalUrl: 'http://127.0.0.1:9379',
+  port: 9379
 }
 
 export interface Settings {

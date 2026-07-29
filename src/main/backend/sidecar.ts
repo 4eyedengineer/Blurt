@@ -12,9 +12,16 @@ export interface SidecarOptions {
   /** Absolute path to the .litertlm model file, substituted into `{modelPath}`. */
   modelPath: string
   port: number
+  /** Extra environment variables merged over `process.env` for the spawned process (e.g. `LITERT_LM_DIR`, see ModelManager). Managed mode only. */
+  env?: Record<string, string>
   /** Overridable for tests; defaults below. */
   readyTimeoutMs?: number
   readyPollIntervalMs?: number
+}
+
+/** Extracts the executable name/path from a managed-command template (its first whitespace/quote-aware token), e.g. for shelling out to the same `litert-lm` binary for `import` as `serve` uses. */
+export function getManagedCommandBinary(template: string): string {
+  return tokenizeCommand(template)[0] ?? 'litert-lm'
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 60_000
@@ -116,7 +123,10 @@ export class Sidecar extends EventEmitter {
       return
     }
 
-    const child = spawn(cmd, rest, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(cmd, rest, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: this.options.env ? { ...process.env, ...this.options.env } : process.env
+    })
     this.proc = child
 
     child.stdout?.on('data', (chunk: Buffer) => this.emit('log', chunk.toString('utf-8')))
@@ -180,6 +190,14 @@ export class Sidecar extends EventEmitter {
     throw new Error(`Timed out waiting for the sidecar to respond at ${this.baseUrl}`)
   }
 
+  /**
+   * `GET /v1/models` - confirmed against a real `litert-lm serve` (verified
+   * empirically, see scratchpad/sidecar-verification.md §3/§5 gotcha 5): it
+   * responds 200 within ~1-2s of process start, well before the actual
+   * model is loaded into memory (loading is lazy, on the first
+   * `/v1/chat/completions` request referencing it - so this is a "the HTTP
+   * server is up" check, not a "first inference will be fast" guarantee).
+   */
   private async pingOnce(): Promise<boolean> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 2000)

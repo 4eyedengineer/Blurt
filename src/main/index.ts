@@ -86,7 +86,7 @@ app.whenReady().then(() => {
     (accelerator) => applyGlobalShortcut(accelerator, toggleRecordingFromHotkey),
     () => void backendController.rebuild()
   )
-  registerModelManagerIpc(modelManager, () => mainWindow)
+  registerModelManagerIpc(modelManager, settingsStore, () => mainWindow)
 
   // If a model finishes downloading while it's the currently-selected model
   // and the backend is sitting in an error state (most likely because that

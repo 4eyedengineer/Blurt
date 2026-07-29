@@ -14,6 +14,16 @@ export interface ModelCatalogEntry {
   label: string
   /** ungated HuggingFace repo id, e.g. "litert-community/gemma-4-E2B-it-litert-lm". */
   repo: string
+  /**
+   * The model ID `litert-lm import <file> <alias>` registers this model
+   * under, and therefore the exact string that must be sent as the `model`
+   * field on every `/v1/chat/completions` request (verified empirically
+   * against a real `litert-lm serve` - see scratchpad/sidecar-verification.md
+   * §2/§4a). This is NOT the same as our internal `ModelId` - the server has
+   * no idea what "gemma-4-e2b" means, only whatever alias it was imported
+   * as.
+   */
+  alias: string
   /** Rough download size, for UI display before the real size is resolved. */
   approxSizeBytes: number
 }
@@ -23,18 +33,21 @@ export const MODEL_CATALOG: ModelCatalogEntry[] = [
     id: 'gemma-4-e2b',
     label: 'Gemma 4 E2B',
     repo: 'litert-community/gemma-4-E2B-it-litert-lm',
+    alias: 'e2b',
     approxSizeBytes: 2_588_147_712
   },
   {
     id: 'gemma-4-e4b',
     label: 'Gemma 4 E4B',
     repo: 'litert-community/gemma-4-E4B-it-litert-lm',
+    alias: 'e4b',
     approxSizeBytes: 3_659_530_240
   },
   {
     id: 'gemma-4-12b',
     label: 'Gemma 4 12B',
     repo: 'litert-community/gemma-4-12B-it-litert-lm',
+    alias: '12b',
     approxSizeBytes: 6_547_589_312
   }
 ]
@@ -46,7 +59,7 @@ export function getCatalogEntry(id: ModelId): ModelCatalogEntry {
 }
 
 export type ModelDownloadState =
-  'idle' | 'resolving' | 'downloading' | 'done' | 'error' | 'cancelled'
+  'idle' | 'resolving' | 'downloading' | 'importing' | 'done' | 'error' | 'cancelled'
 
 export interface ModelDownloadProgress {
   modelId: ModelId

@@ -1,10 +1,11 @@
 import { EventEmitter } from 'events'
 import type { BackendStatus, InferenceBackend } from '../../shared/backend'
+import { getCatalogEntry } from '../../shared/models'
 import type { SettingsStore } from '../store/settingsStore'
 import type { ModelManager } from './modelManager'
 import { MockBackend } from './mockBackend'
 import { LitertBackend } from './litertBackend'
-import { Sidecar } from './sidecar'
+import { getManagedCommandBinary, Sidecar } from './sidecar'
 
 /**
  * A stand-in InferenceBackend used whenever the real backend failed to
@@ -96,12 +97,29 @@ export class BackendController extends EventEmitter {
         )
       }
 
+      // The downloaded .litertlm file alone isn't enough for a managed
+      // sidecar to serve it - `litert-lm serve` only recognizes models that
+      // have gone through `litert-lm import <file> <alias>` (see
+      // ModelManager's class doc / scratchpad/sidecar-verification.md §2-3).
+      // Normally `ModelManager.download()` does this as its last step, but
+      // guard here too in case the import step failed previously, or the
+      // sandboxed LITERT_LM_DIR was cleared independently of the download.
+      if (settings.sidecar.mode === 'managed' && !this.modelManager.isImported(settings.modelId)) {
+        const cliBinary = getManagedCommandBinary(settings.sidecar.managedCommand)
+        await this.modelManager.importModel(settings.modelId, cliBinary)
+        if (generation !== this.generation) return
+      }
+
       const sidecar = new Sidecar({
         mode: settings.sidecar.mode,
         externalUrl: settings.sidecar.externalUrl,
         managedCommand: settings.sidecar.managedCommand,
         modelPath: modelPath ?? '',
-        port: settings.sidecar.port
+        port: settings.sidecar.port,
+        // Points a managed `litert-lm serve` (and the `import` step above) at
+        // the same sandboxed model store, entirely separate from the user's
+        // real `~/.litert-lm` - see ModelManager.getLitertLmDir().
+        env: { LITERT_LM_DIR: this.modelManager.getLitertLmDir() }
       })
 
       sidecar.on('state', (state, message) => {
@@ -127,15 +145,22 @@ export class BackendController extends EventEmitter {
       }
 
       this.sidecar = sidecar
-      this.setBackend(
-        new LitertBackend({
-          getBaseUrl: () => sidecar.getBaseUrl(),
-          modelId: settings.modelId,
-          getVocabulary: () => this.settingsStore.get().customVocabulary
-        })
-      )
+      // The server has no idea what our internal ModelId ("gemma-4-e2b")
+      // means - every request's `model` field must be the alias it was
+      // `litert-lm import`-ed as (e.g. "e2b"). See ModelCatalogEntry.alias
+      // and scratchpad/sidecar-verification.md §2/§4a.
+      const backend = new LitertBackend({
+        getBaseUrl: () => sidecar.getBaseUrl(),
+        modelId: getCatalogEntry(settings.modelId).alias,
+        getVocabulary: () => this.settingsStore.get().customVocabulary
+      })
+      this.setBackend(backend)
       this.setStatus({ state: 'ready' })
       previousSidecar?.stop()
+      // Fire-and-forget: primes the sidecar's lazy model load right away
+      // instead of making the user's first real utterance pay the ~5s
+      // cold-start cost (see LitertBackend.warmup doc comment).
+      void backend.warmup()
     } catch (err) {
       if (generation !== this.generation) return
       const message = err instanceof Error ? err.message : String(err)
