@@ -25,7 +25,11 @@ const modelManager = new ModelManager(app.getPath('userData'))
 // at runtime (see registerSettingsIpc's onBackendSettingsChanged hook).
 // Everything downstream (IPC, renderer) only depends on the
 // InferenceBackend interface via backendController.getBackend().
-const backendController = new BackendController(settingsStore, modelManager)
+const backendController = new BackendController(
+  settingsStore,
+  modelManager,
+  join(app.getPath('userData'), 'debug')
+)
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({

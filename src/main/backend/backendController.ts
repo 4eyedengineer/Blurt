@@ -59,7 +59,9 @@ export class BackendController extends EventEmitter {
 
   constructor(
     private readonly settingsStore: SettingsStore,
-    private readonly modelManager: ModelManager
+    private readonly modelManager: ModelManager,
+    /** Passed straight through to LitertBackend as `debugAudioDir` - see its doc comment / ELOQUENT_DEBUG_AUDIO. Optional so tests/mocks don't need to care. */
+    private readonly debugAudioDir?: string
   ) {
     super()
     this.backend = new MockBackend()
@@ -152,7 +154,8 @@ export class BackendController extends EventEmitter {
       const backend = new LitertBackend({
         getBaseUrl: () => sidecar.getBaseUrl(),
         modelId: getCatalogEntry(settings.modelId).alias,
-        getVocabulary: () => this.settingsStore.get().customVocabulary
+        getVocabulary: () => this.settingsStore.get().customVocabulary,
+        debugAudioDir: this.debugAudioDir
       })
       this.setBackend(backend)
       this.setStatus({ state: 'ready' })

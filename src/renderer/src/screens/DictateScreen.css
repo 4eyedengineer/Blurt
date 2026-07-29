@@ -47,6 +47,10 @@
   padding: 8px 0 4px;
 }
 
+.dictate-screen .mic-level-meter {
+  margin-bottom: 4px;
+}
+
 .dictate-screen__warning {
   text-align: center;
   font-size: 12px;

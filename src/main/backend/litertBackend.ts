@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto'
 import { EventEmitter } from 'events'
+import { promises as fsPromises } from 'fs'
+import path from 'path'
 import type {
   AudioChunk,
   BackendError,
@@ -14,12 +16,14 @@ import {
   buildTransformRequest,
   buildVoiceEditRequest,
   buildWarmupRequest,
+  computeRms,
   concatInt16,
   extractContentFromChatCompletionResponse,
   extractDeltaFromChatCompletionChunk,
   isStreamDone,
   parseSSEBuffer,
   pcm16ToWavBase64,
+  pcm16ToWavBuffer,
   safeJsonParse,
   stripModelPreamble,
   type ChatCompletionRequestBody
@@ -29,6 +33,15 @@ import {
 const DEFAULT_PARTIAL_INTERVAL_MS = 3000
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_SAMPLE_RATE = 16000
+/**
+ * RMS (raw int16 units, 0..~32767) below which an accumulated audio buffer
+ * is treated as empty/silent rather than sent to the model. Deliberately
+ * conservative - true digital silence (a dropped/broken capture path) sits
+ * at or near 0; even a quiet room with a live mic reads well above this.
+ */
+const SILENCE_RMS_THRESHOLD = 40
+/** Env var gate for LitertBackend.maybeDumpDebugWav - see README/task notes. */
+const DEBUG_AUDIO_ENV_VAR = 'ELOQUENT_DEBUG_AUDIO'
 
 interface LitertSession {
   id: string
@@ -40,6 +53,8 @@ interface LitertSession {
   lastTranscript: string
   ended: boolean
   vocabulary?: string[]
+  /** Set once we've emitted the 'unsupported_audio' warning for this session, so a MediaRecorder-fallback recording doesn't spam it on every dropped chunk. */
+  fallbackWarned: boolean
 }
 
 export interface LitertBackendOptions {
@@ -50,6 +65,12 @@ export interface LitertBackendOptions {
   getVocabulary?: () => string[]
   partialIntervalMs?: number
   requestTimeoutMs?: number
+  /**
+   * Directory each session's final accumulated WAV is written to, as
+   * `session-<n>.wav`, when the ELOQUENT_DEBUG_AUDIO=1 env var is set.
+   * No-op (and no directory created) if unset or if the env var isn't '1'.
+   */
+  debugAudioDir?: string
 }
 
 function sleep(ms: number): Promise<void> {
@@ -78,6 +99,8 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
    * server-side.
    */
   private requestQueue: Promise<void> = Promise.resolve()
+  /** Incremented per session that gets debug-dumped, to name session-<n>.wav files. Only touched when ELOQUENT_DEBUG_AUDIO=1. */
+  private debugSessionCounter = 0
 
   constructor(private readonly options: LitertBackendOptions) {
     this.partialIntervalMs = options.partialIntervalMs ?? DEFAULT_PARTIAL_INTERVAL_MS
@@ -121,7 +144,8 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       partialInFlight: false,
       lastTranscript: '',
       ended: false,
-      vocabulary: opts?.vocabulary ?? this.options.getVocabulary?.()
+      vocabulary: opts?.vocabulary ?? this.options.getVocabulary?.(),
+      fallbackWarned: false
     })
     return id
   }
@@ -134,7 +158,18 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       // Opaque/compressed (e.g. webm) fallback chunk - we can't decode this
       // into PCM for a WAV upload without a codec, so it's dropped. This
       // only happens when AudioWorklet is unavailable in the renderer; see
-      // README "Known deviations".
+      // README "Known deviations". Surface it once per session rather than
+      // silently swallowing every chunk - otherwise the user just sees
+      // dead air with no indication their audio was never usable.
+      if (!session.fallbackWarned) {
+        session.fallbackWarned = true
+        this.emitError(
+          sessionId,
+          new UnsupportedAudioFormatError(
+            'Microphone audio arrived as compressed webm (AudioWorklet fallback) - this backend can only use raw PCM, so no audio is being sent to the model.'
+          )
+        )
+      }
       return
     }
 
@@ -151,7 +186,20 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   private async runPartialTranscription(session: LitertSession): Promise<void> {
     session.partialInFlight = true
     try {
-      const text = await this.transcribe(session)
+      const samples = concatInt16(session.chunks)
+      if (this.isSilentBuffer(samples)) {
+        // Don't waste a model call (and risk a hallucinated "transcript")
+        // on a buffer that's empty or near-silent - almost always means the
+        // capture path isn't actually delivering mic audio (see
+        // useAudioCapture / pcm-worklet-processor.js). Tell the renderer
+        // instead of just going quiet.
+        this.emitError(
+          session.id,
+          new NoAudioError('No audio detected - the microphone signal is silent.')
+        )
+        return
+      }
+      const text = await this.transcribeSamples(session, samples)
       if (!session.ended) {
         session.lastTranscript = text
         this.emitter.emit('partial', session.id, text)
@@ -163,8 +211,12 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     }
   }
 
-  private async transcribe(session: LitertSession): Promise<string> {
-    const wavBase64 = pcm16ToWavBase64(concatInt16(session.chunks), session.sampleRate)
+  private isSilentBuffer(samples: Int16Array): boolean {
+    return samples.length === 0 || computeRms(samples) < SILENCE_RMS_THRESHOLD
+  }
+
+  private async transcribeSamples(session: LitertSession, samples: Int16Array): Promise<string> {
+    const wavBase64 = pcm16ToWavBase64(samples, session.sampleRate)
     const request = buildTranscriptionRequest({
       model: this.options.modelId,
       wavBase64,
@@ -172,6 +224,30 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     })
     const raw = await this.enqueue(() => this.chatCompletion(request))
     return stripModelPreamble(raw)
+  }
+
+  /**
+   * Best-effort: writes the session's fully accumulated PCM as a WAV file
+   * to `debugAudioDir`, gated on ELOQUENT_DEBUG_AUDIO=1. Lets a human check
+   * exactly what audio the model was (or wasn't) asked to transcribe -
+   * cheap enough to always compile in, and a no-op unless explicitly
+   * enabled.
+   */
+  private async maybeDumpDebugWav(samples: Int16Array, sampleRate: number): Promise<void> {
+    const dir = this.options.debugAudioDir
+    if (process.env[DEBUG_AUDIO_ENV_VAR] !== '1' || !dir) return
+    try {
+      await fsPromises.mkdir(dir, { recursive: true })
+      const n = ++this.debugSessionCounter
+      const filePath = path.join(dir, `session-${n}.wav`)
+      await fsPromises.writeFile(filePath, pcm16ToWavBuffer(samples, sampleRate))
+      console.log(
+        `[LitertBackend] ${DEBUG_AUDIO_ENV_VAR}: wrote ${filePath} ` +
+          `(${samples.length} samples, rms=${computeRms(samples).toFixed(1)})`
+      )
+    } catch (err) {
+      console.warn(`[LitertBackend] ${DEBUG_AUDIO_ENV_VAR}: failed to write debug WAV:`, err)
+    }
   }
 
   async endSession(sessionId: string): Promise<string> {
@@ -191,8 +267,21 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       await sleep(50)
     }
 
+    const samples = concatInt16(session.chunks)
+    void this.maybeDumpDebugWav(samples, session.sampleRate)
+
+    if (this.isSilentBuffer(samples)) {
+      this.emitError(
+        sessionId,
+        new NoAudioError(
+          'No audio detected - the microphone signal was silent for the entire recording.'
+        )
+      )
+      return ''
+    }
+
     try {
-      return await this.transcribe(session)
+      return await this.transcribeSamples(session, samples)
     } catch (err) {
       this.emitError(sessionId, err)
       return session.lastTranscript
@@ -332,6 +421,8 @@ class SidecarUnreachableError extends Error {}
 class RequestFailedError extends Error {}
 class TimeoutBackendError extends Error {}
 class ParseErrorBackendError extends Error {}
+class NoAudioError extends Error {}
+class UnsupportedAudioFormatError extends Error {}
 
 function toBackendError(err: unknown): BackendError {
   const message = err instanceof Error ? err.message : String(err)
@@ -339,5 +430,7 @@ function toBackendError(err: unknown): BackendError {
   if (err instanceof TimeoutBackendError) return { code: 'timeout', message }
   if (err instanceof ParseErrorBackendError) return { code: 'parse_error', message }
   if (err instanceof RequestFailedError) return { code: 'request_failed', message }
+  if (err instanceof NoAudioError) return { code: 'no_audio', message }
+  if (err instanceof UnsupportedAudioFormatError) return { code: 'unsupported_audio', message }
   return { code: 'unknown', message }
 }

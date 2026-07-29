@@ -82,7 +82,16 @@ export interface BackendStatus {
  * the base `InferenceBackend` contract.
  */
 export interface BackendError {
-  code: 'sidecar_unreachable' | 'request_failed' | 'timeout' | 'parse_error' | 'unknown'
+  code:
+    | 'sidecar_unreachable'
+    | 'request_failed'
+    | 'timeout'
+    | 'parse_error'
+    | 'unknown'
+    /** The accumulated audio buffer for a partial tick or the final session was empty/near-silent - skipped the model call rather than risk a hallucinated transcript. */
+    | 'no_audio'
+    /** Audio arrived via the MediaRecorder/webm fallback (AudioWorklet unavailable) and was dropped - this backend can only decode raw PCM16. */
+    | 'unsupported_audio'
   message: string
 }
 

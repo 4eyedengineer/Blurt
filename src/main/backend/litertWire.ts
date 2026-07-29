@@ -57,7 +57,7 @@ export interface ChatCompletionRequestBody {
 }
 
 const TRANSCRIPTION_PROMPT =
-  'Transcribe the following audio verbatim, exactly as spoken. Output only the raw transcription text - no commentary, no preamble, no quotation marks, no markdown formatting.'
+  'Transcribe the following audio verbatim, exactly as spoken. Output only the raw transcription text - no commentary, no preamble, no quotation marks, no markdown formatting. If the audio is silent, contains only background noise, or does not contain any intelligible speech, output nothing at all (an empty string) - never guess, invent, or hallucinate words that are not clearly present in the audio.'
 
 function vocabularyHint(vocabulary: string[] | undefined): string {
   const words = (vocabulary ?? []).map((w) => w.trim()).filter(Boolean)
@@ -309,6 +309,24 @@ export function stripModelPreamble(text: string): string {
 // ---------------------------------------------------------------------------
 // Audio encoding
 // ---------------------------------------------------------------------------
+
+/**
+ * Root-mean-square amplitude of a PCM16 sample buffer, in raw int16 units
+ * (0 .. ~32767). Used to detect an empty/near-silent accumulated capture
+ * buffer before wasting a model call on it - a 44-byte WAV of pure silence
+ * still gets *some* answer out of the model, which tends to be a confident
+ * hallucination rather than an empty string (see LitertBackend's silence
+ * guard).
+ */
+export function computeRms(samples: Int16Array): number {
+  if (samples.length === 0) return 0
+  let sumSquares = 0
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i]
+    sumSquares += s * s
+  }
+  return Math.sqrt(sumSquares / samples.length)
+}
 
 /** Concatenates PCM16 mono sample chunks (in push order) into one buffer. */
 export function concatInt16(chunks: Int16Array[]): Int16Array {

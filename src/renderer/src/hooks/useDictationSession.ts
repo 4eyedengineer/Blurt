@@ -19,6 +19,10 @@ export interface UseDictationSession {
   copyFlash: boolean
   audioWarning: string | null
   sessionError: string | null
+  /** Normalized 0-1 live mic input level - see useAudioCapture. */
+  micLevel: number
+  /** True once the mic level has read ~zero for >2s while recording - see useAudioCapture. */
+  noAudioDetected: boolean
   toggleRecording: () => void
   applyTransform: (mode: TransformMode) => Promise<void>
   applyVoiceEdit: (command: string) => Promise<void>
@@ -220,6 +224,8 @@ export function useDictationSession(): UseDictationSession {
     copyFlash,
     audioWarning: audio.warning,
     sessionError,
+    micLevel: audio.level,
+    noAudioDetected: audio.noAudioDetected,
     toggleRecording,
     applyTransform,
     applyVoiceEdit,

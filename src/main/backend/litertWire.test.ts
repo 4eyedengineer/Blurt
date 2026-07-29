@@ -4,6 +4,7 @@ import {
   buildTranscriptionRequest,
   buildTransformRequest,
   buildVoiceEditRequest,
+  computeRms,
   concatInt16,
   extractContentFromChatCompletionResponse,
   extractDeltaFromChatCompletionChunk,
@@ -177,5 +178,25 @@ describe('PCM/WAV encoding', () => {
     const base64 = pcm16ToWavBase64(samples, 16000)
     const decoded = Buffer.from(base64, 'base64')
     expect(decoded).toEqual(pcm16ToWavBuffer(samples, 16000))
+  })
+})
+
+describe('computeRms', () => {
+  it('is 0 for an empty buffer', () => {
+    expect(computeRms(new Int16Array([]))).toBe(0)
+  })
+
+  it('is 0 for pure digital silence', () => {
+    expect(computeRms(new Int16Array(1000))).toBe(0)
+  })
+
+  it('is well below full scale for a quiet-but-nonzero buffer', () => {
+    const samples = new Int16Array(1000).fill(20)
+    expect(computeRms(samples)).toBeCloseTo(20, 5)
+  })
+
+  it('is near full scale for a full-amplitude square wave', () => {
+    const samples = new Int16Array(1000).fill(32767)
+    expect(computeRms(samples)).toBeCloseTo(32767, 0)
   })
 })
