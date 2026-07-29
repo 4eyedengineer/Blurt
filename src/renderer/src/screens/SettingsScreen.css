@@ -1,0 +1,171 @@
+.settings-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 32px 40px 48px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.settings-screen h1 {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.settings-screen__group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 20px 22px;
+}
+
+.settings-screen__group h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings-screen__hint {
+  font-size: 12px;
+  color: var(--color-text-faint);
+  line-height: 1.5;
+}
+
+.settings-screen__radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-screen__radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  cursor: pointer;
+}
+
+.settings-screen__radio input {
+  margin-top: 3px;
+  accent-color: var(--color-primary);
+}
+
+.settings-screen__radio div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-screen__radio-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-screen__radio-desc {
+  font-size: 12px;
+  color: var(--color-text-faint);
+}
+
+.settings-screen__toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  cursor: pointer;
+}
+
+.settings-screen__toggle-row strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-screen__inline-input {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-screen__inline-input input {
+  flex: 1;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.settings-screen__inline-input input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.settings-screen__inline-input button {
+  padding: 0 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.settings-screen__inline-input button:hover {
+  border-color: var(--color-primary);
+}
+
+.settings-screen__vocab-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-screen__vocab-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--color-surface-raised);
+  border-radius: 999px;
+  padding: 5px 6px 5px 12px;
+  font-size: 13px;
+}
+
+.settings-screen__vocab-list button {
+  border: none;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 50%;
+}
+
+.settings-screen__vocab-list button:hover {
+  background: var(--color-danger);
+  color: #3a0a06;
+}
+
+.settings-screen__vocab-empty {
+  color: var(--color-text-faint);
+  font-size: 12px;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.settings-screen__status {
+  font-size: 12px;
+}
+
+.settings-screen__status--ok {
+  color: var(--color-success);
+}
+
+.settings-screen__status--error {
+  color: var(--color-danger);
+}

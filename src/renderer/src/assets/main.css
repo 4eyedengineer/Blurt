@@ -1,0 +1,17 @@
+@import './base.css';
+
+body {
+  overflow: hidden;
+  user-select: none;
+}
+
+input,
+textarea,
+[contenteditable] {
+  user-select: text;
+}
+
+#root {
+  display: flex;
+  flex-direction: row;
+}

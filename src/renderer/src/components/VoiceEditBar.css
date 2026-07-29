@@ -1,0 +1,38 @@
+.voice-edit-bar {
+  display: flex;
+  gap: 8px;
+}
+
+.voice-edit-bar input {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.voice-edit-bar input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.voice-edit-bar button {
+  padding: 0 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.voice-edit-bar button:hover:not(:disabled) {
+  border-color: var(--color-primary);
+}
+
+.voice-edit-bar button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
