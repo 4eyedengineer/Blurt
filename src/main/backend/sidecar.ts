@@ -221,6 +221,37 @@ export function renderManagedCommand(
 }
 
 /**
+ * Env var name `resources/serve_gpu.py`'s parent watchdog reads (see that
+ * file's "Parent watchdog" doc comment) - the Electron main process's own
+ * pid, so the wrapper can detect this process dying (crash *or* clean quit
+ * alike) and shut itself down instead of leaking the GPU/CPU engine (and
+ * its VRAM/RAM) as an orphan until the *next* launch's pid-file hygiene
+ * (`portGuard.ts`) notices and kills it. That hygiene step is next-launch
+ * cleanup; this env var is what makes crash-time cleanup possible at all.
+ */
+export const PARENT_PID_ENV_VAR = 'ELOQUENT_PARENT_PID'
+
+/**
+ * Builds the full env for a managed spawn: `baseEnv` overridden by any
+ * caller-supplied `extraEnv`, with `PARENT_PID_ENV_VAR` always set to
+ * `parentPid` last so it can never be shadowed by a custom `env` value.
+ * Set unconditionally for *every* managed spawn (not just the GPU wrapper)
+ * - a plain `litert-lm serve` child simply never reads it, so this is a
+ * harmless no-op there. Pure/testable without spawning a real process.
+ */
+export function buildManagedChildEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  extraEnv: Record<string, string> | undefined,
+  parentPid: number
+): NodeJS.ProcessEnv {
+  return {
+    ...baseEnv,
+    ...(extraEnv ?? {}),
+    [PARENT_PID_ENV_VAR]: String(parentPid)
+  }
+}
+
+/**
  * Owns the lifecycle of the LiteRT-LM sidecar HTTP server: spawning it (in
  * 'managed' mode) or just pointing at a user-provided URL (in 'external'
  * mode), polling until it answers, and auto-restarting with backoff if it
@@ -358,7 +389,9 @@ export class Sidecar extends EventEmitter {
     log.info(`sidecar: spawn ${cmd} ${rest.join(' ')}`)
     const child = spawn(cmd, rest, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: this.options.env ? { ...process.env, ...this.options.env } : process.env
+      // Always includes PARENT_PID_ENV_VAR - see its doc comment for why
+      // (crash-safe cleanup via serve_gpu.py's parent watchdog).
+      env: buildManagedChildEnv(process.env, this.options.env, process.pid)
     })
     this.proc = child
 

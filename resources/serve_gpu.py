@@ -131,12 +131,48 @@ the managed command template.
 Set ELOQUENT_EAGER_MODEL_ID=<alias> to have engine creation (and therefore
 the ELOQUENT_EFFECTIVE_BACKEND report) happen eagerly at startup instead of
 lazily on the first request - see "Eager engine creation" above.
+
+## Parent watchdog (crash-safe cleanup)
+
+A clean Electron quit already kills this process (see `sidecar.ts`'s
+`Sidecar.stop()`/`will-quit` wiring) - but a *hard* crash or kill of the
+Electron main process (Task Manager, `taskkill /f`, a power loss) leaves
+this process (and the GPU engine/VRAM it holds) running as an orphan until
+the *next* launch's pid-file hygiene notices and kills it (see
+`portGuard.ts`). That's cleanup on next launch, not cleanup at crash time -
+this watchdog closes that gap.
+
+If `ELOQUENT_PARENT_PID` is set in the environment (the Electron main
+process's own `process.pid` - see `sidecar.ts`'s `spawnManaged`), a daemon
+thread started at import time blocks until that pid exits, then logs one
+line to stderr and calls `os._exit(0)` - immediate process death, which is
+what actually releases the GPU engine/VRAM (there's no graceful
+engine.close() call here on purpose: the parent is already gone, there's
+nothing left to report status to, and process teardown reclaims the
+GPU/CPU memory regardless - verified empirically with nvidia-smi
+before/after killing a test parent, see WINDOWS.md's crash-cleanup note).
+
+Two platform-specific waits, chosen so neither one polls needlessly:
+  - **Windows**: `ctypes`-called `kernel32.OpenProcess(SYNCHRONIZE, ...)` +
+    `WaitForSingleObject(handle, INFINITE)` - a real blocking wait the OS
+    wakes the instant the parent process exits, no polling at all.
+  - **POSIX** (Linux/WSL/macOS): no equivalent zero-cost blocking primitive
+    for an unrelated (non-child) pid from pure-stdlib Python, so this polls
+    `os.kill(pid, 0)` (signal 0 - existence check only, sends nothing) every
+    2 seconds - cheap enough that "at crash time" effectively still means
+    "within ~2s", not truly instant.
+
+If `ELOQUENT_PARENT_PID` is unset (e.g. running this script by hand for
+local testing), the watchdog logs that it's disabled and does nothing else
+- this script must remain usable standalone, e.g. from the "re-verify GPU"
+commands in WINDOWS.md, without requiring a fake parent pid.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import threading
 
 from litert_lm_cli import model as _model
 
@@ -246,6 +282,87 @@ def _server_init_with_eager_engine(self, *args, **kwargs):
 
 
 serve_util.LiteRTLMServer.__init__ = _server_init_with_eager_engine
+
+_PARENT_PID_ENV = "ELOQUENT_PARENT_PID"
+
+
+def _wait_for_parent_exit_windows(pid: int) -> None:
+  """Blocks until Windows process `pid` exits - a real OS wait, not a poll.
+  See this module's "Parent watchdog" doc comment.
+  """
+  import ctypes  # pylint: disable=import-outside-toplevel
+
+  SYNCHRONIZE = 0x00100000
+  INFINITE = 0xFFFFFFFF
+  kernel32 = ctypes.windll.kernel32  # pylint: disable=no-member
+  handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+  if not handle:
+    # OpenProcess fails if the pid is already gone (or, less likely here,
+    # inaccessible) - either way there is nothing left to wait on, so
+    # return immediately rather than blocking forever on a null handle.
+    return
+  try:
+    kernel32.WaitForSingleObject(handle, INFINITE)
+  finally:
+    kernel32.CloseHandle(handle)
+
+
+def _wait_for_parent_exit_posix(pid: int) -> None:
+  """Polls every 2s until POSIX process `pid` no longer exists. See this
+  module's "Parent watchdog" doc comment for why POSIX has to poll while
+  Windows doesn't.
+  """
+  import time  # pylint: disable=import-outside-toplevel
+
+  while True:
+    try:
+      os.kill(pid, 0)
+    except OSError:
+      return  # ESRCH (no such process) - parent is gone.
+    time.sleep(2)
+
+
+def _run_parent_watchdog(pid: int) -> None:
+  if sys.platform == "win32":
+    _wait_for_parent_exit_windows(pid)
+  else:
+    _wait_for_parent_exit_posix(pid)
+  sys.stderr.write(f"[serve_gpu] parent {pid} gone - shutting down\n")
+  sys.stderr.flush()
+  os._exit(0)  # pylint: disable=protected-access
+
+
+def _start_parent_watchdog() -> None:
+  """Starts the parent watchdog daemon thread - see this module's "Parent
+  watchdog" doc comment. No-op (logged) if `ELOQUENT_PARENT_PID` isn't set
+  or isn't a valid integer, so this script stays usable standalone.
+  """
+  raw = os.environ.get(_PARENT_PID_ENV, "").strip()
+  if not raw:
+    sys.stderr.write(
+        "[serve_gpu] parent watchdog: disabled "
+        f"({_PARENT_PID_ENV} not set - standalone/manual run)\n"
+    )
+    sys.stderr.flush()
+    return
+
+  try:
+    parent_pid = int(raw)
+  except ValueError:
+    sys.stderr.write(
+        f"[serve_gpu] parent watchdog: disabled ({_PARENT_PID_ENV}={raw!r} "
+        "is not a valid integer pid)\n"
+    )
+    sys.stderr.flush()
+    return
+
+  mode = "Windows WaitForSingleObject (no polling)" if sys.platform == "win32" else "POSIX poll every 2s"
+  sys.stderr.write(f"[serve_gpu] parent watchdog: enabled, watching pid {parent_pid} ({mode})\n")
+  sys.stderr.flush()
+  threading.Thread(target=_run_parent_watchdog, args=(parent_pid,), daemon=True).start()
+
+
+_start_parent_watchdog()
 
 if __name__ == "__main__":
   from litert_lm_cli import main as _cli_main

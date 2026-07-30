@@ -277,6 +277,44 @@ against a real RTX 3060 Laptop GPU
 wrapper script, because the pip `serve` CLI itself has no way to select a backend - the two findings
 below explain why, and are still accurate as of `litert-lm` 0.14.0.
 
+### Supported hardware (this is not NVIDIA/RTX-specific)
+
+GPU acceleration goes through **Dawn (WebGPU)**, whose Windows backend is **Direct3D 12** - any
+DX12-capable GPU is a supported adapter (NVIDIA, AMD, or Intel; discrete or integrated). Nothing in
+this app or `resources/serve_gpu.py` filters, checks, or branches on a vendor/adapter name - the
+RTX 3060 numbers throughout this doc are one *measured example*, not a requirement. Dawn logs
+whichever adapter it actually picked: `Selected adapter: <name>, vendor=<vendor>, backend=Direct3D
+12, adapterType=<Discrete|Integrated> GPU` - `<name>`/`<vendor>` come from your driver, never from
+this codebase.
+
+**Multi-GPU (hybrid graphics) laptops**: adapter selection is entirely delegated to Dawn/D3D12 -
+neither `litert-lm`'s Python API (`litert_lm.interfaces.GPU` takes zero parameters - no device
+index, no adapter-selection field) nor `serve_gpu.py` expose a way to force a specific physical
+GPU, and there's no environment variable for it in the installed `litert-lm` 0.14.0 pip package
+either. Confirmed empirically on the actual target laptop, which has **both** an NVIDIA dGPU and an
+Intel iGPU (`Get-CimInstance Win32_VideoController` lists "NVIDIA GeForce RTX 3060 Laptop GPU" and
+"Intel(R) UHD Graphics"): Dawn's default picked the discrete GPU with zero configuration from this
+app. If a different machine's default enumeration ever prefers the integrated GPU instead, there is
+currently no supported knob to override that - it would require patching LiteRT-LM's native engine,
+out of scope for this wrapper.
+
+**Minimum VRAM**: budget **at least 4 GB of VRAM for E2B/E4B on GPU** - derived from this model's
+measured GPU-resident footprint (~3.9 GB warm; a fresh nvidia-smi before/after delta measured this
+session for a from-cold load came in lower, ~1.3 GB, since WDDM/Dawn's shader-cache and staging
+allocations aren't fully accounted by that single snapshot - budget toward the higher, warm-steady-
+state figure). A 6 GB card (the RTX 3060 Laptop GPU example throughout this doc) has comfortable
+headroom. The 12B model was only ever verified on CPU (step 3) - don't expect it to fit on a 6
+GB-class GPU.
+
+**Unsupported hardware**: no compatible DX12 adapter (or a GPU below Dawn's required feature level)
+means the wrapper's own fallback (see "Fallback if GPU init fails" below) catches the failed engine
+creation and retries on CPU for the rest of that process's lifetime - truthfully reported as "CPU
+(GPU unavailable)", never a silent/wrong "GPU" claim.
+
+**Verify what's actually running, vendor-neutral**: NVIDIA - `nvidia-smi` (see "Verifying GPU"
+below); AMD/Intel - Task Manager -> Performance -> GPU (or the GPU column on the Processes tab) -
+same idea, no NVIDIA-specific tool required either way.
+
 **Finding 1: `litert-lm serve --help` exposes no backend-selection flag at all.**
 
 ```
@@ -405,6 +443,18 @@ yourself in under a minute:
   while a request is in flight. No `python.exe` row at all (only browser/desktop processes) means
   nothing is currently using the GPU - either the sidecar isn't running, or it's on CPU.
 
+### Crash-safe cleanup
+
+A normal app quit already kills the sidecar (verified: `child.kill()`/Windows `TerminateProcess`
+does terminate a `python.exe` child spawned this way, releasing its VRAM immediately). A **hard
+crash or kill** of the Electron process (Task Manager, `taskkill /f`, power loss) is also covered:
+`serve_gpu.py` runs a parent-watchdog thread (`ELOQUENT_PARENT_PID`, set automatically by
+`sidecar.ts`) that notices the moment the Electron process dies and exits itself immediately,
+releasing the GPU/CPU engine's memory - no orphaned model process left running until your next
+launch. Verified empirically on this Windows host: killing a throwaway parent process while the
+GPU engine held ~1.3 GB+ of VRAM (nvidia-smi) resulted in the sidecar exiting and that VRAM being
+released within about a second, logged as `[serve_gpu] parent <pid> gone - shutting down`.
+
 ## 7. Building a distributable (`npm run build:win`)
 
 ```powershell
@@ -440,4 +490,5 @@ needs to provide, exactly as described in steps 1-3 above.
       RTX 3060 Laptop GPU - see section 6); falls back to CPU on its own if GPU init fails, and the
       Settings toggle/status pill say so truthfully if it
       does
+- [ ] Model/VRAM is cleaned up on quit *and* on a hard crash - see "Crash-safe cleanup" above
 - [ ] `npm run build && npm run build:win` on a real Windows machine to produce an installer

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildManagedChildEnv,
   commandReferencesServeGpuWrapper,
   parseEffectiveBackendLine,
+  PARENT_PID_ENV_VAR,
   renderManagedCommand,
   resolveImportCli,
   tokenizeCommand
@@ -26,6 +28,29 @@ describe('parseEffectiveBackendLine', () => {
     ).toBeNull()
     expect(parseEffectiveBackendLine('')).toBeNull()
     expect(parseEffectiveBackendLine('ELOQUENT_EFFECTIVE_BACKEND=npu')).toBeNull()
+  })
+})
+
+describe('buildManagedChildEnv', () => {
+  it('sets PARENT_PID_ENV_VAR from parentPid on top of the base env', () => {
+    const env = buildManagedChildEnv({ PATH: '/usr/bin' }, undefined, 4242)
+    expect(env).toEqual({ PATH: '/usr/bin', [PARENT_PID_ENV_VAR]: '4242' })
+  })
+
+  it('merges caller-supplied extraEnv over the base env', () => {
+    const env = buildManagedChildEnv({ PATH: '/usr/bin', FOO: 'base' }, { FOO: 'override' }, 1)
+    expect(env.FOO).toBe('override')
+    expect(env.PATH).toBe('/usr/bin')
+  })
+
+  it('never lets extraEnv shadow the parent pid, even if it sets the same key', () => {
+    const env = buildManagedChildEnv({}, { [PARENT_PID_ENV_VAR]: 'bogus' }, 999)
+    expect(env[PARENT_PID_ENV_VAR]).toBe('999')
+  })
+
+  it('stringifies the pid (env values must be strings)', () => {
+    const env = buildManagedChildEnv({}, undefined, 12345)
+    expect(env[PARENT_PID_ENV_VAR]).toBe('12345')
   })
 })
 

@@ -431,9 +431,13 @@ rather than reimplementing the (simple, but version-coupled) import logic itself
 
 **See [WINDOWS.md](WINDOWS.md) for the complete, step-by-step Windows setup guide** (Python/pip
 install, model import, Settings configuration, dev run, `build:win`, and the full GPU acceleration
-writeup - what it measured on a real RTX 3060, and how `resources/serve_gpu.py` gets GPU execution
-out of a `serve` CLI that has no `--backend` flag of its own). The rest of this section is a quick
-summary.
+writeup - what it measured on a real RTX 3060 (one labeled example machine, not a requirement - GPU
+acceleration goes through Dawn/WebGPU's D3D12 backend, which supports any DX12-capable GPU:
+NVIDIA/AMD/Intel alike, see WINDOWS.md's "Supported hardware" for the vendor-agnostic spec and the
+minimum-VRAM floor), and how `resources/serve_gpu.py` gets GPU execution out of a `serve` CLI that
+has no `--backend` flag of its own - including its parent-watchdog, which shuts the sidecar (and
+releases its GPU/CPU memory) down immediately if the Electron app is killed or crashes, not just on
+a clean quit. The rest of this section is a quick summary.
 
 This app doesn't bundle `litert-lm` - it's a separate install the user (or your installer/setup
 script) provides, referenced by `sidecar.managedCommand`. A documented from-source Windows build

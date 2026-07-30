@@ -147,12 +147,18 @@ app.on('window-all-closed', () => {
 
 // Fires on Windows too (not darwin-only) whenever app.quit() actually
 // proceeds - including via the window-all-closed handler above - so a
-// normal window-close/quit does kill the managed sidecar here. This is
+// normal window-close/quit does kill the managed sidecar here (verified on
+// a real Windows host: child.kill() reliably TerminateProcess()es a
+// python.exe sidecar and its GPU/VRAM is released immediately). This is
 // only the *graceful* path, though: a killed/crashed main process (Task
-// Manager, `taskkill /f`, a Windows shutdown that doesn't wait) skips
-// this entirely, which is exactly why BackendController/Sidecar also has
-// a pid-file-based reclaim step for the *next* launch - see
-// `portGuard.ts`'s doc comment for the real incident that motivated it.
+// Manager, `taskkill /f`, a Windows shutdown that doesn't wait) skips this
+// entirely - that gap is why `resources/serve_gpu.py` also runs its own
+// parent-watchdog (`ELOQUENT_PARENT_PID`, set in `sidecar.ts`'s
+// `spawnManaged`), which notices the main process dying and shuts the
+// sidecar down itself within seconds even when this handler never runs.
+// BackendController/Sidecar additionally has a pid-file-based reclaim step
+// for the *next* launch as a last-resort backstop - see `portGuard.ts`'s
+// doc comment for the real incident that motivated it.
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   backendController.dispose()
