@@ -378,6 +378,33 @@ the Bazel from-source Windows build recipe is documented in the README
 `scratchpad/litert-lm-report.md` - not needed for GPU acceleration itself (the wrapper above covers
 that), only for going beyond what the pip wheel + wrapper combination exposes.
 
+### Verifying GPU: "is it actually on?"
+
+The Settings toggle and status pill (see step 4) tell the truth, but here's how to double-check for
+yourself in under a minute:
+
+- **Status pill** (top of the app window): `Ready · GPU` once the sidecar's engine has actually
+  confirmed it - not just "Ready" alone, and not `Ready · CPU` (that means it fell back).
+- **main.log** (`%APPDATA%\windows-eloquent\logs\main.log`): grep for `effective-backend=gpu` - the
+  line looks like `sidecar: effective-backend=gpu`. If you instead see `sidecar-hygiene: Port 9379
+  is already in use by another process (PID ...)`, some other process (commonly a stale sidecar left
+  running from a previous app session that didn't shut down cleanly - see `src/main/backend/
+  portGuard.ts`) is squatting on the port; the message names its PID so you can `taskkill /PID
+  <pid> /F` it, then relaunch.
+- **Task Manager** → Performance → GPU (or the GPU column on the Processes tab): a `python.exe`
+  process should be visible with non-trivial VRAM usage (roughly 2-3 GiB for the E2B model) and its
+  GPU-Util spikes while you're actively dictating/generating - not before, since the engine only runs
+  inference on request.
+- **One-liner from an elevated/normal PowerShell**:
+
+  ```powershell
+  nvidia-smi
+  ```
+
+  Look for a `python.exe` row under "Processes" with nonzero GPU memory, and `GPU-Util` ticking up
+  while a request is in flight. No `python.exe` row at all (only browser/desktop processes) means
+  nothing is currently using the GPU - either the sidecar isn't running, or it's on CPU.
+
 ## 7. Building a distributable (`npm run build:win`)
 
 ```powershell

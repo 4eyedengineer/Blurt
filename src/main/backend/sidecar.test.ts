@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  commandReferencesServeGpuWrapper,
   parseEffectiveBackendLine,
   renderManagedCommand,
   resolveImportCli,
@@ -109,6 +110,42 @@ describe('renderManagedCommand', () => {
       '--port',
       '8765'
     ])
+  })
+})
+
+describe('commandReferencesServeGpuWrapper', () => {
+  it('is true for the GPU accelerator template rendered with a Windows-style wrapper path', () => {
+    const args = renderManagedCommand('python "{wrapperPath}" serve --port {port}', {
+      modelPath: '',
+      port: 9379,
+      wrapperPath: 'C:\\WindowsEloquent\\app\\resources\\serve_gpu.py'
+    })
+    expect(commandReferencesServeGpuWrapper(args)).toBe(true)
+  })
+
+  it('is true for a posix-style wrapper path', () => {
+    const args = renderManagedCommand('python "{wrapperPath}" serve --port {port}', {
+      modelPath: '',
+      port: 9379,
+      wrapperPath: '/repo/resources/serve_gpu.py'
+    })
+    expect(commandReferencesServeGpuWrapper(args)).toBe(true)
+  })
+
+  it('is false for the plain cpu accelerator template (no wrapper at all)', () => {
+    const args = renderManagedCommand('litert-lm serve --host 127.0.0.1 --port {port}', {
+      modelPath: '',
+      port: 9379
+    })
+    expect(commandReferencesServeGpuWrapper(args)).toBe(false)
+  })
+
+  it('is false when {wrapperPath} was left unsubstituted (empty string)', () => {
+    const args = renderManagedCommand('python "{wrapperPath}" serve --port {port}', {
+      modelPath: '',
+      port: 9379
+    })
+    expect(commandReferencesServeGpuWrapper(args)).toBe(false)
   })
 })
 

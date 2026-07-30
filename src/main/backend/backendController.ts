@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { join } from 'path'
 import type { BackendStatus, InferenceBackend } from '../../shared/backend'
 import type { Accelerator } from '../../shared/types'
 import { getCatalogEntry } from '../../shared/models'
@@ -64,9 +65,13 @@ export class BackendController extends EventEmitter {
   /** See `BackendStatus.effectiveAccelerator`. Reset at the start of every rebuild. */
   private effectiveAccelerator: Accelerator | undefined
 
+  /** Fixed location for the managed sidecar's pid-file (see `portGuard.ts`) - one per app install, not per rebuild, so a stale sidecar from a *previous run of the app itself* (not just a previous rebuild within this run) can still be found and reclaimed. */
+  private readonly sidecarPidFilePath: string
+
   constructor(
     private readonly settingsStore: SettingsStore,
     private readonly modelManager: ModelManager,
+    userDataDir: string,
     /** Passed straight through to LitertBackend as `debugAudioDir` - see its doc comment / ELOQUENT_DEBUG_AUDIO. Optional so tests/mocks don't need to care. */
     private readonly debugAudioDir?: string
   ) {
@@ -75,6 +80,7 @@ export class BackendController extends EventEmitter {
     // calls it right after construction) - this is just a safe placeholder
     // so `backend` is never left `undefined` in between.
     this.backend = new UnavailableBackend('Backend not yet initialized - call rebuild() first.')
+    this.sidecarPidFilePath = join(userDataDir, 'sidecar.pid')
   }
 
   getBackend(): InferenceBackend {
@@ -128,6 +134,7 @@ export class BackendController extends EventEmitter {
         managedCommand: settings.sidecar.managedCommand,
         modelPath: modelPath ?? '',
         port: settings.sidecar.port,
+        pidFilePath: this.sidecarPidFilePath,
         // Only meaningful if managedCommand references {wrapperPath} (the
         // default 'gpu' accelerator template does - see Accelerator's doc
         // comment in shared/types.ts); harmless no-op otherwise.

@@ -37,6 +37,7 @@ const modelManager = new ModelManager(app.getPath('userData'))
 const backendController = new BackendController(
   settingsStore,
   modelManager,
+  app.getPath('userData'),
   join(app.getPath('userData'), 'debug')
 )
 
@@ -144,6 +145,14 @@ app.on('window-all-closed', () => {
   }
 })
 
+// Fires on Windows too (not darwin-only) whenever app.quit() actually
+// proceeds - including via the window-all-closed handler above - so a
+// normal window-close/quit does kill the managed sidecar here. This is
+// only the *graceful* path, though: a killed/crashed main process (Task
+// Manager, `taskkill /f`, a Windows shutdown that doesn't wait) skips
+// this entirely, which is exactly why BackendController/Sidecar also has
+// a pid-file-based reclaim step for the *next* launch - see
+// `portGuard.ts`'s doc comment for the real incident that motivated it.
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   backendController.dispose()
