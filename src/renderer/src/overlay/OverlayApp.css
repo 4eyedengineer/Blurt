@@ -76,17 +76,49 @@
   transition: width 80ms linear;
 }
 
+/* "Teleprompter" viewport (see the Teleprompter component in OverlayApp.tsx):
+   fixed height of 3 lines, clipped, with a fade mask at the top edge so
+   lines visually dissolve as they scroll out rather than clipping hard.
+   `flex-direction: column-reverse` is what bottom-anchors the (single)
+   text-block child with zero JS: in a reversed column, the default
+   `justify-content: flex-start` packs the item against the *end* of the
+   container's own box, which for column-reverse is the bottom edge - so as
+   the child grows taller than the 60px viewport it can only extend
+   upward, out through the (masked) top, while its bottom edge - the newest
+   text - stays flush with the container's bottom edge always. `flex: 0 0
+   auto` on the child keeps it from being flex-shrunk to fit. */
 .overlay-app__transcript {
-  white-space: nowrap;
+  height: 60px; /* 3 lines x 20px line-height */
   overflow: hidden;
-  font-size: 15px;
-  line-height: 1.3;
-  color: var(--color-text);
+  display: flex;
+  flex-direction: column-reverse;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 18px, black 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, black 18px, black 100%);
 }
 
-.overlay-app__transcript--final {
+.overlay-app__transcript-text {
+  flex: 0 0 auto;
+  width: 100%;
+  font-size: 15px;
+  line-height: 20px;
   color: var(--color-text);
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  /* The resting state (transform: none) - the brief per-line-added slide
+     is driven by the Teleprompter component toggling this transition and a
+     translateY off and back on (a small FLIP), not by an ongoing/looping
+     transition. */
+  transition: transform 120ms ease-out;
+}
+
+/* DiffReveal's `--compact` variant defaults to single-line (nowrap) for its
+   other use on the main Dictate screen - inside the overlay's teleprompter
+   box it should wrap like everything else. Scoped selector overrides
+   DiffReveal.css's `.diff-reveal--compact` by specificity, no edit needed
+   there. */
+.overlay-app__transcript-text .diff-reveal--compact {
+  white-space: normal;
 }
 
 .overlay-app__status {
