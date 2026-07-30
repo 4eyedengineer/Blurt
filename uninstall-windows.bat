@@ -14,6 +14,19 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem Guard: if either env var were undefined, the targets below would resolve
+rem to root-relative paths - refuse to run rather than delete the wrong thing.
+if not defined LOCALAPPDATA (
+    echo ERROR: LOCALAPPDATA is not defined - aborting without deleting anything.
+    pause
+    exit /b 1
+)
+if not defined APPDATA (
+    echo ERROR: APPDATA is not defined - aborting without deleting anything.
+    pause
+    exit /b 1
+)
+
 set "RUNTIME_DIR=%LOCALAPPDATA%\WindowsEloquent"
 set "USERDATA_DIR=%APPDATA%\windows-eloquent"
 
