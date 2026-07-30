@@ -45,6 +45,11 @@ export const IPC = {
   pushToTalk: {
     getStatus: 'push-to-talk:get-status'
   },
+  log: {
+    /** renderer -> main: report a capture/other renderer-side failure to main.log. */
+    rendererError: 'log:renderer-error',
+    openFolder: 'log:open-folder'
+  },
   /** Coordinates the push-to-talk overlay window - see src/main/overlayController.ts. */
   overlay: {
     pttStart: 'overlay:ptt-start', // main -> overlay renderer: key was pressed, start dictating

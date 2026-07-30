@@ -5,7 +5,7 @@
  */
 import { diffWords, type DiffToken } from '../lib/wordDiff'
 
-export type OverlayPhase = 'idle' | 'recording' | 'cleaning' | 'revealing' | 'done'
+export type OverlayPhase = 'idle' | 'recording' | 'cleaning' | 'revealing' | 'done' | 'error'
 
 export interface OverlayState {
   phase: OverlayPhase
@@ -16,6 +16,8 @@ export interface OverlayState {
   copied: boolean
   pasted: boolean
   pasteMessage: string | null
+  /** Set (with phase 'error') when audio capture failed mid-recording - see useOverlayPushToTalk. */
+  errorMessage: string | null
 }
 
 export const initialOverlayState: OverlayState = {
@@ -25,7 +27,8 @@ export const initialOverlayState: OverlayState = {
   diffTokens: [],
   copied: false,
   pasted: false,
-  pasteMessage: null
+  pasteMessage: null,
+  errorMessage: null
 }
 
 export type OverlayAction =
@@ -38,6 +41,8 @@ export type OverlayAction =
   /** The diff-reveal window has elapsed - settle to the plain final text. */
   | { type: 'settle' }
   | { type: 'paste-status'; copied: boolean; pasted: boolean; message: string | null }
+  /** Audio capture failed mid-recording - see useAudioCapture. Recording stops, message shown until reset. */
+  | { type: 'mic-error'; message: string }
   | { type: 'reset' }
 
 /**
@@ -82,6 +87,11 @@ export function overlayReducer(state: OverlayState, action: OverlayAction): Over
             pasted: action.pasted,
             pasteMessage: action.message
           }
+        : state
+
+    case 'mic-error':
+      return state.phase === 'recording'
+        ? { ...initialOverlayState, phase: 'error', errorMessage: action.message }
         : state
 
     case 'cancel':

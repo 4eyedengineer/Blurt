@@ -176,8 +176,6 @@ interface LitertSession {
   lastTranscript: string
   ended: boolean
   vocabulary?: string[]
-  /** Set once we've emitted the 'unsupported_audio' warning for this session, so a MediaRecorder-fallback recording doesn't spam it on every dropped chunk. */
-  fallbackWarned: boolean
 }
 
 export interface LitertBackendOptions {
@@ -298,8 +296,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       partialSnapshotChunkCount: 0,
       lastTranscript: '',
       ended: false,
-      vocabulary: opts?.vocabulary ?? this.options.getVocabulary?.(),
-      fallbackWarned: false
+      vocabulary: opts?.vocabulary ?? this.options.getVocabulary?.()
     })
     return id
   }
@@ -307,25 +304,6 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   pushAudio(sessionId: string, chunk: AudioChunk): void {
     const session = this.sessions.get(sessionId)
     if (!session || session.ended) return
-
-    if (!(chunk instanceof Int16Array)) {
-      // Opaque/compressed (e.g. webm) fallback chunk - we can't decode this
-      // into PCM for a WAV upload without a codec, so it's dropped. This
-      // only happens when AudioWorklet is unavailable in the renderer; see
-      // README "Known deviations". Surface it once per session rather than
-      // silently swallowing every chunk - otherwise the user just sees
-      // dead air with no indication their audio was never usable.
-      if (!session.fallbackWarned) {
-        session.fallbackWarned = true
-        this.emitError(
-          sessionId,
-          new UnsupportedAudioFormatError(
-            'Microphone audio arrived as compressed webm (AudioWorklet fallback) - this backend can only use raw PCM, so no audio is being sent to the model.'
-          )
-        )
-      }
-      return
-    }
 
     const chunkMs = (chunk.length / session.sampleRate) * 1000
     session.chunks.push(chunk)
@@ -806,7 +784,6 @@ class RequestFailedError extends Error {}
 class TimeoutBackendError extends Error {}
 class ParseErrorBackendError extends Error {}
 class NoAudioError extends Error {}
-class UnsupportedAudioFormatError extends Error {}
 
 function toBackendError(err: unknown): BackendError {
   const message = err instanceof Error ? err.message : String(err)
@@ -815,6 +792,5 @@ function toBackendError(err: unknown): BackendError {
   if (err instanceof ParseErrorBackendError) return { code: 'parse_error', message }
   if (err instanceof RequestFailedError) return { code: 'request_failed', message }
   if (err instanceof NoAudioError) return { code: 'no_audio', message }
-  if (err instanceof UnsupportedAudioFormatError) return { code: 'unsupported_audio', message }
   return { code: 'unknown', message }
 }

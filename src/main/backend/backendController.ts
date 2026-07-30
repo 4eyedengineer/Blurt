@@ -8,6 +8,7 @@ import { MockBackend } from './mockBackend'
 import { LitertBackend } from './litertBackend'
 import { getManagedCommandBinary, Sidecar } from './sidecar'
 import { resolveServeGpuScriptPath } from './gpuWrapperPath'
+import { log } from '../log'
 
 /**
  * A stand-in InferenceBackend used whenever the real backend failed to
@@ -85,6 +86,7 @@ export class BackendController extends EventEmitter {
   /** Call once at startup, and again after any settings change that could affect the backend. */
   async rebuild(): Promise<void> {
     const generation = ++this.generation
+    log.info(`backend: rebuild start (backend=${this.settingsStore.get().backend})`)
     const settings = this.settingsStore.get()
     const previousSidecar = this.sidecar
     // Nothing's been observed about a not-yet-started (or freshly rebuilt)
@@ -188,6 +190,7 @@ export class BackendController extends EventEmitter {
       })
       this.setBackend(backend)
       this.setStatus({ state: 'ready' })
+      log.info(`backend: ready (model=${settings.modelId})`)
       previousSidecar?.stop()
       // Fire-and-forget: primes the sidecar's lazy model load right away
       // instead of making the user's first real utterance pay the ~5s
@@ -196,6 +199,7 @@ export class BackendController extends EventEmitter {
     } catch (err) {
       if (generation !== this.generation) return
       const message = err instanceof Error ? err.message : String(err)
+      log.error(`backend: rebuild failed: ${message}`)
       this.setStatus({ state: 'error', message })
       this.setBackend(new UnavailableBackend(message))
       previousSidecar?.stop()

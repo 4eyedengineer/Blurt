@@ -1,5 +1,6 @@
 import { execFile } from 'child_process'
 import type { PasteOutcome } from '../shared/types'
+import { log } from './log'
 
 /** clipboard.writeText is the only bit of Electron's `clipboard` module this file needs - typed narrowly so tests can inject a fake. */
 export interface ClipboardLike {
@@ -66,6 +67,12 @@ export function resetXdotoolAvailableCacheForTests(): void {
 
 // --- Paste injection dispatch ------------------------------------------------------------------
 
+/**
+ * Attempts the injection directly - no pre-probing (e.g. checking xdotool is
+ * on PATH first) to decide behavior ahead of time. If it's missing/fails,
+ * the command just fails and that's what gets logged and reported; this
+ * function is never used to silently change what the caller does.
+ */
 async function injectPasteReal(): Promise<void> {
   if (process.platform === 'win32') {
     await execFileAsync('powershell', ['-NoProfile', '-Command', buildWindowsSendKeysCommand()])
@@ -76,8 +83,6 @@ async function injectPasteReal(): Promise<void> {
     return
   }
   if (process.platform === 'linux') {
-    const available = await checkXdotoolAvailable()
-    if (!available) throw new Error('xdotool not found on PATH')
     await execFileAsync('xdotool', buildLinuxXdotoolArgs())
     return
   }
@@ -88,15 +93,24 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** Describes the injection command actually attempted, for logging - see copyAndPaste. */
+function describeInjectCommand(): string {
+  if (process.platform === 'win32') return 'powershell -Command SendKeys(^v)'
+  if (process.platform === 'darwin') return 'osascript (keystroke v, command down)'
+  if (process.platform === 'linux') return `xdotool ${buildLinuxXdotoolArgs().join(' ')}`
+  return `unsupported platform: ${process.platform}`
+}
+
 /**
- * Always copies `text` to the clipboard. If `autoPasteEnabled`, waits
+ * Always copies `text` to the clipboard - that's the feature, and it always
+ * happens first regardless of what follows. If `autoPasteEnabled`, waits
  * `PASTE_SETTLE_MS` (see doc comment above) then attempts to simulate
  * Ctrl+V into whatever window currently has OS focus - which, because the
  * overlay window is never focusable and shown via `showInactive()` (see
- * overlay.ts), should still be whatever app the user was dictating into.
- * Falls back to a clipboard-only outcome (with an explanatory message) if
- * auto-paste is off, unsupported on this platform, or the injection attempt
- * itself fails for any reason (e.g. xdotool missing).
+ * overlay.ts), should still be whatever app the user was dictating into. If
+ * that injection attempt fails, this is reported as a real failure (not
+ * silently downgraded to a "clipboard-only" success) - the text is still on
+ * the clipboard, but auto-paste itself did not work.
  */
 export async function copyAndPaste(
   clipboard: ClipboardLike,
@@ -112,15 +126,18 @@ export async function copyAndPaste(
     return { copied: true, pasted: false, message: 'Copied — press Ctrl+V to paste.' }
   }
   await delay(PASTE_SETTLE_MS)
+  const command = describeInjectCommand()
   try {
     await injectPaste()
+    log.info(`paste: ok (${command})`)
     return { copied: true, pasted: true, message: 'Copied and pasted.' }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
+    log.error(`paste: failed (${command}): ${reason}`)
     return {
       copied: true,
       pasted: false,
-      message: `Copied — press Ctrl+V to paste (auto-paste unavailable: ${reason}).`
+      message: 'Paste failed — text is on your clipboard.'
     }
   }
 }

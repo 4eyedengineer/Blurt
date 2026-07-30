@@ -15,8 +15,17 @@ function levelPercent(level: number): number {
  * this component is just presentation.
  */
 export function OverlayApp(): React.JSX.Element {
-  const { phase, liveText, finalText, diffTokens, micLevel, copied, pasted, pasteMessage } =
-    useOverlayPushToTalk()
+  const {
+    phase,
+    liveText,
+    finalText,
+    diffTokens,
+    micLevel,
+    copied,
+    pasted,
+    pasteMessage,
+    errorMessage
+  } = useOverlayPushToTalk()
   const transcriptRef = useRef<HTMLDivElement>(null)
 
   // "truncate left, newest visible": keep the live transcript scrolled to
@@ -54,6 +63,10 @@ export function OverlayApp(): React.JSX.Element {
 
         {phase === 'cleaning' && <div className="overlay-app__status">Cleaning up…</div>}
 
+        {phase === 'error' && (
+          <div className="overlay-app__status overlay-app__status--error">{errorMessage}</div>
+        )}
+
         {phase === 'revealing' && (
           <div className="overlay-app__transcript overlay-app__transcript--final">
             <DiffReveal tokens={diffTokens} compact />
@@ -65,8 +78,14 @@ export function OverlayApp(): React.JSX.Element {
             <div className="overlay-app__transcript overlay-app__transcript--final">
               {finalText || '(empty)'}
             </div>
-            <div className="overlay-app__badge">
-              {pasted ? 'Pasted ✓' : copied ? 'Copied ✓' : (pasteMessage ?? '')}
+            <div
+              className={
+                !pasted && pasteMessage?.startsWith('Paste failed')
+                  ? 'overlay-app__badge overlay-app__badge--error'
+                  : 'overlay-app__badge'
+              }
+            >
+              {pasted ? 'Pasted ✓' : (pasteMessage ?? (copied ? 'Copied ✓' : ''))}
             </div>
           </>
         )}

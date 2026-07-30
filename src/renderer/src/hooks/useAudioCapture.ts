@@ -11,18 +11,13 @@ const SILENCE_LEVEL_THRESHOLD = 0.01
 const SILENCE_WARNING_MS = 2000
 
 export interface UseAudioCapture {
+  /** Rejects (with a clear message) if mic access or the AudioWorklet pipeline fails - no fallback path, caller must handle this as a hard stop. */
   start: () => Promise<void>
   stop: () => void
-  /** Non-null when capture fell back to the compressed-audio path, or mic access failed. */
-  warning: string | null
-  /**
-   * Current normalized (0-1) mic input level, computed from the RMS of live
-   * PCM16 chunks as they flow through the AudioWorklet path. Stays 0 when
-   * capture is on the MediaRecorder/webm fallback (no PCM to meter there).
-   */
+  /** Current normalized (0-1) mic input level, computed from the RMS of live PCM16 chunks. */
   level: number
   /**
-   * True once `level` has stayed at/near zero for more than ~2s while a PCM
+   * True once `level` has stayed at/near zero for more than ~2s while a
    * capture session is active - a strong signal the mic is delivering
    * silence (e.g. a getUserMedia/WSLg binding issue) even though capture
    * itself is "working".
@@ -40,12 +35,19 @@ function computeNormalizedRms(int16: Int16Array): number {
   return Math.min(1, Math.sqrt(sumSquares / int16.length) / 32768)
 }
 
+/** Reports a capture failure to main.log (see src/main/log.ts) via the one renderer -> main log IPC channel. */
+function logCaptureFailure(reason: string): void {
+  window.api.log.rendererError(`mic capture failed: ${reason}`)
+}
+
 /**
  * Captures microphone audio in the renderer and hands fixed-size chunks to
- * `onChunk` as they're produced. Prefers a 16kHz mono PCM16 AudioWorklet
- * pipeline; falls back to MediaRecorder (webm/opus) if AudioWorklet isn't
- * available. Chunks are forwarded to the main process over IPC, which
- * routes them into the active InferenceBackend session.
+ * `onChunk` as they're produced, over a 16kHz mono PCM16 AudioWorklet
+ * pipeline - PCM only, no fallback. Chunks are forwarded to the main process
+ * over IPC, which routes them into the active InferenceBackend session. If
+ * mic access or the AudioWorklet pipeline fails, `start()` rejects and logs
+ * the reason - the caller must treat that as a hard stop, not retry with a
+ * degraded capture path.
  */
 export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): UseAudioCapture {
   const onChunkRef = useRef(onChunk)
@@ -56,8 +58,6 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
   const streamRef = useRef<MediaStream | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const workletNodeRef = useRef<AudioWorkletNode | null>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const [warning, setWarning] = useState<string | null>(null)
   const [level, setLevel] = useState(0)
   const [noAudioDetected, setNoAudioDetected] = useState(false)
   const lastNonSilentAtRef = useRef(0)
@@ -72,11 +72,6 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
       audioContextRef.current.close().catch(() => {})
     }
     audioContextRef.current = null
-
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop()
-    }
-    mediaRecorderRef.current = null
 
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
@@ -103,7 +98,7 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
       const normalized = computeNormalizedRms(int16)
       setLevel(normalized)
       if (normalized >= SILENCE_LEVEL_THRESHOLD) lastNonSilentAtRef.current = Date.now()
-      onChunkRef.current({ kind: 'pcm16', buffer: event.data, sampleRate: 16000 })
+      onChunkRef.current({ buffer: event.data, sampleRate: 16000 })
     }
     source.connect(workletNode)
     workletNodeRef.current = workletNode
@@ -113,46 +108,44 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
     }, 500)
   }, [])
 
-  const startWithMediaRecorder = useCallback((stream: MediaStream) => {
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : undefined
-    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
-    recorder.ondataavailable = (event) => {
-      if (event.data.size === 0) return
-      event.data.arrayBuffer().then((buffer) => {
-        onChunkRef.current({ kind: 'opaque', buffer })
-      })
-    }
-    recorder.start(250)
-    mediaRecorderRef.current = recorder
-  }, [])
-
   const start = useCallback(async () => {
-    setWarning(null)
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        sampleRate: 16000,
-        echoCancellation: true,
-        noiseSuppression: true
-      }
-    })
+    let stream: MediaStream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      })
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      logCaptureFailure(`getUserMedia: ${reason}`)
+      throw new Error(reason)
+    }
     streamRef.current = stream
 
+    if (typeof AudioWorkletNode === 'undefined') {
+      stream.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+      const reason = 'AudioWorklet is not supported in this environment'
+      logCaptureFailure(reason)
+      throw new Error(reason)
+    }
+
     try {
-      if (typeof AudioWorkletNode === 'undefined') {
-        throw new Error('AudioWorklet is not supported in this environment')
-      }
       await startWithWorklet(stream)
     } catch (err) {
-      console.warn('[useAudioCapture] Falling back to MediaRecorder capture:', err)
-      setWarning('Using compressed-audio fallback (AudioWorklet unavailable on this system).')
-      startWithMediaRecorder(stream)
+      stream.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+      const reason = err instanceof Error ? err.message : String(err)
+      logCaptureFailure(`AudioWorklet: ${reason}`)
+      throw new Error(reason)
     }
-  }, [startWithWorklet, startWithMediaRecorder])
+  }, [startWithWorklet])
 
   useEffect(() => stop, [stop])
 
-  return { start, stop, warning, level, noAudioDetected }
+  return { start, stop, level, noAudioDetected }
 }

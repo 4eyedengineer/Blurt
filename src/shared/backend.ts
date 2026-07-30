@@ -17,21 +17,20 @@
 
 import type { Accelerator } from './types'
 
-/** A single 16-bit PCM audio chunk, mono. Preferred format is 16kHz. */
-export type AudioChunk = Int16Array | Buffer
+/** A single 16-bit PCM audio chunk, mono, 16kHz. */
+export type AudioChunk = Int16Array
 
 /**
  * Wire format used to carry an audio chunk across the renderer -> main IPC
  * boundary (ArrayBuffers survive structured cloning unambiguously; re-typing
- * a bare TypedArray after the hop is not guaranteed, so we tag it instead).
- * "pcm16" is the preferred path (from the AudioWorklet capture pipeline);
- * "opaque" is the MediaRecorder/webm fallback used when AudioWorklet isn't
- * available - the mock backend just treats it as "some audio arrived".
+ * a bare TypedArray after the hop is not guaranteed, so we tag it as a plain
+ * ArrayBuffer instead). Always raw PCM16 from the AudioWorklet capture
+ * pipeline - see useAudioCapture.ts, which fails visibly rather than falling
+ * back to a different format if that pipeline is unavailable.
  */
 export interface AudioChunkPayload {
-  kind: 'pcm16' | 'opaque'
   buffer: ArrayBuffer
-  sampleRate?: number
+  sampleRate: number
 }
 
 export type TransformMode = 'keypoints' | 'formal' | 'short' | 'long'
@@ -103,8 +102,6 @@ export interface BackendError {
     | 'unknown'
     /** The accumulated audio buffer for a partial tick or the final session was empty/near-silent - skipped the model call rather than risk a hallucinated transcript. */
     | 'no_audio'
-    /** Audio arrived via the MediaRecorder/webm fallback (AudioWorklet unavailable) and was dropped - this backend can only decode raw PCM16. */
-    | 'unsupported_audio'
   message: string
 }
 

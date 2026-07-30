@@ -101,3 +101,12 @@
   font-weight: 600;
   color: var(--color-success);
 }
+
+.overlay-app__badge--error {
+  color: var(--color-danger);
+}
+
+.overlay-app__status--error {
+  color: var(--color-danger);
+  font-style: normal;
+}

@@ -12,15 +12,18 @@ import { registerHistoryIpc } from './ipc/historyIpc'
 import { registerSettingsIpc } from './ipc/settingsIpc'
 import { registerModelManagerIpc } from './ipc/modelManagerIpc'
 import { registerPushToTalkIpc } from './ipc/pushToTalkIpc'
+import { registerLogIpc } from './ipc/logIpc'
 import { applyGlobalShortcut } from './hotkey'
 import { createOverlayWindow } from './overlay'
 import { OverlayController } from './overlayController'
 import { PushToTalkController } from './pushToTalk/pushToTalkController'
+import { initLog, log } from './log'
 
 let mainWindow: BrowserWindow | null = null
 let overlayWindow: BrowserWindow | null = null
 let pushToTalkController: PushToTalkController | null = null
 
+initLog(app.getPath('userData'), is.dev)
 const historyStore = new HistoryStore(app.getPath('userData'))
 const settingsStore = new SettingsStore(app.getPath('userData'))
 const modelManager = new ModelManager(app.getPath('userData'))
@@ -90,7 +93,7 @@ app.whenReady().then(() => {
   mainWindow = createWindow()
 
   overlayWindow = createOverlayWindow()
-  console.log('[overlay] window created')
+  log.info('overlay: window created')
 
   pushToTalkController = new PushToTalkController(settingsStore.get().pushToTalk.key)
   pushToTalkController.applySettings(settingsStore.get().pushToTalk)
@@ -102,9 +105,7 @@ app.whenReady().then(() => {
   // surfaces sidecar state and (once observed) the truthful effective
   // accelerator (see BackendStatus.effectiveAccelerator) without needing
   // devtools open.
-  backendController.on('status', (status) =>
-    console.log('[backend] status:', JSON.stringify(status))
-  )
+  backendController.on('status', (status) => log.info(`backend: status ${JSON.stringify(status)}`))
   registerHistoryIpc(historyStore)
   registerSettingsIpc(
     settingsStore,
@@ -113,6 +114,7 @@ app.whenReady().then(() => {
     (pushToTalkSettings) => pushToTalkController?.applySettings(pushToTalkSettings)
   )
   registerModelManagerIpc(modelManager, settingsStore, () => mainWindow)
+  registerLogIpc(app.getPath('userData'))
 
   // If a model finishes downloading while it's the currently-selected model
   // and the backend is sitting in an error state (most likely because that

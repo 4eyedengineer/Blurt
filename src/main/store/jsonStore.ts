@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
+import { log } from '../log'
 
 /**
  * Minimal synchronous JSON-file-backed store. Good enough for the small
@@ -31,7 +32,8 @@ export class JsonStore<T> {
         result = this.defaultValue
       }
     } catch (err) {
-      console.error(`[JsonStore] Failed to read ${this.filePath}, using default.`, err)
+      const reason = err instanceof Error ? err.message : String(err)
+      log.error(`jsonStore: failed to read ${this.filePath}, using default: ${reason}`)
       result = this.defaultValue
     }
 
@@ -45,7 +47,8 @@ export class JsonStore<T> {
       mkdirSync(dirname(this.filePath), { recursive: true })
       writeFileSync(this.filePath, JSON.stringify(value, null, 2), 'utf-8')
     } catch (err) {
-      console.error(`[JsonStore] Failed to write ${this.filePath}.`, err)
+      const reason = err instanceof Error ? err.message : String(err)
+      log.error(`jsonStore: failed to write ${this.filePath}: ${reason}`)
     }
   }
 }

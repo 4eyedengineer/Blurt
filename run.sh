@@ -28,6 +28,7 @@ VENV_DIR="$RUNTIME_DIR/venv"
 MODEL_ID="gemma-4-e2b"
 MODEL_ALIAS="e2b"
 HF_REPO="litert-community/gemma-4-E2B-it-litert-lm"
+HF_FILE_NAME="gemma-4-E2B-it.litertlm"
 APP_USER_DATA_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/windows-eloquent"
 
 step() { printf '\n==> %s\n' "$1"; }
@@ -126,7 +127,7 @@ else
     STAGING_DIR="$RUNTIME_DIR/staging"
     mkdir -p "$STAGING_DIR"
     LITERT_LM_DIR="$STAGING_DIR" "$VENV_DIR/bin/litert-lm" import \
-      --from-huggingface-repo "$HF_REPO" "$MODEL_ID.litertlm" "$MODEL_ALIAS"
+      --from-huggingface-repo "$HF_REPO" "$HF_FILE_NAME" "$MODEL_ALIAS"
     cp "$STAGING_DIR/models/$MODEL_ALIAS/model.litertlm" "$MODEL_FILE"
   fi
   ok "Model installed at $MODEL_FILE"

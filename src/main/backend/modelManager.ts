@@ -18,6 +18,7 @@ import {
   type ModelDownloadProgress,
   type ModelDownloadState
 } from '../../shared/models'
+import { log } from '../log'
 
 interface HfSibling {
   rfilename: string
@@ -217,6 +218,7 @@ export class ModelManager extends EventEmitter {
   async download(modelId: ModelId, cliBinary = 'litert-lm'): Promise<void> {
     if (this.getProgress(modelId).state === 'downloading') return
 
+    log.info(`model: download start ${modelId}`)
     this.setProgress({ modelId, state: 'resolving', receivedBytes: 0, totalBytes: null })
     const controller = new AbortController()
     this.abortControllers.set(modelId, controller)
@@ -282,9 +284,11 @@ export class ModelManager extends EventEmitter {
         receivedBytes: received,
         totalBytes: totalBytes ?? received
       })
+      log.info(`model: download+import done ${modelId}`)
     } catch (err) {
       const prior = this.progress.get(modelId)
       if (controller.signal.aborted) {
+        log.warn(`model: download cancelled ${modelId}`)
         this.setProgress({
           modelId,
           state: 'cancelled',
@@ -292,12 +296,14 @@ export class ModelManager extends EventEmitter {
           totalBytes: prior?.totalBytes ?? null
         })
       } else {
+        const message = err instanceof Error ? err.message : String(err)
+        log.error(`model: download failed ${modelId}: ${message}`)
         this.setProgress({
           modelId,
           state: 'error',
           receivedBytes: prior?.receivedBytes ?? 0,
           totalBytes: prior?.totalBytes ?? null,
-          error: err instanceof Error ? err.message : String(err)
+          error: message
         })
       }
     } finally {

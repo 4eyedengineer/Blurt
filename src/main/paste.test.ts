@@ -64,12 +64,14 @@ describe('copyAndPaste', () => {
     expect(outcome).toEqual({ copied: true, pasted: true, message: 'Copied and pasted.' })
   })
 
-  it('falls back to a clipboard-only outcome (with the failure reason) if injection throws', async () => {
+  it('reports a visible paste failure (not a silent clipboard-only downgrade) if injection throws', async () => {
     const clipboard = fakeClipboard()
     const injectPaste = vi.fn().mockRejectedValue(new Error('xdotool not found on PATH'))
     const outcome = await copyAndPaste(clipboard, 'hello', true, injectPaste)
-    expect(outcome.copied).toBe(true)
-    expect(outcome.pasted).toBe(false)
-    expect(outcome.message).toContain('xdotool not found on PATH')
+    expect(outcome).toEqual({
+      copied: true,
+      pasted: false,
+      message: 'Paste failed — text is on your clipboard.'
+    })
   })
 })

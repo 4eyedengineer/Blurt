@@ -339,6 +339,14 @@ export function SettingsScreen(): React.JSX.Element {
                 </div>
               </>
             )}
+
+            <button
+              type="button"
+              className="settings-screen__logs-link"
+              onClick={() => void window.api.log.openFolder()}
+            >
+              Open logs folder
+            </button>
           </details>
         </>
       )}
@@ -419,7 +427,8 @@ export function SettingsScreen(): React.JSX.Element {
         )}
         {pttStatus?.platform === 'linux' && pttStatus.xdotoolAvailable === false && (
           <p className="settings-screen__hint">
-            <code>xdotool</code> not found - auto-paste will fall back to clipboard-only.
+            <code>xdotool</code> not found - auto-paste will fail (text still lands on your
+            clipboard).
           </p>
         )}
 

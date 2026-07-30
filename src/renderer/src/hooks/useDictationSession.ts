@@ -30,7 +30,6 @@ export interface UseDictationSession {
   displayMode: DictationDisplayMode
   stats: SessionStats | null
   copyFlash: boolean
-  audioWarning: string | null
   sessionError: string | null
   /** Normalized 0-1 live mic input level - see useAudioCapture. */
   micLevel: number
@@ -166,7 +165,16 @@ export function useDictationSession(): UseDictationSession {
       unsubscribeError()
     }
 
-    await audio.start()
+    try {
+      await audio.start()
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      unsubscribePartialRef.current()
+      sessionIdRef.current = null
+      setPhase('idle')
+      setSessionError(`Microphone capture failed: ${reason}`)
+      void window.api.dictation.endSession(sessionId)
+    }
   }, [audio, settings.customVocabulary, startNew])
 
   const stopRecording = useCallback(async () => {
@@ -312,7 +320,6 @@ export function useDictationSession(): UseDictationSession {
     displayMode,
     stats,
     copyFlash,
-    audioWarning: audio.warning,
     sessionError,
     micLevel: audio.level,
     noAudioDetected: audio.noAudioDetected,

@@ -9,13 +9,6 @@ import type {
 } from '../../shared/backend'
 import type { BackendController } from '../backend/backendController'
 
-function toAudioChunk(payload: AudioChunkPayload): Int16Array | Buffer {
-  if (payload.kind === 'pcm16') {
-    return new Int16Array(payload.buffer)
-  }
-  return Buffer.from(payload.buffer)
-}
-
 function hasErrorSource(
   backend: InferenceBackend
 ): backend is InferenceBackend & BackendErrorSource {
@@ -55,7 +48,7 @@ export function registerBackendIpc(
   )
 
   ipcMain.on(IPC.backend.pushAudio, (_event, sessionId: string, payload: AudioChunkPayload) => {
-    controller.getBackend().pushAudio(sessionId, toAudioChunk(payload))
+    controller.getBackend().pushAudio(sessionId, new Int16Array(payload.buffer))
   })
 
   ipcMain.handle(IPC.backend.endSession, (_event, sessionId: string) =>

@@ -14,7 +14,8 @@ describe('overlayReducer', () => {
       diffTokens: [{ op: 'equal', before: 'stale', after: 'stale' }],
       copied: true,
       pasted: true,
-      pasteMessage: 'stale message'
+      pasteMessage: 'stale message',
+      errorMessage: null
     }
     const next = overlayReducer(dirty, { type: 'start' })
     expect(next).toEqual({ ...initialOverlayState, phase: 'recording' })
@@ -105,6 +106,22 @@ describe('overlayReducer', () => {
       type: 'paste-status',
       copied: true,
       pasted: true,
+      message: 'should be ignored'
+    })
+    expect(ignored).toBe(initialOverlayState)
+  })
+
+  it('mic-error moves recording -> error with the failure message, ignored outside recording', () => {
+    const recording = overlayReducer(initialOverlayState, { type: 'start' })
+    const next = overlayReducer(recording, {
+      type: 'mic-error',
+      message: 'Microphone capture failed: denied'
+    })
+    expect(next.phase).toBe('error')
+    expect(next.errorMessage).toBe('Microphone capture failed: denied')
+
+    const ignored = overlayReducer(initialOverlayState, {
+      type: 'mic-error',
       message: 'should be ignored'
     })
     expect(ignored).toBe(initialOverlayState)

@@ -16,6 +16,7 @@ export interface UseOverlayPushToTalk {
   copied: boolean
   pasted: boolean
   pasteMessage: string | null
+  errorMessage: string | null
 }
 
 /**
@@ -55,7 +56,21 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
     unsubscribePartialRef.current = window.api.dictation.onPartialTranscript((sid, text) => {
       if (sid === sessionId) dispatch({ type: 'partial', text })
     })
-    await audio.start()
+    try {
+      await audio.start()
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      window.api.log.rendererError(`overlay mic capture failed: ${reason}`)
+      unsubscribePartialRef.current()
+      sessionIdRef.current = null
+      void window.api.dictation.endSession(sessionId).catch(() => {})
+      dispatch({ type: 'mic-error', message: `Microphone capture failed: ${reason}` })
+      clearSettleTimer()
+      settleTimerRef.current = setTimeout(() => {
+        dispatch({ type: 'reset' })
+        settleTimerRef.current = null
+      }, REVEAL_SETTLE_MS)
+    }
   }, [audio, clearSettleTimer])
 
   const stop = useCallback(async () => {
@@ -126,6 +141,7 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
     micLevel: audio.level,
     copied: state.copied,
     pasted: state.pasted,
-    pasteMessage: state.pasteMessage
+    pasteMessage: state.pasteMessage,
+    errorMessage: state.errorMessage
   }
 }

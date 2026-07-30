@@ -38,6 +38,10 @@ real Windows host; a literal Explorer double-click, a `winget` install, and a fu
 download + `npm run dev` launch were not (see WINDOWS.md's "Quick start" section for exactly what
 was and wasn't verified); please report back anything that doesn't match.
 
+To wipe everything a launcher set up (venv, downloaded model, app settings/history/logs) and test
+a fresh install: `./uninstall.sh` (WSL/Linux, add `--all` to also remove `node_modules`) or
+double-click `uninstall-windows.bat` (Windows).
+
 ## Stack
 
 - **Electron** (main/preload/renderer split, context isolation on, `nodeIntegration: false`)
@@ -117,7 +121,7 @@ src/
                                  with a `#overlay` hash (see Push-to-talk overlay below)
       context/SettingsContext.tsx
       hooks/
-        useAudioCapture.ts       Mic capture: AudioWorklet 16kHz PCM16, MediaRecorder/webm fallback
+        useAudioCapture.ts       Mic capture: AudioWorklet 16kHz PCM16 only, fails visibly if unavailable
         useDictationSession.ts   Orchestrates record -> cleanup -> transform -> history lifecycle
         useBackendStatus.ts      Subscribes to the header status pill's backend state
         useModelManager.ts       Drives the Settings screen's model download UI
@@ -177,8 +181,7 @@ Two implementations exist today, and the active one is chosen per `settings.back
 - `startSession` picks one of a handful of canned "raw ASR" scripts (lowercase, unpunctuated,
   sprinkled with "um"/"uh") and returns a session id.
 - `pushAudio` doesn't actually run recognition - it estimates how much audio-time has accumulated
-  (from PCM chunk length / sample rate, or a flat estimate for compressed fallback chunks) and,
-  roughly every 380ms of "speech", reveals the next word of the canned script via
+  (from PCM chunk length / sample rate) and, roughly every 380ms of "speech", reveals the next word of the canned script via
   `onPartialTranscript`. This simulates a live streaming transcript without a real model.
 - `endSession` returns the accumulated transcript and tears down the session.
 - `cleanup` waits ~1s (simulating inference latency) then strips filler words (um/uh/erm/hmm),
@@ -196,9 +199,9 @@ All of the above is in `src/main/backend/textOps.ts` and `scripts.ts` if you wan
 how the mock behaves.
 
 The audio pipeline is shared by both backends: the renderer captures 16kHz mono PCM16 via an
-AudioWorklet (falling back to MediaRecorder/webm if AudioWorklet is unavailable) and forwards raw
-chunks over IPC as `AudioChunkPayload` (`{ kind: 'pcm16' | 'opaque', buffer, sampleRate }`), which
-`backendIpc.ts` converts to `Int16Array`/`Buffer` before calling `pushAudio`.
+AudioWorklet - no fallback path; if it's unavailable, capture fails visibly instead - and forwards
+raw chunks over IPC as `AudioChunkPayload` (`{ buffer, sampleRate }`), which `backendIpc.ts`
+converts to `Int16Array` before calling `pushAudio`.
 
 ## Streaming partials + the cleanup diff-reveal
 
@@ -702,10 +705,6 @@ remove it if you don't hit that issue.
   ignore the requested sample rate and use the device default instead. Since `MockBackend` only
   uses chunk *duration* (not actual samples) to pace fake transcription, this doesn't affect the
   demo, but a real backend should resample defensively rather than assume exactly 16kHz.
-- The MediaRecorder/webm fallback path (used only if `AudioWorklet` is unavailable) forwards
-  opaque compressed bytes; `MockBackend` treats each chunk as "some audio arrived" rather than
-  decoding it. `LitertBackend` can't decode it either (no bundled codec) and simply drops those
-  chunks - the AudioWorklet/PCM16 path is the one that actually reaches the real model.
 - `voiceEdit` has no dedicated screen mock-up in the original spec - it's exposed here as a small
   text-command input on the Dictate screen so the full `InferenceBackend` contract is actually
   exercised by the UI, not just implemented.

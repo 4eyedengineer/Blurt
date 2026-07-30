@@ -13,8 +13,6 @@ import { applyVoiceEdit, cleanupText, transformText } from './textOps'
 const WORD_INTERVAL_MS = 380
 /** Assumed sample rate for Int16 PCM chunks when the caller doesn't say otherwise. */
 const DEFAULT_SAMPLE_RATE = 16000
-/** Fallback duration estimate (ms) attributed to a single compressed-audio chunk (e.g. webm). */
-const FALLBACK_CHUNK_MS = 250
 
 const CLEANUP_DELAY_MS = 1000
 const TRANSFORM_DELAY_MS = 600
@@ -68,9 +66,7 @@ export class MockBackend implements InferenceBackend {
     const session = this.sessions.get(sessionId)
     if (!session || session.ended) return
 
-    const durationMs =
-      chunk instanceof Int16Array ? (chunk.length / session.sampleRate) * 1000 : FALLBACK_CHUNK_MS
-
+    const durationMs = (chunk.length / session.sampleRate) * 1000
     session.audioMsAccumulated += durationMs
 
     while (session.audioMsAccumulated >= WORD_INTERVAL_MS) {

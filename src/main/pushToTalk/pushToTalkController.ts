@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 import type { PushToTalkKeyId, PushToTalkSettings } from '../../shared/types'
 import { PTT_KEYCODES, isAccidentalTap } from './keyMap'
 import { loadUiohook, type UiohookInstanceLike } from './uiohookLoader'
+import { log } from '../log'
 
 export interface PushToTalkAvailability {
   available: boolean
@@ -66,10 +67,11 @@ export class PushToTalkController extends EventEmitter {
     if (result.ok) {
       this.availability = { available: true, reason: null }
       this.uiohook = result.module.uIOhook
+      log.info('push-to-talk: uiohook-napi loaded')
     } else {
       this.availability = { available: false, reason: result.error }
       this.uiohook = null
-      console.warn('[push-to-talk] uiohook-napi unavailable - feature disabled:', result.error)
+      log.warn(`push-to-talk: uiohook-napi unavailable, feature disabled: ${result.error}`)
     }
   }
 
@@ -96,8 +98,10 @@ export class PushToTalkController extends EventEmitter {
     try {
       this.uiohook.start()
       this.hookRunning = true
+      log.info(`push-to-talk: hook started (key=${this.keyId})`)
     } catch (err) {
-      console.error('[push-to-talk] Failed to start uiohook listener:', err)
+      const message = err instanceof Error ? err.message : String(err)
+      log.error(`push-to-talk: failed to start hook: ${message}`)
     }
   }
 
@@ -105,8 +109,10 @@ export class PushToTalkController extends EventEmitter {
     if (!this.uiohook) return
     try {
       this.uiohook.stop()
+      log.info('push-to-talk: hook stopped')
     } catch (err) {
-      console.error('[push-to-talk] Failed to stop uiohook listener:', err)
+      const message = err instanceof Error ? err.message : String(err)
+      log.error(`push-to-talk: failed to stop hook: ${message}`)
     }
     this.uiohook.removeListener('keydown', this.keydownHandler)
     this.uiohook.removeListener('keyup', this.keyupHandler)

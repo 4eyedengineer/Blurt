@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
 import type { Accelerator } from '../../shared/types'
+import { log } from '../log'
 
 export type SidecarState = 'stopped' | 'starting' | 'ready' | 'restarting' | 'error'
 
@@ -127,7 +128,10 @@ export class Sidecar extends EventEmitter {
     }
 
     await this.waitUntilReady()
-    if (!this.stopping) this.setState('ready')
+    if (!this.stopping) {
+      log.info(`sidecar: ready at ${this.baseUrl}`)
+      this.setState('ready')
+    }
   }
 
   /** Stops the sidecar (kills the managed process, if any) and suppresses further auto-restarts. */
@@ -164,6 +168,7 @@ export class Sidecar extends EventEmitter {
     this.effectiveAccelerator = null
     this.stdoutTail = ''
 
+    log.info(`sidecar: spawn ${cmd} ${rest.join(' ')}`)
     const child = spawn(cmd, rest, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: this.options.env ? { ...process.env, ...this.options.env } : process.env
@@ -176,6 +181,7 @@ export class Sidecar extends EventEmitter {
     child.on('error', (err) => {
       this.proc = null
       if (this.stopping) return
+      log.error(`sidecar: spawn failed: ${err.message}`)
       this.setState('error', `Failed to start sidecar: ${err.message}`)
       this.scheduleRestart()
     })
@@ -183,6 +189,7 @@ export class Sidecar extends EventEmitter {
     child.on('exit', (code, signal) => {
       this.proc = null
       if (this.stopping) return
+      log.warn(`sidecar: exited unexpectedly code=${code} signal=${signal ?? 'none'}`)
       this.setState(
         'error',
         `Sidecar exited unexpectedly (code ${code}, signal ${signal ?? 'none'}).`
@@ -194,6 +201,7 @@ export class Sidecar extends EventEmitter {
   private scheduleRestart(): void {
     if (this.options.mode !== 'managed') return
     if (this.restarts >= MAX_RESTARTS) {
+      log.error(`sidecar: exceeded ${MAX_RESTARTS} restart attempts, giving up`)
       this.setState(
         'error',
         `Sidecar crashed ${this.restarts} times; giving up. Check the sidecar command/model path in Settings.`
@@ -203,6 +211,7 @@ export class Sidecar extends EventEmitter {
     }
     this.restarts += 1
     const backoffMs = 1000 * 2 ** (this.restarts - 1)
+    log.warn(`sidecar: restarting attempt ${this.restarts}/${MAX_RESTARTS} in ${backoffMs}ms`)
     this.setState('restarting', `Restarting sidecar (attempt ${this.restarts}/${MAX_RESTARTS})…`)
     setTimeout(() => {
       if (this.stopping) return
@@ -268,6 +277,7 @@ export class Sidecar extends EventEmitter {
     for (const line of lines) {
       const accelerator = parseEffectiveBackendLine(line)
       if (accelerator) {
+        log.info(`sidecar: effective-backend=${accelerator}`)
         this.effectiveAccelerator = accelerator
         this.emit('effective-accelerator', accelerator)
       }

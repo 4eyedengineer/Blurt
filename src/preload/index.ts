@@ -123,6 +123,14 @@ const pushToTalkApi = {
   getStatus: (): Promise<PushToTalkStatus> => ipcRenderer.invoke(IPC.pushToTalk.getStatus)
 }
 
+const logApi = {
+  /** Reports a renderer-side failure (e.g. audio capture) into main.log - see src/main/log.ts. */
+  rendererError: (line: string): void => {
+    ipcRenderer.send(IPC.log.rendererError, line)
+  },
+  openFolder: (): Promise<void> => ipcRenderer.invoke(IPC.log.openFolder)
+}
+
 /**
  * Bridge used only by the overlay window's renderer (src/renderer/src/overlay/*)
  * to receive start/stop/cancel/reset commands from OverlayController and to
@@ -168,7 +176,8 @@ const api = {
   hotkey: hotkeyApi,
   models: modelsApi,
   pushToTalk: pushToTalkApi,
-  overlay: overlayApi
+  overlay: overlayApi,
+  log: logApi
 }
 
 export type Api = typeof api

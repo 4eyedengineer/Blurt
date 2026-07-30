@@ -213,8 +213,8 @@ Open the app's **Settings** tab and set:
     correctly (see `BackendController.rebuild()`). Only change this field if your `litert-lm`
     binary/Python venv isn't on `PATH` (put an absolute path instead) or you need non-default flags
     like `--cors-origin`.
-  - **GPU acceleration toggle** (Settings, right above this field): on by default (fresh installs,
-    and existing ones are migrated to it once - see "GPU acceleration" below) - it swaps the command
+  - **GPU acceleration toggle** (Settings, right above this field): on by default for a fresh
+    install (see "GPU acceleration" below) - it swaps the command
     template to `python "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose`, i.e. the
     same `litert-lm serve` but launched through `resources/serve_gpu.py`, a small wrapper that
     forces the model onto GPU (the real `serve` CLI has no flag to do this itself - see below for
@@ -259,8 +259,8 @@ the same machine. There's no need to split them across hosts for this hardware p
 
 ## 6. GPU acceleration - how it works and what was measured
 
-**Short version: GPU acceleration is on by default - for a fresh install, and existing installs are
-migrated to it once (see below) - and was verified end-to-end against a real RTX 3060 Laptop GPU
+**Short version: GPU acceleration is on by default for a fresh install - and was verified end-to-end
+against a real RTX 3060 Laptop GPU
 (6 GB VRAM) - decode throughput is ~3.4x faster than CPU once warm.** Getting there needed a small
 wrapper script, because the pip `serve` CLI itself has no way to select a backend - the two findings
 below explain why, and are still accurate as of `litert-lm` 0.14.0.
@@ -332,8 +332,10 @@ onto GPU while the audio/vision adapters are left on their own (correctly CPU-co
 `/v1/chat/completions` and getting back a real completion with `MainExecutorSettings: backend: GPU`
 and the `Selected adapter: ... Direct3D 12` line in the log. The Settings screen's accelerator
 toggle (see step 4 above) points the managed sidecar command at this wrapper instead of the bare
-`litert-lm serve`; both `Start-Eloquent.ps1` (fresh installs) and `SettingsStore`'s one-time
-migration (existing installs, see `src/main/store/settingsStore.ts`) enable it by default.
+`litert-lm serve`; both `Start-Eloquent.ps1` and `DEFAULT_SETTINGS` (see `src/shared/types.ts`)
+enable it by default for any fresh install. There's no settings migration for pre-existing installs
+- run `uninstall.sh` / `uninstall-windows.bat` for a clean slate if you set one up before this was
+the default.
 
 **Fallback if GPU init fails**: the wrapper catches a failed GPU engine-creation (verified in WSL2,
 which has no Vulkan adapter - see the log excerpt above) and retries the same request on CPU,
@@ -395,8 +397,8 @@ needs to provide, exactly as described in steps 1-3 above.
 - [ ] `litert-lm import --from-huggingface-repo litert-community/gemma-4-12B-it-litert-lm gemma-4-12B-it.litertlm 12b` (or e2b/e4b)
 - [ ] App Settings: Backend = LiteRT-LM, Model = the one you imported, Sidecar mode = Managed, Port = 9379
 - [ ] `npm run dev` on the Windows host (not WSL2) for real mic access and real GPU acceleration
-- [ ] GPU acceleration is on by default (fresh install, or migrated automatically for an existing
-      one - ~3.4x faster decode, measured on an RTX 3060 Laptop GPU - see section 6); falls back to
-      CPU on its own if GPU init fails, and the Settings toggle/status pill say so truthfully if it
+- [ ] GPU acceleration is on by default for a fresh install (~3.4x faster decode, measured on an
+      RTX 3060 Laptop GPU - see section 6); falls back to CPU on its own if GPU init fails, and the
+      Settings toggle/status pill say so truthfully if it
       does
 - [ ] `npm run build && npm run build:win` on a real Windows machine to produce an installer

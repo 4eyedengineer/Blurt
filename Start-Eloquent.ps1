@@ -134,16 +134,13 @@ function Test-NodeVersionOk([version]$ver) {
 }
 
 function Resolve-NodeExe {
-    # Prefer whatever's actually on PATH right now; fall back to the
-    # standard per-machine install location, since a just-completed winget
-    # install may not be visible on this process's PATH yet even after a
-    # refresh from the registry (e.g. if winget wrote a slightly different
-    # PATH entry, or the refresh raced the installer's own PATH update).
+    # PATH lookup only. After a winget install/upgrade we refresh PATH from
+    # the registry (Update-SessionPathFromRegistry) and re-call this - if
+    # it's still not found after that, we say so plainly instead of guessing
+    # a hardcoded install location that may not match this machine.
     $cmd = Get-Command node.exe -ErrorAction SilentlyContinue
     if (-not $cmd) { $cmd = Get-Command node -ErrorAction SilentlyContinue }
     if ($cmd) { return $cmd.Source }
-    $guess = Join-Path $env:ProgramFiles 'nodejs\node.exe'
-    if (Test-Path $guess) { return $guess }
     return $null
 }
 
@@ -356,8 +353,8 @@ if ($NodeExe -and $NodeVerOk) {
     $NodeVerOk = Test-NodeVersionOk $NodeVer
 
     if (-not $NodeExe) {
-        Write-Host "ERROR: winget reported installing/upgrading Node.js, but node.exe still can't be found," -ForegroundColor Red
-        Write-Host "  even after refreshing PATH from the registry and probing '$env:ProgramFiles\nodejs'." -ForegroundColor Red
+        Write-Host "ERROR: winget reported installing/upgrading Node.js, but node.exe still can't be found on PATH," -ForegroundColor Red
+        Write-Host "  even after refreshing PATH from the registry." -ForegroundColor Red
         Write-Host "  Close this window, open a NEW terminal, and double-click run-windows.bat again." -ForegroundColor Red
         exit 1
     }
@@ -506,10 +503,6 @@ if (Test-Path $SettingsFile) {
         autoCopyOnCleanup = $false
         customVocabulary = @()
         hotkey = 'Ctrl+Shift+Space'
-        # Matches CURRENT_SETTINGS_VERSION in src/shared/types.ts - this file
-        # is already seeded at the latest shape (GPU on by default), so mark
-        # it current and skip SettingsStore's one-time migration for it.
-        settingsVersion = 1
     }
     New-Item -ItemType Directory -Force -Path $AppUserDataDir | Out-Null
     $settings | ConvertTo-Json -Depth 5 | Set-Content -Path $SettingsFile -Encoding UTF8

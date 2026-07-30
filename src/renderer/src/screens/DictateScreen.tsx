@@ -26,7 +26,6 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
     displayMode,
     stats,
     copyFlash,
-    audioWarning,
     sessionError,
     micLevel,
     noAudioDetected,
@@ -77,14 +76,13 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
 
       {recording && <MicLevelMeter level={micLevel} />}
 
-      {audioWarning && <p className="dictate-screen__warning">{audioWarning}</p>}
-      {!audioWarning && recording && noAudioDetected && (
+      {sessionError && <p className="dictate-screen__warning">{sessionError}</p>}
+      {!sessionError && recording && noAudioDetected && (
         <p className="dictate-screen__warning">
           No audio detected from microphone - check that the correct input device is selected and
           unmuted.
         </p>
       )}
-      {sessionError && <p className="dictate-screen__warning">{sessionError}</p>}
 
       <div className="dictate-screen__transcript-wrap">
         <div className="dictate-screen__transcript-toolbar">
