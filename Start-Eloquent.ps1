@@ -486,16 +486,36 @@ if (Test-Path $ModelFile) {
     Write-Ok "Model installed at $ModelFile"
 }
 
-# --- 6. Seed initial settings (first run only) ----------------------------
+# --- 6. Seed initial settings (first run, or an unusable existing file) ----
 Write-Step "Checking app settings"
 $SettingsFile = Join-Path $AppUserDataDir 'settings.json'
+$NeedsSeed = $true
 if (Test-Path $SettingsFile) {
-    Write-Ok "settings.json already exists - leaving your configuration as-is."
-} else {
-    Write-Ok "No settings.json yet - seeding one with the real LiteRT-LM backend enabled, GPU on."
-    Write-Ok "(Measured on an RTX 3060 Laptop GPU: GPU decode is ~3.4x faster than CPU once warm -"
-    Write-Ok " see WINDOWS.md 'GPU acceleration'. If GPU init fails on this machine, the sidecar"
-    Write-Ok " wrapper falls back to CPU on its own after the first request - no action needed.)"
+    # Validate on RAW BYTES: PowerShell's own text reading silently strips a
+    # UTF-8 BOM, but the app's JSON.parse does not - a BOM'd file passes a
+    # naive ConvertFrom-Json check here yet still breaks the app (the exact
+    # bug this guards against). Quarantine-and-reseed anything the app
+    # couldn't read, so one launcher run always yields a working config.
+    $bytes = [System.IO.File]::ReadAllBytes($SettingsFile)
+    $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+    $parses = $false
+    if (-not $hasBom) {
+        try {
+            [System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json | Out-Null
+            $parses = $true
+        } catch { $parses = $false }
+    }
+    if ($parses) {
+        Write-Ok "settings.json is valid - leaving your configuration as-is."
+        $NeedsSeed = $false
+    } else {
+        $Quarantine = "$SettingsFile.invalid-$(Get-Date -Format yyyyMMdd-HHmmss)"
+        Move-Item -Force $SettingsFile $Quarantine
+        Write-Warn "settings.json was unreadable (BOM or invalid JSON) - moved to $Quarantine, reseeding."
+    }
+}
+if ($NeedsSeed) {
+    Write-Ok "Seeding settings.json - LiteRT-LM backend, GPU on."
     # This venv's own absolute python.exe path - NOT bare "python". Bare
     # "python" is resolved via PATH at spawn time, which is nondeterministic
     # (a machine can have a system-wide Python earlier on PATH than this
