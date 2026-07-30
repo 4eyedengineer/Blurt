@@ -79,10 +79,10 @@ export const MANAGED_COMMAND_BY_ACCELERATOR: Record<Accelerator, string> = {
 
 export const DEFAULT_SIDECAR_SETTINGS: SidecarSettings = {
   mode: 'managed',
-  managedCommand: MANAGED_COMMAND_BY_ACCELERATOR.cpu,
+  managedCommand: MANAGED_COMMAND_BY_ACCELERATOR.gpu,
   externalUrl: 'http://127.0.0.1:9379',
   port: 9379,
-  accelerator: 'cpu'
+  accelerator: 'gpu'
 }
 
 /**
@@ -138,6 +138,22 @@ export interface PasteOutcome {
   message: string
 }
 
+/**
+ * Bumped whenever a stored `settings.json` needs a one-time rewrite to stay
+ * correct under a changed default - see `SettingsStore`'s migration step.
+ * Absent (undefined) on any settings.json written before this field
+ * existed, which `SettingsStore` treats as version 0.
+ *
+ * v1: flips `sidecar.accelerator` from 'cpu' to 'gpu' unconditionally. That
+ * 'cpu' was always *our* default, never a real user choice (nothing
+ * recorded whether a user had actually picked it), so there's no way to
+ * preserve an intentional opt-out - every pre-v1 install gets flipped once.
+ * Safe because `serve_gpu.py` now reports the real effective backend and
+ * falls back to CPU truthfully if GPU init fails - see
+ * `BackendStatus.effectiveAccelerator`.
+ */
+export const CURRENT_SETTINGS_VERSION = 1
+
 export interface Settings {
   modelId: ModelId
   mode: BackendMode
@@ -149,6 +165,8 @@ export interface Settings {
   /** Electron accelerator string, e.g. "Ctrl+Shift+Space". */
   hotkey: string
   pushToTalk: PushToTalkSettings
+  /** See `CURRENT_SETTINGS_VERSION`'s doc comment. */
+  settingsVersion?: number
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -160,6 +178,15 @@ export const DEFAULT_SETTINGS: Settings = {
   customVocabulary: [],
   hotkey: 'Ctrl+Shift+Space',
   pushToTalk: DEFAULT_PUSH_TO_TALK_SETTINGS
+  // Deliberately NOT set to CURRENT_SETTINGS_VERSION here: JsonStore merges
+  // a parsed file shallowly over this default (`{...default, ...parsed}`),
+  // so a pre-migration settings.json missing this key would otherwise have
+  // it silently filled in as "current" and SettingsStore.migrate() would
+  // wrongly no-op. Leaving it undefined here means every settings.json
+  // genuinely missing the field - whether brand new or pre-dating this
+  // field - reads as version 0 and goes through migrate() once, which is
+  // cheap and correct either way (a fresh install's defaults already pass
+  // through the v1 step unchanged; see that method).
 }
 
 export type DictationDisplayMode = TransformMode | 'none'

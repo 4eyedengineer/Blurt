@@ -15,6 +15,8 @@
  * renderer-facing surface.
  */
 
+import type { Accelerator } from './types'
+
 /** A single 16-bit PCM audio chunk, mono. Preferred format is 16kHz. */
 export type AudioChunk = Int16Array | Buffer
 
@@ -71,6 +73,17 @@ export interface BackendStatus {
   state: BackendStatusState
   /** Human-readable detail, set when state is 'error' (or transiently while retrying). */
   message?: string
+  /**
+   * The accelerator a managed sidecar's engine actually ended up running
+   * on, once known - parsed from `serve_gpu.py`'s `ELOQUENT_EFFECTIVE_BACKEND`
+   * stdout marker (see that file and `Sidecar`/`BackendController`).
+   * Undefined until observed, or when there's nothing to observe (mock
+   * backend, 'external' sidecar mode). Never assume this matches the
+   * requested `SidecarSettings.accelerator` - that's exactly the gap this
+   * field exists to close (GPU can be requested but silently fall back to
+   * CPU; this is the truth, not the request).
+   */
+  effectiveAccelerator?: Accelerator
 }
 
 /**

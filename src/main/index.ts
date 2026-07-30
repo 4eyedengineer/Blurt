@@ -98,6 +98,13 @@ app.whenReady().then(() => {
   registerPushToTalkIpc(pushToTalkController)
 
   registerBackendIpc(backendController, () => [mainWindow, overlayWindow])
+  // Cheap diagnostic parity with the overlay/push-to-talk logs above -
+  // surfaces sidecar state and (once observed) the truthful effective
+  // accelerator (see BackendStatus.effectiveAccelerator) without needing
+  // devtools open.
+  backendController.on('status', (status) =>
+    console.log('[backend] status:', JSON.stringify(status))
+  )
   registerHistoryIpc(historyStore)
   registerSettingsIpc(
     settingsStore,

@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest'
-import { renderManagedCommand, tokenizeCommand } from './sidecar'
+import { parseEffectiveBackendLine, renderManagedCommand, tokenizeCommand } from './sidecar'
+
+describe('parseEffectiveBackendLine', () => {
+  it('parses the gpu marker', () => {
+    expect(parseEffectiveBackendLine('ELOQUENT_EFFECTIVE_BACKEND=gpu')).toBe('gpu')
+  })
+
+  it('parses the cpu marker', () => {
+    expect(parseEffectiveBackendLine('ELOQUENT_EFFECTIVE_BACKEND=cpu')).toBe('cpu')
+  })
+
+  it('tolerates trailing whitespace/carriage returns', () => {
+    expect(parseEffectiveBackendLine('ELOQUENT_EFFECTIVE_BACKEND=gpu\r')).toBe('gpu')
+  })
+
+  it('returns null for unrelated log lines', () => {
+    expect(
+      parseEffectiveBackendLine('Starting OpenAI-compatible API server on 127.0.0.1:9379...')
+    ).toBeNull()
+    expect(parseEffectiveBackendLine('')).toBeNull()
+    expect(parseEffectiveBackendLine('ELOQUENT_EFFECTIVE_BACKEND=npu')).toBeNull()
+  })
+})
 
 describe('tokenizeCommand', () => {
   it('splits on whitespace', () => {

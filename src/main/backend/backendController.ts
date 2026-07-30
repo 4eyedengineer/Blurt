@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events'
 import type { BackendStatus, InferenceBackend } from '../../shared/backend'
+import type { Accelerator } from '../../shared/types'
 import { getCatalogEntry } from '../../shared/models'
 import type { SettingsStore } from '../store/settingsStore'
 import type { ModelManager } from './modelManager'
@@ -60,6 +61,8 @@ export class BackendController extends EventEmitter {
   private status: BackendStatus = { state: 'mock' }
   /** Bumped on every rebuild so a slow-to-start previous attempt can detect it's stale and back off. */
   private generation = 0
+  /** See `BackendStatus.effectiveAccelerator`. Reset at the start of every rebuild. */
+  private effectiveAccelerator: Accelerator | undefined
 
   constructor(
     private readonly settingsStore: SettingsStore,
@@ -84,6 +87,10 @@ export class BackendController extends EventEmitter {
     const generation = ++this.generation
     const settings = this.settingsStore.get()
     const previousSidecar = this.sidecar
+    // Nothing's been observed about a not-yet-started (or freshly rebuilt)
+    // sidecar's real backend yet - a stale value from a previous attempt
+    // must not linger and be shown as if it were current.
+    this.effectiveAccelerator = undefined
 
     if (settings.backend === 'mock') {
       this.sidecar = null
@@ -126,10 +133,19 @@ export class BackendController extends EventEmitter {
         // default 'gpu' accelerator template does - see Accelerator's doc
         // comment in shared/types.ts); harmless no-op otherwise.
         wrapperPath: resolveServeGpuScriptPath(),
-        // Points a managed `litert-lm serve` (and the `import` step above) at
-        // the same sandboxed model store, entirely separate from the user's
-        // real `~/.litert-lm` - see ModelManager.getLitertLmDir().
-        env: { LITERT_LM_DIR: this.modelManager.getLitertLmDir() }
+        env: {
+          // Points a managed `litert-lm serve` (and the `import` step above)
+          // at the same sandboxed model store, entirely separate from the
+          // user's real `~/.litert-lm` - see ModelManager.getLitertLmDir().
+          LITERT_LM_DIR: this.modelManager.getLitertLmDir(),
+          // Only read by `resources/serve_gpu.py` (see its "Eager engine
+          // creation" doc comment) - lets it load the engine synchronously
+          // at startup instead of on the first request, so the effective
+          // backend is known (and truthfully reported) before the sidecar
+          // ever looks ready. Harmless/unused for a plain `litert-lm serve`
+          // managed command (the 'cpu' accelerator template).
+          ELOQUENT_EAGER_MODEL_ID: getCatalogEntry(settings.modelId).alias
+        }
       })
 
       sidecar.on('state', (state, message) => {
@@ -143,6 +159,11 @@ export class BackendController extends EventEmitter {
       sidecar.on('fatal', (err: Error) => {
         if (generation !== this.generation) return
         this.setStatus({ state: 'error', message: err.message })
+      })
+      sidecar.on('effective-accelerator', (accelerator: Accelerator) => {
+        if (generation !== this.generation) return
+        this.effectiveAccelerator = accelerator
+        this.setStatus({ ...this.status })
       })
 
       await sidecar.start()
@@ -186,9 +207,19 @@ export class BackendController extends EventEmitter {
     this.emit('backend-changed', backend)
   }
 
+  /**
+   * Always folds in the latest known `effectiveAccelerator` (see that
+   * field's doc comment on `BackendStatus`) so individual call sites above
+   * don't each need to remember to carry it forward - a state/error/ready
+   * transition must never accidentally erase what's already been observed
+   * about the real backend.
+   */
   private setStatus(status: BackendStatus): void {
-    this.status = status
-    this.emit('status', status)
+    this.status = {
+      ...status,
+      effectiveAccelerator: status.effectiveAccelerator ?? this.effectiveAccelerator
+    }
+    this.emit('status', this.status)
   }
 
   /** Call on app quit. */

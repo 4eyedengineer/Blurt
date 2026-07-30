@@ -226,3 +226,30 @@
   color: var(--color-text-muted);
   margin-top: 4px;
 }
+
+.settings-screen__advanced summary {
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.settings-screen__advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-screen__advanced summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+
+.settings-screen__advanced[open] summary::before {
+  content: '▾';
+}
+
+.settings-screen__advanced[open] summary {
+  margin-bottom: 4px;
+}

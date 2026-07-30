@@ -515,7 +515,11 @@ GPU acceleration (see [WINDOWS.md](WINDOWS.md#6-gpu-acceleration---how-it-works-
 needs a real Vulkan-capable adapter, which this WSL2/WSLg box doesn't have - the `serve_gpu.py`
 wrapper's own fallback logic catches that (verified: it logs `[serve_gpu] GPU engine
 initialization failed (...)` and retries on CPU) rather than the backend simply not existing here.
-The GPU path itself was verified on the actual Windows host - see WINDOWS.md for the real RTX 3060
+GPU is still the default accelerator setting, but the app never claims it's actually running on GPU
+when it isn't - this exact CPU-fallback case is also what proved out the truthful effective-backend
+reporting (`ELOQUENT_EFFECTIVE_BACKEND=cpu` printed by the wrapper, surfaced as "CPU (GPU
+unavailable)" in Settings and "Ready · CPU" in the status pill - see WINDOWS.md's GPU section). The
+GPU path itself was verified on the actual Windows host - see WINDOWS.md for the real RTX 3060
 tokens/s numbers.
 
 ## App features

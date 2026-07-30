@@ -5,22 +5,15 @@ import type { ModelDownloadState } from '@shared/models'
 import { getCatalogEntry } from '@shared/models'
 import { useSettings } from '../context/SettingsContext'
 import { useModelManager } from '../hooks/useModelManager'
+import { useBackendStatus } from '../hooks/useBackendStatus'
 import { Toggle } from '../components/Toggle'
 import { formatBytes } from '../lib/format'
 import './SettingsScreen.css'
 
-const MODEL_OPTIONS: Array<{ id: ModelId; label: string; desc: string }> = [
-  {
-    id: 'gemma-4-e2b',
-    label: 'Gemma 4 E2B',
-    desc: 'Fastest, smallest footprint. Best for quick notes.'
-  },
-  {
-    id: 'gemma-4-e4b',
-    label: 'Gemma 4 E4B',
-    desc: 'Balanced accuracy and speed. Recommended default.'
-  },
-  { id: 'gemma-4-12b', label: 'Gemma 4 12B', desc: 'Highest accuracy, more resource-intensive.' }
+const MODEL_OPTIONS: Array<{ id: ModelId; label: string }> = [
+  { id: 'gemma-4-e2b', label: 'Gemma 4 E2B — fastest' },
+  { id: 'gemma-4-e4b', label: 'Gemma 4 E4B — balanced' },
+  { id: 'gemma-4-12b', label: 'Gemma 4 12B — best quality, slower' }
 ]
 
 type HotkeyStatus = 'idle' | 'saved' | 'error'
@@ -34,7 +27,7 @@ function modelStateLabel(state: ModelDownloadState): string {
     case 'downloading':
       return 'Downloading…'
     case 'importing':
-      return 'Registering with litert-lm…'
+      return 'Registering…'
     case 'done':
       return 'Installed'
     case 'error':
@@ -69,7 +62,6 @@ function ModelRow({ option, selected, onSelect, models }: ModelRowProps): React.
       <div className="settings-screen__model-row">
         <div>
           <span className="settings-screen__radio-title">{option.label}</span>
-          <span className="settings-screen__radio-desc">{option.desc}</span>
           <span className="settings-screen__radio-desc">
             {modelStateLabel(progress?.state ?? 'idle')} · ~{formatBytes(approxSize)}
             {busy && pct !== null ? ` · ${pct}%` : ''}
@@ -120,9 +112,22 @@ function ModelRow({ option, selected, onSelect, models }: ModelRowProps): React.
   )
 }
 
+/**
+ * The Accelerator toggle's own label, per the "requested vs. actually
+ * running" rule (see BackendStatus.effectiveAccelerator's doc comment):
+ * reflects the requested setting, except when GPU was requested but the
+ * sidecar's engine truthfully reported it fell back to CPU - that case must
+ * never read as "GPU".
+ */
+function acceleratorLabel(requested: Accelerator, effective: Accelerator | undefined): string {
+  if (requested === 'gpu' && effective === 'cpu') return 'CPU (GPU unavailable)'
+  return requested === 'gpu' ? 'GPU' : 'CPU'
+}
+
 export function SettingsScreen(): React.JSX.Element {
   const { settings, update, addVocabularyWord, removeVocabularyWord, updateHotkey } = useSettings()
   const models = useModelManager()
+  const backendStatus = useBackendStatus()
   const [vocabInput, setVocabInput] = useState('')
   const [hotkeyInput, setHotkeyInput] = useState(settings.hotkey)
   const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus>('idle')
@@ -185,10 +190,6 @@ export function SettingsScreen(): React.JSX.Element {
 
       <div className="settings-screen__group">
         <h2>Backend</h2>
-        <p className="settings-screen__hint">
-          Mock replays canned demo transcripts and rule-based text ops - no download required.
-          LiteRT-LM runs a real on-device Gemma model via a local sidecar process.
-        </p>
         <div className="settings-screen__radio-group">
           <label className="settings-screen__radio">
             <input
@@ -199,9 +200,7 @@ export function SettingsScreen(): React.JSX.Element {
             />
             <div>
               <span className="settings-screen__radio-title">Mock</span>
-              <span className="settings-screen__radio-desc">
-                Demo mode - no model, no download, works everywhere.
-              </span>
+              <span className="settings-screen__radio-desc">Demo data, no download.</span>
             </div>
           </label>
           <label className="settings-screen__radio">
@@ -213,10 +212,7 @@ export function SettingsScreen(): React.JSX.Element {
             />
             <div>
               <span className="settings-screen__radio-title">LiteRT-LM</span>
-              <span className="settings-screen__radio-desc">
-                Real on-device Gemma model. Requires downloading a model below and a working
-                litert-lm sidecar.
-              </span>
+              <span className="settings-screen__radio-desc">Real on-device model.</span>
             </div>
           </label>
         </div>
@@ -224,10 +220,6 @@ export function SettingsScreen(): React.JSX.Element {
 
       <div className="settings-screen__group">
         <h2>Model</h2>
-        <p className="settings-screen__hint">
-          Which Gemma model to use. Downloads are ungated (no HuggingFace account/token needed) and
-          stored under the app&apos;s local data folder.
-        </p>
         <div className="settings-screen__radio-group">
           {MODEL_OPTIONS.map((opt) => (
             <ModelRow
@@ -242,119 +234,120 @@ export function SettingsScreen(): React.JSX.Element {
       </div>
 
       {settings.backend === 'litert' && (
-        <div className="settings-screen__group">
-          <h2>Sidecar</h2>
-          <p className="settings-screen__hint">
-            How the app talks to litert-lm. &quot;Managed&quot; spawns the process itself using the
-            command below (<code>{'{port}'}</code> is substituted; <code>{'{modelPath}'}</code> is
-            also available for custom wrapper scripts, though the stock <code>litert-lm serve</code>{' '}
-            takes no model flag - the model is selected per-request by its imported alias);
-            &quot;External&quot; connects to a litert-lm server you already have running.
-          </p>
-          <div className="settings-screen__radio-group">
-            {(['managed', 'external'] as SidecarMode[]).map((mode) => (
-              <label key={mode} className="settings-screen__radio">
-                <input
-                  type="radio"
-                  name="sidecar-mode"
-                  checked={settings.sidecar.mode === mode}
-                  onChange={() => void update({ sidecar: { ...settings.sidecar, mode } })}
-                />
-                <div>
-                  <span className="settings-screen__radio-title">
-                    {mode === 'managed' ? 'Managed (app spawns it)' : 'External (already running)'}
-                  </span>
-                </div>
-              </label>
-            ))}
-          </div>
-
-          {settings.sidecar.mode === 'managed' ? (
-            <>
+        <>
+          {settings.sidecar.mode === 'managed' && (
+            <div className="settings-screen__group">
               <label className="settings-screen__toggle-row">
                 <span>
-                  <strong>GPU acceleration</strong>
-                  <p className="settings-screen__hint">
-                    Runs the model on GPU (WebGPU/Direct3D 12) instead of CPU. Measured on an RTX
-                    3060 Laptop GPU with the Gemma 4 E2B model: ~3.4x faster decode throughput (~54
-                    vs ~16 tokens/s) once the one-time GPU shader-compile cache is warm (first run
-                    after enabling takes ~15s longer to become ready). If GPU initialization fails
-                    on this machine (e.g. no compatible graphics driver), it falls back to CPU
-                    automatically after the first request - see WINDOWS.md &quot;GPU
-                    acceleration&quot; for the full writeup and how this was measured.
-                  </p>
+                  <strong>
+                    {acceleratorLabel(
+                      settings.sidecar.accelerator,
+                      backendStatus.effectiveAccelerator
+                    )}
+                  </strong>
+                  {settings.sidecar.accelerator === 'gpu' &&
+                    backendStatus.effectiveAccelerator === 'cpu' && (
+                      <p className="settings-screen__hint">
+                        GPU init failed on this machine - running on CPU instead.
+                      </p>
+                    )}
                 </span>
                 <Toggle
                   checked={settings.sidecar.accelerator === 'gpu'}
                   onChange={(checked) => setAccelerator(checked ? 'gpu' : 'cpu')}
-                  label="GPU acceleration"
+                  label="Accelerator"
                 />
               </label>
-
-              <label className="settings-screen__field-label" htmlFor="sidecar-command">
-                Managed command template
-              </label>
-              <div className="settings-screen__inline-input">
-                <input
-                  id="sidecar-command"
-                  type="text"
-                  value={settings.sidecar.managedCommand}
-                  onChange={(e) =>
-                    void update({
-                      sidecar: { ...settings.sidecar, managedCommand: e.target.value }
-                    })
-                  }
-                />
-              </div>
-              <label className="settings-screen__field-label" htmlFor="sidecar-port">
-                Port
-              </label>
-              <div className="settings-screen__inline-input">
-                <input
-                  id="sidecar-port"
-                  type="number"
-                  min={1}
-                  max={65535}
-                  value={settings.sidecar.port}
-                  onChange={(e) =>
-                    void update({
-                      sidecar: { ...settings.sidecar, port: Number(e.target.value) || 9379 }
-                    })
-                  }
-                />
-              </div>
-            </>
-          ) : (
-            <>
-              <label className="settings-screen__field-label" htmlFor="sidecar-url">
-                Server URL
-              </label>
-              <div className="settings-screen__inline-input">
-                <input
-                  id="sidecar-url"
-                  type="text"
-                  placeholder="http://127.0.0.1:9379"
-                  value={settings.sidecar.externalUrl}
-                  onChange={(e) =>
-                    void update({
-                      sidecar: { ...settings.sidecar, externalUrl: e.target.value }
-                    })
-                  }
-                />
-              </div>
-            </>
+            </div>
           )}
-        </div>
+
+          <details className="settings-screen__group settings-screen__advanced">
+            <summary>Advanced</summary>
+
+            <div className="settings-screen__radio-group">
+              {(['managed', 'external'] as SidecarMode[]).map((mode) => (
+                <label key={mode} className="settings-screen__radio">
+                  <input
+                    type="radio"
+                    name="sidecar-mode"
+                    checked={settings.sidecar.mode === mode}
+                    onChange={() => void update({ sidecar: { ...settings.sidecar, mode } })}
+                  />
+                  <div>
+                    <span className="settings-screen__radio-title">
+                      {mode === 'managed'
+                        ? 'Managed (app spawns it)'
+                        : 'External (already running)'}
+                    </span>
+                  </div>
+                </label>
+              ))}
+            </div>
+
+            {settings.sidecar.mode === 'managed' ? (
+              <>
+                <label className="settings-screen__field-label" htmlFor="sidecar-command">
+                  Command template
+                </label>
+                <div className="settings-screen__inline-input">
+                  <input
+                    id="sidecar-command"
+                    type="text"
+                    value={settings.sidecar.managedCommand}
+                    onChange={(e) =>
+                      void update({
+                        sidecar: { ...settings.sidecar, managedCommand: e.target.value }
+                      })
+                    }
+                  />
+                </div>
+                <label className="settings-screen__field-label" htmlFor="sidecar-port">
+                  Port
+                </label>
+                <div className="settings-screen__inline-input">
+                  <input
+                    id="sidecar-port"
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={settings.sidecar.port}
+                    onChange={(e) =>
+                      void update({
+                        sidecar: { ...settings.sidecar, port: Number(e.target.value) || 9379 }
+                      })
+                    }
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <label className="settings-screen__field-label" htmlFor="sidecar-url">
+                  Server URL
+                </label>
+                <div className="settings-screen__inline-input">
+                  <input
+                    id="sidecar-url"
+                    type="text"
+                    placeholder="http://127.0.0.1:9379"
+                    value={settings.sidecar.externalUrl}
+                    onChange={(e) =>
+                      void update({
+                        sidecar: { ...settings.sidecar, externalUrl: e.target.value }
+                      })
+                    }
+                  />
+                </div>
+              </>
+            )}
+          </details>
+        </>
       )}
 
       <div className="settings-screen__group">
         <h2>Processing</h2>
         <label className="settings-screen__toggle-row">
           <span>
-            <strong>Offline / Cloud</strong>
-            <p className="settings-screen__hint">
-              Run entirely on-device, or allow cloud fallback (placeholder).
-            </p>
+            <strong>Cloud mode</strong>
           </span>
           <Toggle
             checked={settings.mode === 'cloud'}
@@ -365,9 +358,6 @@ export function SettingsScreen(): React.JSX.Element {
         <label className="settings-screen__toggle-row">
           <span>
             <strong>Auto-copy on cleanup</strong>
-            <p className="settings-screen__hint">
-              Automatically copy the cleaned transcript to your clipboard.
-            </p>
           </span>
           <Toggle
             checked={settings.autoCopyOnCleanup}
@@ -379,9 +369,7 @@ export function SettingsScreen(): React.JSX.Element {
 
       <div className="settings-screen__group">
         <h2>Custom vocabulary</h2>
-        <p className="settings-screen__hint">
-          Words and names the recognizer should bias towards (product names, jargon, people).
-        </p>
+        <p className="settings-screen__hint">Names and jargon to bias the recognizer towards.</p>
         <div className="settings-screen__inline-input">
           <input
             type="text"
@@ -417,38 +405,27 @@ export function SettingsScreen(): React.JSX.Element {
 
       <div className="settings-screen__group">
         <h2>Push to talk</h2>
-        <p className="settings-screen__hint">
-          Hold a key anywhere to show a small floating toolbar and dictate - releasing it cleans up
-          the text, copies it to your clipboard, and (if enabled) pastes it into whatever
-          application currently has focus. Modeled on the macOS Eloquent app&apos;s system-wide
-          flow.
-        </p>
+        <p className="settings-screen__hint">Hold a key anywhere to dictate.</p>
 
         {pttStatus && !pttStatus.available && (
           <p className="settings-screen__status settings-screen__status--error">
-            Not available on this machine: {pttStatus.reason ?? 'unknown error'}. Push-to-talk will
-            stay off no matter what&apos;s set below.
+            Not available on this machine: {pttStatus.reason ?? 'unknown error'}.
           </p>
         )}
         {pttStatus?.isWSL && (
           <p className="settings-screen__hint">
-            Running under WSL: the key hook only sees keys while an X11/WSLg window is focused
-            (native Windows apps are invisible to it), and paste-injection only reaches X apps - see
-            README &quot;Known limitations&quot; for the full story. True system-wide push-to-talk
-            into arbitrary Windows apps needs the app running natively on Windows.
+            Under WSL, push-to-talk only sees WSLg-focused windows, not native Windows apps.
           </p>
         )}
         {pttStatus?.platform === 'linux' && pttStatus.xdotoolAvailable === false && (
           <p className="settings-screen__hint">
-            <code>xdotool</code> wasn&apos;t found on PATH - auto-paste will fall back to
-            clipboard-only (install <code>xdotool</code> to enable it here).
+            <code>xdotool</code> not found - auto-paste will fall back to clipboard-only.
           </p>
         )}
 
         <label className="settings-screen__toggle-row">
           <span>
             <strong>Enable push to talk</strong>
-            <p className="settings-screen__hint">Hold the key below anywhere to dictate.</p>
           </span>
           <Toggle
             checked={settings.pushToTalk.enabled}
@@ -475,8 +452,7 @@ export function SettingsScreen(): React.JSX.Element {
                 <span className="settings-screen__radio-title">{opt.label}</span>
                 {opt.id === 'AltRight' && (
                   <span className="settings-screen__radio-desc">
-                    Note: this is the &quot;AltGr&quot; key on many non-US keyboard layouts - pick a
-                    different key below if you use it to type special characters.
+                    Also known as AltGr on some layouts.
                   </span>
                 )}
               </div>
@@ -487,10 +463,6 @@ export function SettingsScreen(): React.JSX.Element {
         <label className="settings-screen__toggle-row">
           <span>
             <strong>Auto-paste</strong>
-            <p className="settings-screen__hint">
-              Simulate Ctrl+V into the focused app after copying. Turn off to only copy to the
-              clipboard.
-            </p>
           </span>
           <Toggle
             checked={settings.pushToTalk.autoPaste}
@@ -504,9 +476,6 @@ export function SettingsScreen(): React.JSX.Element {
 
       <div className="settings-screen__group">
         <h2>Global hotkey</h2>
-        <p className="settings-screen__hint">
-          Toggles recording from anywhere in Windows and brings Eloquent to the front.
-        </p>
         <div className="settings-screen__inline-input">
           <input
             type="text"
@@ -519,11 +488,11 @@ export function SettingsScreen(): React.JSX.Element {
           </button>
         </div>
         {hotkeyStatus === 'saved' && (
-          <p className="settings-screen__status settings-screen__status--ok">Hotkey registered.</p>
+          <p className="settings-screen__status settings-screen__status--ok">Saved.</p>
         )}
         {hotkeyStatus === 'error' && (
           <p className="settings-screen__status settings-screen__status--error">
-            Could not register that hotkey - it may already be in use by another app.
+            Could not register - it may already be in use.
           </p>
         )}
       </div>

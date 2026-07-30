@@ -213,12 +213,15 @@ Open the app's **Settings** tab and set:
     correctly (see `BackendController.rebuild()`). Only change this field if your `litert-lm`
     binary/Python venv isn't on `PATH` (put an absolute path instead) or you need non-default flags
     like `--cors-origin`.
-  - **GPU acceleration toggle** (Settings, right above this field): on by default for the seeded
-    first-run config (see "GPU acceleration" below) - it swaps the command template to
-    `python "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose`, i.e. the same
-    `litert-lm serve` but launched through `resources/serve_gpu.py`, a small wrapper that forces
-    the model onto GPU (the real `serve` CLI has no flag to do this itself - see below for why).
-    Turning it off reverts to the plain `litert-lm serve --host 127.0.0.1 --port {port}` template.
+  - **GPU acceleration toggle** (Settings, right above this field): on by default (fresh installs,
+    and existing ones are migrated to it once - see "GPU acceleration" below) - it swaps the command
+    template to `python "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose`, i.e. the
+    same `litert-lm serve` but launched through `resources/serve_gpu.py`, a small wrapper that
+    forces the model onto GPU (the real `serve` CLI has no flag to do this itself - see below for
+    why). Turning it off reverts to the plain `litert-lm serve --host 127.0.0.1 --port {port}`
+    template. The toggle's own label always tells the truth about what's actually running - if GPU
+    was requested but the sidecar's engine fell back to CPU, it reads "CPU (GPU unavailable)"
+    instead of just staying on "GPU" (see `BackendStatus.effectiveAccelerator`).
   - **External**: point at a `litert-lm serve` instance you started yourself (e.g. in its own
     terminal window with `--verbose` for visible logs while debugging). Useful if you want the
     server logs visible separately from the Electron app, or you're running the server on a
@@ -247,19 +250,20 @@ npm run dev
    by default, but it needs a native Windows process with a direct path to the RTX 3060's driver
    stack. A WSL2 process sits behind WSLg/virtualized GPU passthrough (no real Vulkan ICD in that
    sandbox as of this writing - confirmed empirically, see step 6), so running the sidecar there
-   would silently fall back to CPU via the wrapper's own fallback logic instead of actually using
-   the GPU.
+   falls back to CPU via the wrapper's own fallback logic instead of actually using the GPU - and,
+   unlike before, the app now knows and shows this truthfully (Settings toggle reads "CPU (GPU
+   unavailable)", status pill reads "Ready · CPU") rather than just displaying the requested setting.
 
 Both the Electron app and the `litert-lm serve` sidecar should run as native Windows processes on
 the same machine. There's no need to split them across hosts for this hardware profile.
 
 ## 6. GPU acceleration - how it works and what was measured
 
-**Short version: GPU acceleration is on by default (for a fresh first-run config) and was verified
-end-to-end against a real RTX 3060 Laptop GPU (6 GB VRAM) - decode throughput is ~3.4x faster than
-CPU once warm.** Getting there needed a small wrapper script, because the pip `serve` CLI itself
-has no way to select a backend - the two findings below explain why, and are still accurate as of
-`litert-lm` 0.14.0.
+**Short version: GPU acceleration is on by default - for a fresh install, and existing installs are
+migrated to it once (see below) - and was verified end-to-end against a real RTX 3060 Laptop GPU
+(6 GB VRAM) - decode throughput is ~3.4x faster than CPU once warm.** Getting there needed a small
+wrapper script, because the pip `serve` CLI itself has no way to select a backend - the two findings
+below explain why, and are still accurate as of `litert-lm` 0.14.0.
 
 **Finding 1: `litert-lm serve --help` exposes no backend-selection flag at all.**
 
@@ -326,9 +330,10 @@ a thin wrapper (see its own doc comment for the full mechanism) that monkeypatch
 onto GPU while the audio/vision adapters are left on their own (correctly CPU-constrained) default
 - verified end-to-end against a real `litert-lm serve` process spawned this way, hitting
 `/v1/chat/completions` and getting back a real completion with `MainExecutorSettings: backend: GPU`
-and the `Selected adapter: ... Direct3D 12` line in the log. The Settings screen's "GPU
-acceleration" toggle (see step 4 above) points the managed sidecar command at this wrapper instead
-of the bare `litert-lm serve`; `Start-Eloquent.ps1` seeds it enabled by default for a fresh install.
+and the `Selected adapter: ... Direct3D 12` line in the log. The Settings screen's accelerator
+toggle (see step 4 above) points the managed sidecar command at this wrapper instead of the bare
+`litert-lm serve`; both `Start-Eloquent.ps1` (fresh installs) and `SettingsStore`'s one-time
+migration (existing installs, see `src/main/store/settingsStore.ts`) enable it by default.
 
 **Fallback if GPU init fails**: the wrapper catches a failed GPU engine-creation (verified in WSL2,
 which has no Vulkan adapter - see the log excerpt above) and retries the same request on CPU,
@@ -336,7 +341,12 @@ logging a `[serve_gpu] GPU engine initialization failed (...); falling back to C
 then stays on CPU for the rest of that sidecar process's lifetime. So enabling GPU is safe even on
 a machine that turns out not to support it - worst case, the very first request after startup pays
 both the failed-GPU-attempt cost and a CPU cold-start, and everything after that behaves exactly
-like CPU mode.
+like CPU mode. Crucially, this fallback is never silent to the user: the wrapper eagerly creates the
+engine at process startup (before the sidecar looks "ready" to the Electron app) and prints an
+unambiguous `ELOQUENT_EFFECTIVE_BACKEND=gpu`/`=cpu` marker line to stdout as soon as it knows which
+backend it actually got - `sidecar.ts` parses that marker and the Settings toggle / status pill
+reflect the real backend, not just the requested one (see `BackendStatus.effectiveAccelerator`
+and `resources/serve_gpu.py`'s "Effective-backend reporting"/"Eager engine creation" doc comments).
 
 **If you want to re-verify any of this yourself** once you've imported a model:
 
@@ -385,6 +395,8 @@ needs to provide, exactly as described in steps 1-3 above.
 - [ ] `litert-lm import --from-huggingface-repo litert-community/gemma-4-12B-it-litert-lm gemma-4-12B-it.litertlm 12b` (or e2b/e4b)
 - [ ] App Settings: Backend = LiteRT-LM, Model = the one you imported, Sidecar mode = Managed, Port = 9379
 - [ ] `npm run dev` on the Windows host (not WSL2) for real mic access and real GPU acceleration
-- [ ] GPU acceleration toggle is on by default for a fresh install (~3.4x faster decode, measured
-      on an RTX 3060 Laptop GPU - see section 6); falls back to CPU on its own if GPU init fails
+- [ ] GPU acceleration is on by default (fresh install, or migrated automatically for an existing
+      one - ~3.4x faster decode, measured on an RTX 3060 Laptop GPU - see section 6); falls back to
+      CPU on its own if GPU init fails, and the Settings toggle/status pill say so truthfully if it
+      does
 - [ ] `npm run build && npm run build:win` on a real Windows machine to produce an installer

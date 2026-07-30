@@ -1,7 +1,21 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { EventEmitter } from 'events'
+import type { Accelerator } from '../../shared/types'
 
 export type SidecarState = 'stopped' | 'starting' | 'ready' | 'restarting' | 'error'
+
+/**
+ * Matches `serve_gpu.py`'s `ELOQUENT_EFFECTIVE_BACKEND=gpu`/`=cpu` stdout
+ * marker line (see that file's "Effective-backend reporting" doc comment).
+ * Exported so it can be unit-tested without spawning a real process.
+ */
+const EFFECTIVE_BACKEND_LINE = /^ELOQUENT_EFFECTIVE_BACKEND=(cpu|gpu)\s*$/
+
+/** Returns the accelerator reported by one line of a managed sidecar's stdout, or null if the line isn't the marker. */
+export function parseEffectiveBackendLine(line: string): Accelerator | null {
+  const match = line.match(EFFECTIVE_BACKEND_LINE)
+  return match ? (match[1] as Accelerator) : null
+}
 
 export interface SidecarOptions {
   mode: 'managed' | 'external'
@@ -60,8 +74,9 @@ export function renderManagedCommand(
  * Owns the lifecycle of the LiteRT-LM sidecar HTTP server: spawning it (in
  * 'managed' mode) or just pointing at a user-provided URL (in 'external'
  * mode), polling until it answers, and auto-restarting with backoff if it
- * dies unexpectedly. Emits 'state' (SidecarState, message?) and 'log'
- * (string) events; never throws out of event handlers.
+ * dies unexpectedly. Emits 'state' (SidecarState, message?), 'log'
+ * (string), and 'effective-accelerator' (Accelerator - see
+ * `getEffectiveAccelerator`) events; never throws out of event handlers.
  */
 export class Sidecar extends EventEmitter {
   private proc: ChildProcess | null = null
@@ -69,6 +84,10 @@ export class Sidecar extends EventEmitter {
   private restarts = 0
   private stopping = false
   private readonly baseUrl: string
+  /** See `getEffectiveAccelerator`. Reset on every (re)spawn. */
+  private effectiveAccelerator: Accelerator | null = null
+  /** Holds a possibly-incomplete trailing line across stdout chunk boundaries. */
+  private stdoutTail = ''
 
   constructor(private readonly options: SidecarOptions) {
     super()
@@ -84,6 +103,18 @@ export class Sidecar extends EventEmitter {
 
   getState(): SidecarState {
     return this.state
+  }
+
+  /**
+   * The accelerator the managed sidecar's engine actually ended up on, once
+   * `serve_gpu.py`'s `ELOQUENT_EFFECTIVE_BACKEND` marker has been observed
+   * on its stdout - null until then, or always (mode === 'external', or a
+   * managed command that isn't the GPU wrapper - e.g. plain `litert-lm
+   * serve`, which never prints the marker). Also emitted as an
+   * `'effective-accelerator'` event as soon as it's known.
+   */
+  getEffectiveAccelerator(): Accelerator | null {
+    return this.effectiveAccelerator
   }
 
   /** Starts (spawning if managed) and resolves once the server answers, or rejects on timeout. */
@@ -127,13 +158,19 @@ export class Sidecar extends EventEmitter {
       return
     }
 
+    // A fresh process hasn't reported anything yet - stale state from a
+    // previous attempt (e.g. a crash-restart) must not linger and be
+    // mistaken for this one's.
+    this.effectiveAccelerator = null
+    this.stdoutTail = ''
+
     const child = spawn(cmd, rest, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: this.options.env ? { ...process.env, ...this.options.env } : process.env
     })
     this.proc = child
 
-    child.stdout?.on('data', (chunk: Buffer) => this.emit('log', chunk.toString('utf-8')))
+    child.stdout?.on('data', (chunk: Buffer) => this.handleStdout(chunk))
     child.stderr?.on('data', (chunk: Buffer) => this.emit('log', chunk.toString('utf-8')))
 
     child.on('error', (err) => {
@@ -212,6 +249,28 @@ export class Sidecar extends EventEmitter {
       return false
     } finally {
       clearTimeout(timer)
+    }
+  }
+
+  /**
+   * Forwards raw stdout as a 'log' event (unchanged behavior) and also
+   * scans complete lines for `serve_gpu.py`'s `ELOQUENT_EFFECTIVE_BACKEND`
+   * marker - buffered across chunk boundaries since a pipe read can split a
+   * line arbitrarily.
+   */
+  private handleStdout(chunk: Buffer): void {
+    const text = chunk.toString('utf-8')
+    this.emit('log', text)
+
+    const combined = this.stdoutTail + text
+    const lines = combined.split('\n')
+    this.stdoutTail = lines.pop() ?? ''
+    for (const line of lines) {
+      const accelerator = parseEffectiveBackendLine(line)
+      if (accelerator) {
+        this.effectiveAccelerator = accelerator
+        this.emit('effective-accelerator', accelerator)
+      }
     }
   }
 

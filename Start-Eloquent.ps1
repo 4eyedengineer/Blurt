@@ -506,6 +506,10 @@ if (Test-Path $SettingsFile) {
         autoCopyOnCleanup = $false
         customVocabulary = @()
         hotkey = 'Ctrl+Shift+Space'
+        # Matches CURRENT_SETTINGS_VERSION in src/shared/types.ts - this file
+        # is already seeded at the latest shape (GPU on by default), so mark
+        # it current and skip SettingsStore's one-time migration for it.
+        settingsVersion = 1
     }
     New-Item -ItemType Directory -Force -Path $AppUserDataDir | Out-Null
     $settings | ConvertTo-Json -Depth 5 | Set-Content -Path $SettingsFile -Encoding UTF8
