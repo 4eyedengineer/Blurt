@@ -154,13 +154,36 @@ export function buildTransformRequest(
  * a cold engine pays a multi-second load cost (~5.6s for E2B on CPU) vs.
  * ~1.4s once warm - see scratchpad/sidecar-verification.md §3. Non-streaming
  * so the caller doesn't need SSE plumbing just to throw the result away.
+ *
+ * Includes a tiny (~0.3s) silent `input_audio` part alongside the text part,
+ * not just text: per the HuggingFace model-card note (quoted in
+ * scratchpad/perf-review.md §2 "Gap found"), the audio submodel is loaded
+ * lazily and *separately* from the text backbone to save memory, so a
+ * text-only warmup does not force it to load - the user's first real
+ * dictation utterance would otherwise still pay that hidden cold-start cost.
+ * Silence is intentionally fine here (cheap to synthesize, cheap to
+ * transcribe) - this is an internal warmup request, not a user session, so
+ * `LitertBackend`'s silence guard (which exists to avoid hallucinated
+ * "transcripts" from a broken mic capture path) does not apply and is never
+ * consulted for this request.
  */
 export function buildWarmupRequest(model: string): ChatCompletionRequestBody {
   return {
     model,
     stream: false,
     temperature: 0,
-    messages: [{ role: 'user', content: 'Hi' }]
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Hi' },
+          {
+            type: 'input_audio',
+            input_audio: { data: buildSilentWavBase64(), format: 'wav' }
+          }
+        ]
+      }
+    ]
   }
 }
 
@@ -338,6 +361,67 @@ export function concatInt16(chunks: Int16Array[]): Int16Array {
     offset += chunk.length
   }
   return out
+}
+
+/**
+ * Extracts one contiguous sub-range `[startMs, endMs)` of audio-time from
+ * `chunks` (pushed in order), where `chunksStartMs` is the audio-time
+ * position of the very first sample in `chunks[0]` - i.e. `chunks` doesn't
+ * have to start at time zero, it's whatever trailing slice the caller kept.
+ *
+ * Only touches the chunks that actually overlap the requested range (skips
+ * whole chunks outside it without copying their data), so as long as the
+ * caller keeps `chunks` itself bounded to roughly the range it will ever
+ * ask for (see `LitertBackend`'s `recentChunks` rolling buffer), this stays
+ * cheap regardless of total session length - the whole point of the
+ * rolling-window partial-tick design (scratchpad/perf-review.md §2b).
+ *
+ * Pure/stateless: rounds ms to the nearest sample, clamps `startMs` up to
+ * `chunksStartMs` if it asks further back than `chunks` actually covers.
+ */
+export function sliceTrailingWindow(
+  chunks: Int16Array[],
+  chunksStartMs: number,
+  sampleRate: number,
+  startMs: number,
+  endMs: number
+): Int16Array {
+  const clampedStartMs = Math.max(startMs, chunksStartMs)
+  const startSample = Math.max(
+    0,
+    Math.round(((clampedStartMs - chunksStartMs) / 1000) * sampleRate)
+  )
+  const endSample = Math.max(startSample, Math.round(((endMs - chunksStartMs) / 1000) * sampleRate))
+
+  const out = new Int16Array(endSample - startSample)
+  let chunkStartSample = 0
+  let outOffset = 0
+
+  for (const chunk of chunks) {
+    const chunkEndSample = chunkStartSample + chunk.length
+    const takeStart = Math.max(startSample, chunkStartSample)
+    const takeEnd = Math.min(endSample, chunkEndSample)
+    if (takeEnd > takeStart) {
+      out.set(chunk.subarray(takeStart - chunkStartSample, takeEnd - chunkStartSample), outOffset)
+      outOffset += takeEnd - takeStart
+    }
+    chunkStartSample = chunkEndSample
+    if (chunkStartSample >= endSample) break
+  }
+
+  return outOffset === out.length ? out : out.subarray(0, outOffset)
+}
+
+/**
+ * ~0.3s of pure PCM16 silence, WAV-encoded and base64'd - used by
+ * `buildWarmupRequest` to force the sidecar's audio submodel to load during
+ * warmup instead of on the user's first real dictation. Deliberately cheap
+ * (silence compresses/transcribes fast) since all this needs to do is touch
+ * the audio code path, not produce a meaningful transcript.
+ */
+export function buildSilentWavBase64(durationMs = 300, sampleRate = 16000): string {
+  const numSamples = Math.round((durationMs / 1000) * sampleRate)
+  return pcm16ToWavBase64(new Int16Array(numSamples), sampleRate)
 }
 
 /** Encodes mono PCM16 samples as a standard 44-byte-header WAV file. */

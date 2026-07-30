@@ -205,17 +205,32 @@ chunks over IPC as `AudioChunkPayload` (`{ kind: 'pcm16' | 'opaque', buffer, sam
 Two UX refinements sit on top of the base `InferenceBackend` contract, both exercised identically
 by `MockBackend` and `LitertBackend` so they're demoable without a real model:
 
-- **Real-time streaming partials.** `LitertBackend.pushAudio` fires a partial re-transcription tick
-  every `DEFAULT_PARTIAL_INTERVAL_MS` (1.5s, down from an earlier 3s) of new audio, same as before -
-  but each tick now streams its result in over the sidecar's SSE response as tokens arrive (via
+- **Real-time streaming partials, over a bounded rolling window.** `LitertBackend.pushAudio` fires
+  a partial re-transcription tick every `DEFAULT_PARTIAL_INTERVAL_MS` (1.5s) of new audio, and each
+  tick streams its result in over the sidecar's SSE response as tokens arrive (via
   `ThrottledTextEmitter`, `src/main/backend/streamThrottle.ts`) instead of waiting for the whole
-  re-transcription to finish and emitting once. Since each tick re-transcribes the *entire*
-  accumulated buffer (inherent to the design - there's no true incremental ASR here), each streamed
-  chunk **replaces** the previously-shown text rather than appending to it; the renderer just always
-  renders the latest string it's been sent. Emits are throttled to ~100ms batches
-  (`streamThrottleMs`) so a fast token stream doesn't spam IPC. `endSession`'s final
-  re-transcription streams the same way, over the same `onPartialTranscript`/`'partial'` event -
-  no separate channel needed since the session is already marked ended by the time it fires.
+  re-transcription to finish and emitting once. Unlike the original design, a partial tick does
+  **not** re-transcribe the entire accumulated buffer - that made per-tick cost grow linearly with
+  session length and fall behind the 1.5s cadence after only ~4s of speech on CPU (see
+  `scratchpad/perf-review.md` §1). Instead, each tick only sends a bounded trailing **window**
+  (`DEFAULT_PARTIAL_WINDOW_MS`, ~4s) of audio, overlapping the previous window by
+  `DEFAULT_PARTIAL_WINDOW_OVERLAP_MS` (~0.8s) so a word cut off at the boundary gets a full second
+  chance to be heard whole. `src/main/backend/transcriptStitcher.ts`'s `stitchTranscript` (pure,
+  unit-tested) then finds the repeated words at that overlap and dedupes them, so the *displayed*
+  text is always the full transcript-so-far - text from earlier windows is "committed" (fixed) once
+  a later window's start advances past it, exactly like streaming-ASR "confirm on agreement"
+  designs. This keeps every tick's request cost roughly flat regardless of how long the dictation
+  has been running (empirically verified against a live sidecar - see "Rolling window verification"
+  below) at the cost of occasional live-only seam artifacts, which `endSession`'s final pass (below)
+  is unaffected by. A **spiral guard** (`src/main/backend/partialTickScheduler.ts`'s
+  `shouldLaunchPartialTick`, pure + unit-tested with an injectable clock) also enforces a minimum
+  real-world idle gap (`DEFAULT_MIN_PARTIAL_IDLE_GAP_MS`, 300ms) between a tick completing and the
+  next one launching - without it, a backlog of "new audio arrived while the last tick was still
+  running" would launch the next tick with zero breathing room the instant the previous one
+  finished, pegging the CPU with back-to-back requests on slow hardware. Emits are throttled to
+  ~100ms batches (`streamThrottleMs`) so a fast token stream doesn't spam IPC. `endSession`'s final
+  pass streams the same way, over the same `onPartialTranscript`/`'partial'` event - no separate
+  channel needed since the session is already marked ended by the time it fires.
   `cleanup`/`transform`/`voiceEdit` stream too, but via a separate, more generic mechanism: the
   caller mints an `operationId` (any string; the renderer uses `crypto.randomUUID()`), passes it as
   each method's optional last argument, and subscribes to `onTextStreamProgress`/the
@@ -270,16 +285,19 @@ Sidecar (src/main/backend/sidecar.ts)          ModelManager (src/main/backend/mo
         │
         ▼
 LitertBackend (src/main/backend/litertBackend.ts)
-  - accumulates PCM16 audio per session, periodically re-transcribes the whole buffer so far
-    (partial transcripts) and again on endSession (final transcript)
+  - accumulates PCM16 audio per session, periodically re-transcribes a bounded trailing WINDOW of
+    it (partial transcripts, stitched against earlier windows) and re-transcribes the whole buffer
+    once on endSession (final transcript)
   - cleanup/transform/voiceEdit as chat-completions prompts
   - all wire-format assumptions isolated in:
 litertWire.ts (pure, unit-tested)
   - request builders: buildTranscriptionRequest / buildCleanupRequest / buildTransformRequest /
-    buildVoiceEditRequest
+    buildVoiceEditRequest / buildWarmupRequest
   - response parsing: parseSSEBuffer, extractDeltaFromChatCompletionChunk,
     extractContentFromChatCompletionResponse, stripModelPreamble
-  - audio encoding: concatInt16, pcm16ToWavBuffer/Base64
+  - audio encoding: concatInt16, sliceTrailingWindow, pcm16ToWavBuffer/Base64, buildSilentWavBase64
+transcriptStitcher.ts (pure, unit-tested) - stitchTranscript: merges committed + window text
+partialTickScheduler.ts (pure, unit-tested) - shouldLaunchPartialTick: spiral-guard tick gating
 ```
 
 Because the exact request/response shape of a given `litert-lm serve` build can vary, **every**
@@ -326,20 +344,39 @@ Verified against a real `litert-lm` 0.14.0 pip install and a real gemma-4-E2B mo
 - `buildWarmupRequest` (`litertWire.ts`) builds a minimal throwaway completion used to force the
   lazy model load to happen right after the sidecar comes up (`LitertBackend.warmup()`, fired by
   `BackendController` once the sidecar is ready) instead of on the user's first real utterance -
-  empirically, a cold first request pays ~5.6s extra vs. ~1.4s once warm (E2B/CPU).
+  empirically, a cold first request pays ~5.6s extra vs. ~1.4s once warm (E2B/CPU). The warmup
+  request includes a tiny (~0.3s) silent `input_audio` part alongside its text part, not just text -
+  the audio submodel appears to load lazily and separately from the text backbone (per the
+  HuggingFace model-card note), so a text-only warmup left it cold for the user's first real
+  dictation. Empirically (3 cold-restart trials each, live sidecar, E2B/CPU): a from-cold first audio
+  request with no warmup at all took ~1716-2272ms; after a **text-only** warmup it dropped to
+  ~1122-1541ms (avg ~1316ms, noticeably variable run to run); after a **text+audio** warmup it landed
+  at a tight, consistent ~1063-1065ms every time. The audio warmup's win is less about the average
+  (~250ms faster than text-only) and more about eliminating the variance/tail latency - text-only
+  warmup's first audio request was still doing *some* unpredictable extra work text+audio warmup
+  reliably avoids.
 
 ### Session lifecycle mapping
 
 - `startSession` allocates an in-memory buffer for the session's PCM16 audio (no request to the
-  sidecar yet).
-- `pushAudio` appends to that buffer. Once ~1.5 seconds of *new* audio has accumulated, the entire
-  buffer-so-far is WAV-encoded, base64'd, and sent as one transcription chat-completion, whose SSE
-  response streams into `onPartialTranscript` as it arrives (throttled - see "Streaming partials"
-  above) rather than emitting once at the end. These requests are serialized - if the previous
-  partial request is still in flight when the next 1.5-second mark is hit, that tick is skipped
-  rather than firing a second overlapping request.
-- `endSession` waits for any in-flight partial to finish, then does one final full-buffer
-  transcription, streamed the same way over `onPartialTranscript`, and returns it.
+  sidecar yet), plus a small rolling "recent audio" buffer used for partial ticks (see below).
+- `pushAudio` appends to both buffers. Once ~1.5 seconds of *new* audio has accumulated (and the
+  spiral-guard idle gap has elapsed since the last tick completed - see "Streaming partials" above),
+  a partial tick fires: only a bounded trailing **window** of audio (`DEFAULT_PARTIAL_WINDOW_MS`,
+  ~4s, not the whole session) is WAV-encoded, base64'd, and sent as one transcription
+  chat-completion, whose SSE response streams into `onPartialTranscript` as it arrives (throttled),
+  stitched (`transcriptStitcher.ts`) against text already committed from earlier windows so the
+  displayed text is always the full transcript-so-far. These requests are serialized - if the
+  previous partial request is still in flight when the next mark is hit, that tick is skipped rather
+  than firing a second overlapping request.
+- `endSession` waits for any in-flight partial to finish. For a **short session** (one that never
+  needed more than one window - the common case, e.g. a quick test utterance), it reuses that
+  in-flight tick's result directly instead of paying for a second, fully redundant full-buffer
+  request (see `litertBackend.ts`'s `endSession` doc comment for the regression this fixes). For a
+  **longer session** (audio has exceeded one window's worth), it instead pays for exactly one final
+  full-buffer transcription, streamed the same way over `onPartialTranscript` - deliberately
+  choosing accuracy over the (now seam-artifact-prone) stitched partial text, but only once, not on
+  top of the rolling-window ticks' own (now bounded) cost.
 - `cleanup` sends a system prompt instructing the model to strip filler words
   (um/uh/like/you know), collapse self-corrections/repeated false starts, and fix
   punctuation/capitalization while preserving meaning - plus a custom-vocabulary hint

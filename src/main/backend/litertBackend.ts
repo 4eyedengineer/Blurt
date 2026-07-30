@@ -25,10 +25,13 @@ import {
   pcm16ToWavBase64,
   pcm16ToWavBuffer,
   safeJsonParse,
+  sliceTrailingWindow,
   stripModelPreamble,
   type ChatCompletionRequestBody
 } from './litertWire'
+import { shouldLaunchPartialTick } from './partialTickScheduler'
 import { ThrottledTextEmitter } from './streamThrottle'
+import { stitchTranscript } from './transcriptStitcher'
 
 /**
  * How often (ms of *new* audio, not wall-clock time) to fire a partial
@@ -40,6 +43,44 @@ import { ThrottledTextEmitter } from './streamThrottle'
  * previous one hasn't finished, so this self-throttles on slower hardware.
  */
 const DEFAULT_PARTIAL_INTERVAL_MS = 1500
+/**
+ * Bound on how much trailing audio a *partial* tick re-transcribes (see
+ * `runPartialTranscription`'s window/commit logic), instead of the whole
+ * session buffer. Sized against the CPU throughput numbers in
+ * scratchpad/perf-review.md §2b: a ~4s window keeps a tick's cost under the
+ * `DEFAULT_PARTIAL_INTERVAL_MS` cadence indefinitely, regardless of how long
+ * the session has been running - the fix for the "unbounded per-tick cost"
+ * finding in §1. `endSession`'s final pass is unaffected - it still
+ * re-transcribes the *entire* buffer once, for accuracy (see its doc
+ * comment).
+ */
+export const DEFAULT_PARTIAL_WINDOW_MS = 4000
+/**
+ * How much already-committed audio a partial tick's window reaches back
+ * into, so a word cut off right at the committed boundary gets a full
+ * second chance to be heard whole. `stitchTranscript` (transcriptStitcher.ts)
+ * then dedupes the resulting repeated words at the seam.
+ */
+export const DEFAULT_PARTIAL_WINDOW_OVERLAP_MS = 800
+/**
+ * Extra ms of audio kept in `LitertSession.recentChunks` beyond
+ * `partialWindowMs + partialWindowOverlapMs`, so normal ms-rounding/jitter
+ * never prunes audio a tick's window still needs before the next push.
+ */
+const RECENT_CHUNKS_PRUNE_SLACK_MS = 500
+/**
+ * Minimum real-world ms required between a partial tick completing and the
+ * next one launching - the "spiral guard" from scratchpad/perf-review.md §1:
+ * without this, `msSinceLastPartial` (which keeps accruing new-audio ms
+ * while a tick is in flight, by design - see `shouldLaunchPartialTick`'s doc
+ * comment) is often already over threshold the instant a slow tick
+ * completes, so the next tick used to launch immediately, back-to-back, with
+ * no breathing room. Rolling windows (above) already bound each tick's own
+ * cost, but this still matters on CPU-only hardware where a tick can take
+ * longer than the interval - it makes such hardware degrade to a slower,
+ * stable cadence instead of pegging the CPU with zero-gap requests.
+ */
+export const DEFAULT_MIN_PARTIAL_IDLE_GAP_MS = 300
 /** How often (ms) streamed partial/cleanup/transform/voiceEdit text is allowed to reach the renderer - see ThrottledTextEmitter. */
 const DEFAULT_STREAM_THROTTLE_MS = 100
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
@@ -57,16 +98,72 @@ const DEBUG_AUDIO_ENV_VAR = 'ELOQUENT_DEBUG_AUDIO'
 interface LitertSession {
   id: string
   sampleRate: number
+  /**
+   * The FULL archive of every chunk pushed this session, in order - never
+   * pruned. Only read from in `endSession`'s longer-session path (one final
+   * full-buffer transcription for accuracy) and the debug-WAV dump; partial
+   * ticks read from `recentChunks` instead so their cost never scales with
+   * how long the session has been running.
+   */
   chunks: Int16Array[]
+  /**
+   * Rolling buffer holding only the trailing `partialWindowMs +
+   * partialWindowOverlapMs + slack` ms of audio - kept in sync with
+   * `chunks` (same chunks pushed to both) but pruned from the front on every
+   * push (see `pruneRecentChunks`). Lets a partial tick slice out its bounded
+   * window in time proportional to the window size, not total session
+   * length.
+   */
+  recentChunks: Int16Array[]
+  /** Total ms of audio currently represented by `recentChunks` (sum of its chunks' durations). */
+  recentChunksMs: number
+  /** Cumulative ms of ALL audio ever pushed this session - monotonic, never reset; the audio-time position `chunks`/`recentChunks` currently end at. */
+  totalAudioMs: number
+  /**
+   * Text committed from earlier rolling windows - fixed, never re-decoded
+   * again. Empty until the session's audio first exceeds one window's worth
+   * (`committedAudioMs` stays 0 until then) - see `runPartialTranscription`.
+   */
+  committedText: string
+  /**
+   * Audio-ms boundary up to which `committedText` is considered fixed. 0
+   * means "no commit has ever happened" - i.e. every partial tick so far has
+   * had a window starting at sample 0, so it covered the *whole* buffer, the
+   * same as the pre-rolling-window design (this is what lets `endSession`
+   * reuse an in-flight tick's result for short sessions - see its doc
+   * comment).
+   */
+  committedAudioMs: number
+  /**
+   * The full merged (`committedText` + that tick's stitched window) display
+   * text produced by the most recently *completed* tick - the commit
+   * candidate promoted into `committedText` (with `lastTickAudioMs`
+   * promoted into `committedAudioMs`) the next time a tick's window would
+   * otherwise have to reach further back than `committedAudioMs` covers.
+   */
+  lastTickMergedText: string
+  /** `totalAudioMs` as of the most recently completed tick's dispatch - see `lastTickMergedText`. */
+  lastTickAudioMs: number
+  /**
+   * Wall-clock time (per the injectable clock) the most recently completed
+   * tick finished, or null if none ever has - spiral-guard idle-gap
+   * enforcement, see `shouldLaunchPartialTick`.
+   */
+  lastPartialCompletionAtMs: number | null
   msSinceLastPartial: number
   hasAudio: boolean
   partialInFlight: boolean
   /**
    * The in-flight mid-recording partial tick's own streaming promise, if
-   * any - `endSession` awaits and reuses this directly instead of
-   * discarding it and paying for a second full re-transcription of the same
-   * audio when nothing changed since it started (see `endSession`'s doc
-   * comment). Cleared whenever no tick is in flight.
+   * any - resolves to the tick's full merged (`committedText` + stitched
+   * window) display text, i.e. exactly what a fresh final transcription
+   * would be expected to show. `endSession` awaits and reuses this directly
+   * instead of discarding it and paying for a second full re-transcription
+   * of the same audio when nothing changed since it started (see
+   * `endSession`'s doc comment) - but only for short sessions
+   * (`committedAudioMs === 0`); once a session has grown past one window,
+   * `endSession` always pays for one accurate full-buffer pass instead (see
+   * its doc comment for why). Cleared whenever no tick is in flight.
    */
   partialPromise: Promise<string> | null
   /**
@@ -90,9 +187,17 @@ export interface LitertBackendOptions {
   modelId: string
   getVocabulary?: () => string[]
   partialIntervalMs?: number
+  /** Bounds a partial tick's re-transcribed audio window - see `DEFAULT_PARTIAL_WINDOW_MS`. Mainly a test seam. */
+  partialWindowMs?: number
+  /** Overlap into already-committed audio a partial tick's window includes - see `DEFAULT_PARTIAL_WINDOW_OVERLAP_MS`. Mainly a test seam. */
+  partialWindowOverlapMs?: number
+  /** Minimum idle gap enforced between a tick completing and the next launching - see `DEFAULT_MIN_PARTIAL_IDLE_GAP_MS`. Mainly a test seam. */
+  minPartialIdleGapMs?: number
   requestTimeoutMs?: number
   /** How often (ms) streamed text is allowed to reach the renderer - see ThrottledTextEmitter. Mainly a test seam. */
   streamThrottleMs?: number
+  /** Injectable wall clock (ms since epoch), for deterministic spiral-guard tests. Defaults to `Date.now`. */
+  now?: () => number
   /**
    * Directory each session's final accumulated WAV is written to, as
    * `session-<n>.wav`, when the ELOQUENT_DEBUG_AUDIO=1 env var is set.
@@ -115,8 +220,12 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   private sessions = new Map<string, LitertSession>()
   private emitter = new EventEmitter()
   private readonly partialIntervalMs: number
+  private readonly partialWindowMs: number
+  private readonly partialWindowOverlapMs: number
+  private readonly minPartialIdleGapMs: number
   private readonly requestTimeoutMs: number
   private readonly streamThrottleMs: number
+  private readonly now: () => number
   /**
    * The real `litert-lm serve` is a plain `http.server.HTTPServer` (not
    * `ThreadingHTTPServer`) - verified empirically that a second concurrent
@@ -133,8 +242,13 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
 
   constructor(private readonly options: LitertBackendOptions) {
     this.partialIntervalMs = options.partialIntervalMs ?? DEFAULT_PARTIAL_INTERVAL_MS
+    this.partialWindowMs = options.partialWindowMs ?? DEFAULT_PARTIAL_WINDOW_MS
+    this.partialWindowOverlapMs =
+      options.partialWindowOverlapMs ?? DEFAULT_PARTIAL_WINDOW_OVERLAP_MS
+    this.minPartialIdleGapMs = options.minPartialIdleGapMs ?? DEFAULT_MIN_PARTIAL_IDLE_GAP_MS
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
     this.streamThrottleMs = options.streamThrottleMs ?? DEFAULT_STREAM_THROTTLE_MS
+    this.now = options.now ?? Date.now
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -169,6 +283,14 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       id,
       sampleRate: opts?.sampleRate ?? DEFAULT_SAMPLE_RATE,
       chunks: [],
+      recentChunks: [],
+      recentChunksMs: 0,
+      totalAudioMs: 0,
+      committedText: '',
+      committedAudioMs: 0,
+      lastTickMergedText: '',
+      lastTickAudioMs: 0,
+      lastPartialCompletionAtMs: null,
       msSinceLastPartial: 0,
       hasAudio: false,
       partialInFlight: false,
@@ -205,13 +327,49 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       return
     }
 
+    const chunkMs = (chunk.length / session.sampleRate) * 1000
     session.chunks.push(chunk)
+    session.recentChunks.push(chunk)
+    session.recentChunksMs += chunkMs
+    this.pruneRecentChunks(session)
+    session.totalAudioMs += chunkMs
     session.hasAudio = true
-    session.msSinceLastPartial += (chunk.length / session.sampleRate) * 1000
+    session.msSinceLastPartial += chunkMs
 
-    if (session.msSinceLastPartial >= this.partialIntervalMs && !session.partialInFlight) {
+    if (
+      shouldLaunchPartialTick(
+        {
+          msSinceSnapshot: session.msSinceLastPartial,
+          tickInFlight: session.partialInFlight,
+          lastCompletionAtMs: session.lastPartialCompletionAtMs
+        },
+        {
+          intervalMs: this.partialIntervalMs,
+          minIdleGapMs: this.minPartialIdleGapMs,
+          nowMs: this.now()
+        }
+      )
+    ) {
       session.msSinceLastPartial = 0
       void this.runPartialTranscription(session)
+    }
+  }
+
+  /**
+   * Drops chunks off the front of `session.recentChunks` once they've fallen
+   * further back than any partial tick's window could ever need (bounded by
+   * `partialWindowMs + partialWindowOverlapMs`, plus a slack margin for
+   * ms-rounding) - keeps `recentChunks` a small, session-length-independent
+   * rolling buffer. `session.chunks` (the full archive) is untouched.
+   */
+  private pruneRecentChunks(session: LitertSession): void {
+    const keepMs = this.partialWindowMs + this.partialWindowOverlapMs + RECENT_CHUNKS_PRUNE_SLACK_MS
+    while (session.recentChunks.length > 1) {
+      const front = session.recentChunks[0]
+      const frontMs = (front.length / session.sampleRate) * 1000
+      if (session.recentChunksMs - frontMs < keepMs) break
+      session.recentChunks.shift()
+      session.recentChunksMs -= frontMs
     }
   }
 
@@ -255,19 +413,62 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   }
 
   /**
-   * Fires one mid-recording re-transcription tick. Streams its result out
-   * over the same 'partial' event throughout - including after `endSession`
-   * has already been called for this session (no `!session.ended` guard
-   * here, deliberately: see `endSession`'s doc comment for why silencing
-   * this stream used to create a long visible "frozen" gap right when
-   * recording stops, which is exactly when the user is watching most
-   * closely).
+   * Fires one mid-recording re-transcription tick. Only re-transcribes a
+   * bounded trailing *window* of audio (not the whole session, see
+   * `DEFAULT_PARTIAL_WINDOW_MS`) - the direct fix for the "per-tick cost
+   * grows with session length, falls behind the tick interval after ~4s on
+   * CPU" finding (scratchpad/perf-review.md §1/§2b).
+   *
+   * Window/commit bookkeeping: each tick first checks whether a *plain*
+   * trailing window (ending "now", `partialWindowMs` long) would start
+   * further forward than `session.committedAudioMs` - i.e. whether the next
+   * window would no longer reach back far enough to still cover everything
+   * `committedText` represents. If so, the previous tick's merged output
+   * (`lastTickMergedText`/`lastTickAudioMs`) is promoted into
+   * `committedText`/`committedAudioMs` right now, so it's never lost. The
+   * window actually sent to the model then starts `partialWindowOverlapMs`
+   * before that (possibly just-updated) commit boundary - giving a word cut
+   * off right at the boundary a full second chance to be heard whole - but
+   * never further back than the plain trailing window would allow, which is
+   * what keeps every tick's cost bounded regardless of how far behind
+   * committing has fallen (e.g. after a slow/delayed tick).
+   *
+   * Each streamed chunk is `stitchTranscript`'d against `committedText`
+   * (transcriptStitcher.ts) before being shown, so the displayed text is
+   * always the full transcript-so-far, not just the current window's -
+   * exactly like the pre-rolling-window design from the renderer's point of
+   * view. Streams out over the same 'partial' event throughout - including
+   * after `endSession` has already been called for this session (no
+   * `!session.ended` guard here, deliberately: see `endSession`'s doc
+   * comment for why silencing this stream used to create a long visible
+   * "frozen" gap right when recording stops, which is exactly when the user
+   * is watching most closely).
    */
   private async runPartialTranscription(session: LitertSession): Promise<void> {
     session.partialInFlight = true
     session.partialSnapshotChunkCount = session.chunks.length
+    const tickAudioMs = session.totalAudioMs
+
     try {
-      const samples = concatInt16(session.chunks)
+      const plainWindowStartMs = Math.max(0, tickAudioMs - this.partialWindowMs)
+      if (plainWindowStartMs > session.committedAudioMs) {
+        session.committedText = session.lastTickMergedText || session.committedText
+        session.committedAudioMs = session.lastTickAudioMs
+      }
+
+      const windowStartMs = Math.max(
+        plainWindowStartMs,
+        Math.max(0, session.committedAudioMs - this.partialWindowOverlapMs)
+      )
+      const recentChunksStartMs = tickAudioMs - session.recentChunksMs
+      const samples = sliceTrailingWindow(
+        session.recentChunks,
+        recentChunksStartMs,
+        session.sampleRate,
+        windowStartMs,
+        tickAudioMs
+      )
+
       if (this.isSilentBuffer(samples)) {
         // Don't waste a model call (and risk a hallucinated "transcript")
         // on a buffer that's empty or near-silent - almost always means the
@@ -280,17 +481,26 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
         )
         return
       }
-      const promise = this.transcribeSamplesStreaming(session, samples, (text) => {
-        session.lastTranscript = text
-        this.emitter.emit('partial', session.id, text)
+
+      const committedTextAtStart = session.committedText
+      const rawPromise = this.transcribeSamplesStreaming(session, samples, (windowText) => {
+        const merged = stitchTranscript(committedTextAtStart, windowText)
+        session.lastTranscript = merged
+        this.emitter.emit('partial', session.id, merged)
       })
-      session.partialPromise = promise
-      await promise
+      const mergedPromise = rawPromise.then((windowText) =>
+        stitchTranscript(committedTextAtStart, windowText)
+      )
+      session.partialPromise = mergedPromise
+      const finalMerged = await mergedPromise
+      session.lastTickMergedText = finalMerged
+      session.lastTickAudioMs = tickAudioMs
     } catch (err) {
       this.emitError(session.id, err)
     } finally {
       session.partialInFlight = false
       session.partialPromise = null
+      session.lastPartialCompletionAtMs = this.now()
     }
   }
 
@@ -334,7 +544,17 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     // arrived after it took its buffer snapshot, its result covers exactly
     // the same audio a fresh final re-transcription would - so just await
     // and reuse it instead of discarding it and paying for a second full
-    // round trip over the identical buffer.
+    // round trip over the identical buffer. This is ONLY equivalent to a
+    // full-buffer final pass while `committedAudioMs === 0` - i.e. no
+    // rolling-window commit has ever happened yet, meaning every tick so far
+    // (including the in-flight one) had its window start at sample 0 and so
+    // covered the *whole* buffer, exactly like the pre-rolling-window
+    // design. Once a session has grown past one window's worth of audio and
+    // committing has kicked in, an in-flight tick's result is only the
+    // *current window's* stitched text - reusing it would mean skipping the
+    // "one accurate full-buffer final pass" this method promises for longer
+    // sessions (see the full-pass branch below), so this optimization is
+    // deliberately restricted to short sessions only.
     //
     // This used to always discard the in-flight tick (via a `!session.ended`
     // guard on its stream callback, removed) and unconditionally re-run a
@@ -349,6 +569,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     // correctly the whole time (see litertBackend's onPartialTranscript
     // proof harnesses referenced in the fix's commit).
     if (
+      session.committedAudioMs === 0 &&
       session.partialInFlight &&
       session.partialPromise &&
       session.partialSnapshotChunkCount === session.chunks.length
@@ -362,11 +583,16 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       }
     }
 
-    // Otherwise (no tick in flight, or more audio arrived after the last
-    // tick's snapshot so its result is stale) - serialize with any
-    // still-in-flight partial rather than racing it, both would hit the
-    // same sidecar session-less endpoint concurrently otherwise. Bounded by
-    // requestTimeoutMs so a stuck partial can't hang endSession forever.
+    // Otherwise (session has grown past one window so a full pass is needed
+    // for accuracy regardless, no tick in flight, or more audio arrived
+    // after the last tick's snapshot so its result is stale) - serialize
+    // with any still-in-flight partial rather than racing it, both would hit
+    // the same sidecar session-less endpoint concurrently otherwise. This is
+    // the ONE O(session length) full-buffer pass a longer session still
+    // pays, deliberately, for final accuracy (scratchpad/perf-review.md
+    // §2b) - but only once, not doubled on top of the (now bounded-cost)
+    // partial ticks. Bounded by requestTimeoutMs so a stuck partial can't
+    // hang endSession forever.
     const deadline = Date.now() + this.requestTimeoutMs
     while (session.partialInFlight && Date.now() < deadline) {
       await sleep(50)

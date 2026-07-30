@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildCleanupRequest,
+  buildSilentWavBase64,
   buildTranscriptionRequest,
   buildTransformRequest,
   buildVoiceEditRequest,
+  buildWarmupRequest,
   computeRms,
   concatInt16,
   extractContentFromChatCompletionResponse,
@@ -13,6 +15,7 @@ import {
   pcm16ToWavBase64,
   pcm16ToWavBuffer,
   safeJsonParse,
+  sliceTrailingWindow,
   stripModelPreamble
 } from './litertWire'
 
@@ -62,6 +65,26 @@ describe('request builders', () => {
     })
     expect(req.messages[1].content).toContain('hello world')
     expect(req.messages[1].content).toContain('uppercase everything')
+  })
+
+  it('builds a warmup request that includes BOTH a text part and a tiny silent input_audio part', () => {
+    // Regression coverage for the "audio submodel never gets warmed up"
+    // gap (scratchpad/perf-review.md §2 "Gap found") - a text-only warmup
+    // loads the text backbone but likely leaves the (separately, lazily
+    // loaded) audio submodel cold for the user's first real utterance.
+    const req = buildWarmupRequest('gemma-4-e2b')
+    expect(req.stream).toBe(false)
+    expect(Array.isArray(req.messages[0].content)).toBe(true)
+    const parts = req.messages[0].content as Array<Record<string, unknown>>
+    expect(parts.some((p) => p.type === 'text')).toBe(true)
+    const audioPart = parts.find((p) => p.type === 'input_audio') as
+      { input_audio: { data: string; format: string } } | undefined
+    expect(audioPart).toBeDefined()
+    expect(audioPart!.input_audio.format).toBe('wav')
+    // The embedded audio should itself be a well-formed (if silent) WAV.
+    const decoded = Buffer.from(audioPart!.input_audio.data, 'base64')
+    expect(decoded.toString('ascii', 0, 4)).toBe('RIFF')
+    expect(decoded.toString('ascii', 8, 12)).toBe('WAVE')
   })
 })
 
@@ -178,6 +201,74 @@ describe('PCM/WAV encoding', () => {
     const base64 = pcm16ToWavBase64(samples, 16000)
     const decoded = Buffer.from(base64, 'base64')
     expect(decoded).toEqual(pcm16ToWavBuffer(samples, 16000))
+  })
+
+  it('buildSilentWavBase64 produces a well-formed WAV of pure silence at the requested duration', () => {
+    const base64 = buildSilentWavBase64(300, 16000)
+    const decoded = Buffer.from(base64, 'base64')
+    expect(decoded.toString('ascii', 0, 4)).toBe('RIFF')
+    const expectedSamples = Math.round((300 / 1000) * 16000)
+    expect(decoded.readUInt32LE(40)).toBe(expectedSamples * 2) // data chunk size
+    // Every sample should be exactly 0 (silence).
+    for (let i = 0; i < expectedSamples; i++) {
+      expect(decoded.readInt16LE(44 + i * 2)).toBe(0)
+    }
+  })
+})
+
+describe('sliceTrailingWindow', () => {
+  it('extracts the full range when chunks exactly cover it', () => {
+    const chunks = [new Int16Array([1, 2, 3]), new Int16Array([4, 5, 6])]
+    // 6 samples @ 1000Hz = 6ms total, starting at t=0.
+    const result = sliceTrailingWindow(chunks, 0, 1000, 0, 6)
+    expect(Array.from(result)).toEqual([1, 2, 3, 4, 5, 6])
+  })
+
+  it('extracts a sub-range spanning a chunk boundary', () => {
+    const chunks = [new Int16Array([1, 2, 3]), new Int16Array([4, 5, 6])]
+    // Want sample-indices [2,5) i.e. ms [2,5) at 1000Hz - index 2 (value 3,
+    // the last sample of chunk 0) through index 4 (value 5, the middle
+    // sample of chunk 1).
+    const result = sliceTrailingWindow(chunks, 0, 1000, 2, 5)
+    expect(Array.from(result)).toEqual([3, 4, 5])
+  })
+
+  it('skips leading chunks entirely outside the requested range', () => {
+    const chunks = [new Int16Array([1, 2]), new Int16Array([3, 4]), new Int16Array([5, 6])]
+    // Want only the last chunk's worth: ms [4,6).
+    const result = sliceTrailingWindow(chunks, 0, 1000, 4, 6)
+    expect(Array.from(result)).toEqual([5, 6])
+  })
+
+  it('clamps a requested start before chunksStartMs up to chunksStartMs', () => {
+    const chunks = [new Int16Array([10, 20, 30])]
+    // chunks start at t=5ms (a trailing window, not from session start);
+    // asking for ms [0, 8) should clamp to what's actually available.
+    const result = sliceTrailingWindow(chunks, 5, 1000, 0, 8)
+    expect(Array.from(result)).toEqual([10, 20, 30])
+  })
+
+  it('returns an empty array for a zero-length or inverted range', () => {
+    const chunks = [new Int16Array([1, 2, 3])]
+    expect(Array.from(sliceTrailingWindow(chunks, 0, 1000, 2, 2))).toEqual([])
+  })
+
+  it('handles a single sample-rate window across many small chunks (realistic worklet-sized chunks)', () => {
+    // Simulates ~128ms chunks at 16kHz (2048 samples) - verify a window
+    // request spanning several of them stitches together correctly.
+    const sampleRate = 16000
+    const chunkSamples = 2048
+    const chunks = Array.from({ length: 5 }, (_, i) =>
+      Int16Array.from({ length: chunkSamples }, (_, j) => i * chunkSamples + j)
+    )
+    const totalMs = (5 * chunkSamples * 1000) / sampleRate
+    const windowStartMs = totalMs - 300 // last 300ms
+    const result = sliceTrailingWindow(chunks, 0, sampleRate, windowStartMs, totalMs)
+    const expectedStartSample = Math.round((windowStartMs / 1000) * sampleRate)
+    const expectedLength = 5 * chunkSamples - expectedStartSample
+    expect(result.length).toBe(expectedLength)
+    expect(result[0]).toBe(expectedStartSample)
+    expect(result[result.length - 1]).toBe(5 * chunkSamples - 1)
   })
 })
 
