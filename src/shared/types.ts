@@ -17,6 +17,34 @@ export type BackendKind = 'mock' | 'litert'
  */
 export type SidecarMode = 'managed' | 'external'
 
+/**
+ * Which hardware backend a *managed* sidecar should run the model on.
+ *
+ * The pip `litert-lm serve` CLI has no `--backend` flag at all - it always
+ * loads the model on whatever its `.litertlm` metadata's
+ * `backend_constraint` says (which is "cpu" for every section of the
+ * Gemma-4 `litert-community` files, including their optional audio/vision
+ * adapters). Empirically, though, the *main* prefill/decode graph runs
+ * fine on GPU (WebGPU/Dawn -> Direct3D 12 on Windows) despite that
+ * constraint - measured on an RTX 3060 Laptop GPU against the Gemma-4 E2B
+ * model: ~3.4x faster decode throughput than CPU (~54 vs ~16 tok/s, warm),
+ * at the cost of slower prefill and a one-time ~15s GPU shader-compile on
+ * the very first run (see resources/serve_gpu.py's doc comment for exact
+ * numbers/commands and WINDOWS.md's GPU section for the full writeup).
+ *
+ * 'gpu' only changes anything for `mode: 'managed'` - it's implemented by
+ * swapping in `resources/serve_gpu.py` (a thin wrapper around the same
+ * `litert-lm serve`, see that file) as the managed command instead of the
+ * bare `litert-lm` binary; 'external' mode is whatever backend the user's
+ * already-running server happens to be using, out of this app's control.
+ * If GPU initialization genuinely fails (no compatible adapter), the
+ * wrapper falls back to CPU on its own for the rest of that process's
+ * lifetime - see serve_gpu.py's fallback logic - so picking 'gpu' here is
+ * safe even on a machine that turns out not to support it, just slower to
+ * report ready on its very first request.
+ */
+export type Accelerator = 'cpu' | 'gpu'
+
 export interface SidecarSettings {
   mode: SidecarMode
   /**
@@ -28,20 +56,33 @@ export interface SidecarSettings {
    * scratchpad/sidecar-verification.md §3) - the model is selected
    * per-request via the JSON body's `model` field (the alias it was
    * `litert-lm import`-ed as, see `ModelCatalogEntry.alias`), which is why
-   * the default template below doesn't reference `{modelPath}`.
+   * the default template below doesn't reference `{modelPath}`. `{wrapperPath}`
+   * is substituted with the absolute path to `resources/serve_gpu.py` (see
+   * `resolveServeGpuScriptPath` in `main/backend/gpuWrapperPath.ts`) -
+   * only meaningful for the `accelerator: 'gpu'` default template below,
+   * but available to any custom template that wants it.
    */
   managedCommand: string
   /** Base URL for 'external' mode, e.g. "http://127.0.0.1:9379" (litert-lm's default port). */
   externalUrl: string
   /** Port used to build the local URL in 'managed' mode, and substituted into managedCommand. */
   port: number
+  /** See `Accelerator`'s doc comment. Only affects `mode: 'managed'`. */
+  accelerator: Accelerator
+}
+
+/** Default `managedCommand` for each accelerator - see `Accelerator`'s doc comment. Selecting an accelerator in Settings rewrites `managedCommand` to the matching entry here, so what's shown in the (still freely editable) command box always matches what's actually configured. */
+export const MANAGED_COMMAND_BY_ACCELERATOR: Record<Accelerator, string> = {
+  cpu: 'litert-lm serve --host 127.0.0.1 --port {port}',
+  gpu: 'python "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
 }
 
 export const DEFAULT_SIDECAR_SETTINGS: SidecarSettings = {
   mode: 'managed',
-  managedCommand: 'litert-lm serve --host 127.0.0.1 --port {port}',
+  managedCommand: MANAGED_COMMAND_BY_ACCELERATOR.cpu,
   externalUrl: 'http://127.0.0.1:9379',
-  port: 9379
+  port: 9379,
+  accelerator: 'cpu'
 }
 
 /**

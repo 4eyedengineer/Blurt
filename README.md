@@ -409,9 +409,10 @@ rather than reimplementing the (simple, but version-coupled) import logic itself
 ### Building/installing `litert-lm` on Windows
 
 **See [WINDOWS.md](WINDOWS.md) for the complete, step-by-step Windows setup guide** (Python/pip
-install, model import, Settings configuration, dev run, `build:win`, and an honest writeup of
-what's actually confirmed about GPU acceleration on the pip-installed CLI vs. what would require
-the from-source build below). The rest of this section is a quick summary.
+install, model import, Settings configuration, dev run, `build:win`, and the full GPU acceleration
+writeup - what it measured on a real RTX 3060, and how `resources/serve_gpu.py` gets GPU execution
+out of a `serve` CLI that has no `--backend` flag of its own). The rest of this section is a quick
+summary.
 
 This app doesn't bundle `litert-lm` - it's a separate install the user (or your installer/setup
 script) provides, referenced by `sidecar.managedCommand`. A documented from-source Windows build
@@ -473,9 +474,12 @@ exercised here. Practically: treat WSL/WSLg as good enough for UI and backend de
 and use the Windows host ([WINDOWS.md](WINDOWS.md)) as the path for dictation you actually trust to
 capture real speech.
 
-GPU acceleration has the same CPU-only caveat here as documented for Windows in
-[WINDOWS.md](WINDOWS.md#6-gpu-acceleration---honest-findings) - `litert-lm serve` doesn't route
-Gemma-4 inference through a GPU today regardless of host OS.
+GPU acceleration (see [WINDOWS.md](WINDOWS.md#6-gpu-acceleration---how-it-works-and-what-was-measured))
+needs a real Vulkan-capable adapter, which this WSL2/WSLg box doesn't have - the `serve_gpu.py`
+wrapper's own fallback logic catches that (verified: it logs `[serve_gpu] GPU engine
+initialization failed (...)` and retries on CPU) rather than the backend simply not existing here.
+The GPU path itself was verified on the actual Windows host - see WINDOWS.md for the real RTX 3060
+tokens/s numbers.
 
 ## App features
 

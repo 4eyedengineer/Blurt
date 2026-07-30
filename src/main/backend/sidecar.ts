@@ -12,6 +12,8 @@ export interface SidecarOptions {
   /** Absolute path to the .litertlm model file, substituted into `{modelPath}`. */
   modelPath: string
   port: number
+  /** Absolute path to `resources/serve_gpu.py`, substituted into `{wrapperPath}` - see `Accelerator`'s doc comment in shared/types.ts. Harmless to pass even when the template doesn't reference it. */
+  wrapperPath?: string
   /** Extra environment variables merged over `process.env` for the spawned process (e.g. `LITERT_LM_DIR`, see ModelManager). Managed mode only. */
   env?: Record<string, string>
   /** Overridable for tests; defaults below. */
@@ -45,11 +47,12 @@ export function tokenizeCommand(template: string): string[] {
 
 export function renderManagedCommand(
   template: string,
-  vars: { modelPath: string; port: number }
+  vars: { modelPath: string; port: number; wrapperPath?: string }
 ): string[] {
   const rendered = template
     .replaceAll('{modelPath}', vars.modelPath)
     .replaceAll('{port}', String(vars.port))
+    .replaceAll('{wrapperPath}', vars.wrapperPath ?? '')
   return tokenizeCommand(rendered)
 }
 
@@ -111,7 +114,8 @@ export class Sidecar extends EventEmitter {
     try {
       args = renderManagedCommand(this.options.managedCommand, {
         modelPath: this.options.modelPath,
-        port: this.options.port
+        port: this.options.port,
+        wrapperPath: this.options.wrapperPath
       })
     } catch (err) {
       this.setState('error', err instanceof Error ? err.message : String(err))

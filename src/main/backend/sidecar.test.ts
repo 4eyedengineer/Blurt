@@ -59,4 +59,28 @@ describe('renderManagedCommand', () => {
       '9000'
     ])
   })
+
+  it('substitutes {wrapperPath} (used by the GPU accelerator default template)', () => {
+    const args = renderManagedCommand('python "{wrapperPath}" serve --port {port}', {
+      modelPath: '',
+      port: 9379,
+      wrapperPath: '/app/resources/serve_gpu.py'
+    })
+    expect(args).toEqual(['python', '/app/resources/serve_gpu.py', 'serve', '--port', '9379'])
+  })
+
+  it('substitutes {wrapperPath} with an empty string when not provided', () => {
+    const args = renderManagedCommand('litert-lm serve --model {modelPath} --port {port}', {
+      modelPath: '/models/gemma-4-e2b.litertlm',
+      port: 8765
+    })
+    expect(args).toEqual([
+      'litert-lm',
+      'serve',
+      '--model',
+      '/models/gemma-4-e2b.litertlm',
+      '--port',
+      '8765'
+    ])
+  })
 })

@@ -6,6 +6,7 @@ import type { ModelManager } from './modelManager'
 import { MockBackend } from './mockBackend'
 import { LitertBackend } from './litertBackend'
 import { getManagedCommandBinary, Sidecar } from './sidecar'
+import { resolveServeGpuScriptPath } from './gpuWrapperPath'
 
 /**
  * A stand-in InferenceBackend used whenever the real backend failed to
@@ -121,6 +122,10 @@ export class BackendController extends EventEmitter {
         managedCommand: settings.sidecar.managedCommand,
         modelPath: modelPath ?? '',
         port: settings.sidecar.port,
+        // Only meaningful if managedCommand references {wrapperPath} (the
+        // default 'gpu' accelerator template does - see Accelerator's doc
+        // comment in shared/types.ts); harmless no-op otherwise.
+        wrapperPath: resolveServeGpuScriptPath(),
         // Points a managed `litert-lm serve` (and the `import` step above) at
         // the same sandboxed model store, entirely separate from the user's
         // real `~/.litert-lm` - see ModelManager.getLitertLmDir().

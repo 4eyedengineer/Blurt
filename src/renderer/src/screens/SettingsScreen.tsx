@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { ModelId, PushToTalkStatus, SidecarMode } from '@shared/types'
-import { PTT_KEY_OPTIONS } from '@shared/types'
+import type { Accelerator, ModelId, PushToTalkStatus, SidecarMode } from '@shared/types'
+import { MANAGED_COMMAND_BY_ACCELERATOR, PTT_KEY_OPTIONS } from '@shared/types'
 import type { ModelDownloadState } from '@shared/models'
 import { getCatalogEntry } from '@shared/models'
 import { useSettings } from '../context/SettingsContext'
@@ -128,6 +128,25 @@ export function SettingsScreen(): React.JSX.Element {
   const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus>('idle')
   const [pttStatus, setPttStatus] = useState<PushToTalkStatus | null>(null)
 
+  // Only overwrites managedCommand if it's still exactly one of the known
+  // default templates (i.e. the user hasn't hand-edited it) - so flipping
+  // this toggle does the right thing for the common case without silently
+  // clobbering a custom command someone typed into the field below.
+  const setAccelerator = (accelerator: Accelerator): void => {
+    const isUnmodifiedDefault = Object.values(MANAGED_COMMAND_BY_ACCELERATOR).includes(
+      settings.sidecar.managedCommand
+    )
+    void update({
+      sidecar: {
+        ...settings.sidecar,
+        accelerator,
+        managedCommand: isUnmodifiedDefault
+          ? MANAGED_COMMAND_BY_ACCELERATOR[accelerator]
+          : settings.sidecar.managedCommand
+      }
+    })
+  }
+
   useEffect(() => {
     let cancelled = false
     window.api.pushToTalk.getStatus().then((status) => {
@@ -252,6 +271,26 @@ export function SettingsScreen(): React.JSX.Element {
 
           {settings.sidecar.mode === 'managed' ? (
             <>
+              <label className="settings-screen__toggle-row">
+                <span>
+                  <strong>GPU acceleration</strong>
+                  <p className="settings-screen__hint">
+                    Runs the model on GPU (WebGPU/Direct3D 12) instead of CPU. Measured on an RTX
+                    3060 Laptop GPU with the Gemma 4 E2B model: ~3.4x faster decode throughput (~54
+                    vs ~16 tokens/s) once the one-time GPU shader-compile cache is warm (first run
+                    after enabling takes ~15s longer to become ready). If GPU initialization fails
+                    on this machine (e.g. no compatible graphics driver), it falls back to CPU
+                    automatically after the first request - see WINDOWS.md &quot;GPU
+                    acceleration&quot; for the full writeup and how this was measured.
+                  </p>
+                </span>
+                <Toggle
+                  checked={settings.sidecar.accelerator === 'gpu'}
+                  onChange={(checked) => setAccelerator(checked ? 'gpu' : 'cpu')}
+                  label="GPU acceleration"
+                />
+              </label>
+
               <label className="settings-screen__field-label" htmlFor="sidecar-command">
                 Managed command template
               </label>

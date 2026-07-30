@@ -1,0 +1,162 @@
+#!/usr/bin/env python
+"""Runs `litert-lm serve`, forcing the main LLM engine onto the GPU
+(WebGPU/Dawn -> Direct3D 12 on Windows) backend.
+
+## Why this exists
+
+The pip `litert-lm` CLI's `serve` command has no `--backend` flag at all
+(confirmed via `litert-lm serve --help` on 0.14.0) - the HTTP server always
+resolves the engine's backend from the model file's own
+`backend_constraint` metadata. For the `litert-community/gemma-4-*`
+`.litertlm` files, every section in that metadata (including the optional
+audio/vision adapters) reports `backend_constraint: cpu`, so `serve` always
+loads the engine on CPU with no way to override it from the CLI.
+
+Empirically (see `litert-lm benchmark --backend gpu` against the same model
+file, and this script's own end-to-end test against a real `litert-lm
+serve` process) the *main* prefill/decode graph runs fine on GPU despite
+that constraint - `backend_constraint` on this model only actually matters
+for the optional audio/vision adapters, which are genuinely CPU-only.
+Measured on an RTX 3060 Laptop GPU (6 GB VRAM) against the Gemma-4 E2B
+`.litertlm`, warm (disk-cached compiled shaders):
+
+    Backend   Prefill tok/s   Decode tok/s   Init time
+    CPU       ~327            ~16            ~8s
+    GPU       ~85             ~54            ~8s (~15s cold, before the
+                                                    shader cache is warm)
+
+Decode throughput (what dominates perceived latency for anything longer
+than a couple words) is ~3.4x faster on GPU. Prefill is slower on GPU in
+this configuration, but prefill is already fast in absolute terms, so this
+is a clear net win for the dictation/chat workload this app cares about.
+
+## The hook point
+
+`litert_lm_cli.commands.serve_util.get_or_initialize_server_engine` (the
+function that lazily builds the `litert_lm.Engine` on the first HTTP
+request) resolves the *main* backend via:
+
+    backend = model.parse_backend(None, model_obj=m)
+
+and the vision/audio backends via the same function but with an explicit
+`label=` kwarg:
+
+    vision_backend = model.parse_backend(None, model_obj=m, ..., label="vision")
+    audio_backend  = model.parse_backend(None, model_obj=m, ..., label="audio")
+
+`parse_backend(backend=None, ...)` falls back to the model's
+`backend_constraint` metadata. So: monkeypatching `model.parse_backend` to
+force `backend="gpu"` only when called with `backend is None and label is
+None` targets exactly the main-model resolution, leaving vision/audio
+backend selection (and therefore their real CPU constraint) untouched.
+
+## Fallback
+
+If GPU engine creation actually fails (no compatible adapter - e.g. no
+Vulkan ICD on a Linux/WSL box with no `VK_ICD_FILENAMES`, or a GPU too old
+for the required WebGPU features - confirmed by reproducing this exact
+error in WSL2, which has no Vulkan adapter at all: `litert_lm.Engine.close`
+raising `RuntimeError` and the native log showing "Failed to initialize
+WebGPU environment: INTERNAL: No adapters found"), the *first* request that
+triggers engine creation fails; every later request that resolves to the
+same (model_id, backend) tuple would keep failing the same way since
+`serve_util` caches the engine keyed on that tuple. This wrapper catches
+that first failure, logs a clear marker line to stderr, and flips its own
+forced-backend state to "cpu" before retrying the same request-triggered
+engine creation - so a machine without a working GPU falls back to CPU
+automatically, at the cost of one failed+retried first request, without
+requiring the Electron sidecar manager to know anything about backends at
+all.
+
+## Usage
+
+Drop-in replacement for `litert-lm serve` in a managed sidecar command
+template - same CLI surface (`serve --host ... --port ... --verbose ...`),
+via the venv's `python.exe` instead of the `litert-lm.exe` launcher (since
+we need to monkeypatch first, and `litert-lm.exe` doesn't give us a code
+hook to do that from outside):
+
+    python /path/to/serve_gpu.py serve --host 127.0.0.1 --port {port}
+
+Set LITERT_LM_SERVE_BACKEND=cpu to disable the GPU-forcing behavior
+entirely (falls back to this script being a transparent passthrough to the
+normal `serve` command) - useful for A/B-testing GPU vs CPU without editing
+the managed command template.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+from litert_lm_cli import model as _model
+
+_DEFAULT_TARGET_MODEL_TYPES = _model._DEFAULT_TARGET_MODEL_TYPES  # pylint: disable=protected-access
+_orig_parse_backend = _model.parse_backend
+
+# Mutable so the fallback below can flip it after a failed GPU engine
+# creation, without needing to re-import/re-patch anything.
+_state = {
+    "backend": os.environ.get("LITERT_LM_SERVE_BACKEND", "gpu").strip().lower() or "gpu"
+}
+
+
+def _forced_backend_parse_backend(
+    backend=None,
+    *,
+    model_obj=None,
+    cpu_thread_count=None,
+    target_model_types=_DEFAULT_TARGET_MODEL_TYPES,
+    label=None,
+):
+  """Forces the main-model backend resolution; leaves vision/audio alone.
+
+  Only intercepts the exact call shape `serve_util.get_or_initialize_server_engine`
+  uses for the main model (`backend=None`, no `label`). Any explicit
+  `backend` (e.g. a future CLI flag) or any labeled call (vision/audio) is
+  passed straight through unchanged.
+  """
+  if backend is None and label is None and _state["backend"] != "cpu":
+    backend = _state["backend"]
+  return _orig_parse_backend(
+      backend,
+      model_obj=model_obj,
+      cpu_thread_count=cpu_thread_count,
+      target_model_types=target_model_types,
+      label=label,
+  )
+
+
+_model.parse_backend = _forced_backend_parse_backend
+
+# serve_util imports `model` as `from litert_lm_cli import model` and always
+# calls `model.parse_backend(...)` (attribute access at call time), so
+# patching the module-level name above is enough - no need to also patch
+# serve_util's own namespace.
+from litert_lm_cli.commands import serve_util  # noqa: E402  pylint: disable=wrong-import-position
+
+_orig_get_or_initialize_server_engine = serve_util.get_or_initialize_server_engine
+
+
+def _get_or_initialize_server_engine_with_fallback(server, *, model_id):
+  try:
+    return _orig_get_or_initialize_server_engine(server, model_id=model_id)
+  except RuntimeError as err:
+    if _state["backend"] == "cpu":
+      raise  # Already on CPU - nothing left to fall back to.
+    sys.stderr.write(
+        "[serve_gpu] GPU engine initialization failed "
+        f"({err}); falling back to CPU backend for the rest of this "
+        "process's lifetime.\n"
+    )
+    sys.stderr.flush()
+    _state["backend"] = "cpu"
+    return _orig_get_or_initialize_server_engine(server, model_id=model_id)
+
+
+serve_util.get_or_initialize_server_engine = _get_or_initialize_server_engine_with_fallback
+
+if __name__ == "__main__":
+  from litert_lm_cli import main as _cli_main
+
+  _cli_main.main()
