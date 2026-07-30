@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   buildLinuxXdotoolArgs,
   buildMacPasteScript,
+  buildWindowsSendKeysArgs,
   buildWindowsSendKeysCommand,
   copyAndPaste,
+  getInjectPasteExecOptions,
   type ClipboardLike
 } from './paste'
 
@@ -33,6 +35,27 @@ describe('paste command builders', () => {
   it('builds xdotool args with --clearmodifiers so a still-held key is not folded into the combo', () => {
     expect(buildLinuxXdotoolArgs()).toEqual(['key', '--clearmodifiers', 'ctrl+v'])
   })
+
+  it('builds Windows powershell argv with -WindowStyle Hidden and -NonInteractive so no console is left visible', () => {
+    const args = buildWindowsSendKeysArgs()
+    expect(args).toEqual([
+      '-NoProfile',
+      '-NonInteractive',
+      '-WindowStyle',
+      'Hidden',
+      '-Command',
+      buildWindowsSendKeysCommand()
+    ])
+  })
+
+  it(
+    'sets windowsHide:true on the exec options for the Windows paste injection - without this, spawning ' +
+      'powershell creates a visible conhost window that steals OS focus at the exact moment Ctrl+V needs to ' +
+      'land, dropping the auto-paste (see paste.ts doc comments)',
+    () => {
+      expect(getInjectPasteExecOptions()).toEqual({ windowsHide: true })
+    }
+  )
 })
 
 describe('copyAndPaste', () => {

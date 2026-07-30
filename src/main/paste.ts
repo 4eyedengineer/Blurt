@@ -1,4 +1,4 @@
-import { execFile } from 'child_process'
+import { execFile, type ExecFileOptions } from 'child_process'
 import type { PasteOutcome } from '../shared/types'
 import { log } from './log'
 
@@ -27,6 +27,41 @@ export function buildWindowsSendKeysCommand(): string {
   return "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')"
 }
 
+/**
+ * Full argv for the `powershell` invocation, including `-WindowStyle Hidden`.
+ * This alone does NOT stop the initial conhost window flash/focus-steal -
+ * `-WindowStyle Hidden` only affects the PowerShell host window itself,
+ * decided *after* Windows has already created (and, without a GUI-subsystem
+ * parent process, activated) a console for the child process. The real fix
+ * is the `windowsHide: true` spawn option (see getInjectPasteExecOptions),
+ * which asks Windows not to create that console window in the first place.
+ * Both are applied together as defense in depth - see PASTE_SETTLE_MS doc
+ * comment and the module-level bug this fixes: releasing the push-to-talk
+ * key was stealing OS focus away from the target app at the exact moment
+ * Ctrl+V needed to land, because the console window Node spawned for
+ * `powershell` (with no windowsHide option previously) took foreground.
+ */
+export function buildWindowsSendKeysArgs(): string[] {
+  return [
+    '-NoProfile',
+    '-NonInteractive',
+    '-WindowStyle',
+    'Hidden',
+    '-Command',
+    buildWindowsSendKeysCommand()
+  ]
+}
+
+/**
+ * `windowsHide: true` is the load-bearing part (see buildWindowsSendKeysArgs
+ * doc comment) - it's a no-op on non-Windows platforms, so it's returned
+ * unconditionally rather than gated, but only matters for win32's
+ * `powershell` invocation.
+ */
+export function getInjectPasteExecOptions(): ExecFileOptions {
+  return { windowsHide: true }
+}
+
 export function buildMacPasteScript(): string {
   return 'tell application "System Events" to keystroke "v" using command down'
 }
@@ -40,9 +75,13 @@ export function buildLinuxXdotoolArgs(): string[] {
 
 let xdotoolAvailableCache: Promise<boolean> | null = null
 
-function execFileAsync(command: string, args: string[]): Promise<void> {
+function execFileAsync(
+  command: string,
+  args: string[],
+  options: ExecFileOptions = {}
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, (error) => {
+    execFile(command, args, options, (error) => {
       if (error) reject(error)
       else resolve()
     })
@@ -75,7 +114,7 @@ export function resetXdotoolAvailableCacheForTests(): void {
  */
 async function injectPasteReal(): Promise<void> {
   if (process.platform === 'win32') {
-    await execFileAsync('powershell', ['-NoProfile', '-Command', buildWindowsSendKeysCommand()])
+    await execFileAsync('powershell', buildWindowsSendKeysArgs(), getInjectPasteExecOptions())
     return
   }
   if (process.platform === 'darwin') {
@@ -95,7 +134,8 @@ function delay(ms: number): Promise<void> {
 
 /** Describes the injection command actually attempted, for logging - see copyAndPaste. */
 function describeInjectCommand(): string {
-  if (process.platform === 'win32') return 'powershell -Command SendKeys(^v)'
+  if (process.platform === 'win32')
+    return 'powershell -WindowStyle Hidden -Command SendKeys(^v) (windowsHide)'
   if (process.platform === 'darwin') return 'osascript (keystroke v, command down)'
   if (process.platform === 'linux') return `xdotool ${buildLinuxXdotoolArgs().join(' ')}`
   return `unsupported platform: ${process.platform}`
