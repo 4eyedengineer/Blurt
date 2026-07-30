@@ -6,8 +6,9 @@ import { getCatalogEntry } from '../../shared/models'
 import type { SettingsStore } from '../store/settingsStore'
 import type { ModelManager } from './modelManager'
 import { LitertBackend } from './litertBackend'
-import { resolveImportCli, Sidecar } from './sidecar'
+import { resolveManagedCliForImport, Sidecar } from './sidecar'
 import { resolveServeGpuScriptPath } from './gpuWrapperPath'
+import type { VenvPaths } from '../runtime/venvResolver'
 import { log } from '../log'
 
 /**
@@ -73,7 +74,17 @@ export class BackendController extends EventEmitter {
     private readonly modelManager: ModelManager,
     userDataDir: string,
     /** Passed straight through to LitertBackend as `debugAudioDir` - see its doc comment / ELOQUENT_DEBUG_AUDIO. Optional so tests/mocks don't need to care. */
-    private readonly debugAudioDir?: string
+    private readonly debugAudioDir?: string,
+    /**
+     * The self-managed runtime venv's resolved absolute paths (see
+     * `runtime/venvResolver.ts`), resolved once at app startup (main/index.ts)
+     * and reused for the app's lifetime - undefined only on non-Windows dev
+     * builds, where the DEFAULT managed command templates' `{venvPython}`/
+     * `{litertLmCli}` placeholders are never actually reached in practice
+     * (dev launchers seed their own settings.json with a literal command
+     * instead - see MANAGED_COMMAND_BY_ACCELERATOR's doc comment).
+     */
+    private readonly venvPaths?: VenvPaths
   ) {
     super()
     // Replaced immediately by the first rebuild() (see main/index.ts, which
@@ -120,7 +131,10 @@ export class BackendController extends EventEmitter {
       // guard here too in case the import step failed previously, or the
       // sandboxed LITERT_LM_DIR was cleared independently of the download.
       if (settings.sidecar.mode === 'managed' && !this.modelManager.isImported(settings.modelId)) {
-        const cliResolution = resolveImportCli(settings.sidecar.managedCommand)
+        const cliResolution = resolveManagedCliForImport(
+          settings.sidecar.managedCommand,
+          this.venvPaths
+        )
         if (!cliResolution.ok) {
           throw new Error(`Cannot import model: ${cliResolution.error}`)
         }
@@ -139,6 +153,11 @@ export class BackendController extends EventEmitter {
         // default 'gpu' accelerator template does - see Accelerator's doc
         // comment in shared/types.ts); harmless no-op otherwise.
         wrapperPath: resolveServeGpuScriptPath(),
+        // Only meaningful if managedCommand references {venvPython}/
+        // {litertLmCli} (both DEFAULT templates do); harmless no-op
+        // otherwise - see this class's `venvPaths` field doc comment.
+        venvPython: this.venvPaths?.pythonExe,
+        litertLmCli: this.venvPaths?.litertLmExe,
         env: {
           // Points a managed `litert-lm serve` (and the `import` step above)
           // at the same sandboxed model store, entirely separate from the

@@ -18,28 +18,74 @@ import { createOverlayWindow } from './overlay'
 import { OverlayController } from './overlayController'
 import { PushToTalkController } from './pushToTalk/pushToTalkController'
 import { initLog, log } from './log'
+import {
+  getRuntimeBaseDir,
+  isVenvHealthy,
+  venvPathsFor,
+  type VenvPaths
+} from './runtime/venvResolver'
+import { runFirstRunSetup, SETUP_STEPS } from './runtime/firstRunSetup'
+import { SetupWindow } from './runtime/setupWindow'
 
 let mainWindow: BrowserWindow | null = null
 let overlayWindow: BrowserWindow | null = null
 let pushToTalkController: PushToTalkController | null = null
+let backendController: BackendController | null = null
 
 initLog(app.getPath('userData'), is.dev)
 const historyStore = new HistoryStore(app.getPath('userData'))
 const settingsStore = new SettingsStore(app.getPath('userData'))
 const modelManager = new ModelManager(app.getPath('userData'))
 
-// The single seam that knows about LitertBackend (and its UnavailableBackend
-// error-state placeholder) - which concrete InferenceBackend is active is
-// driven entirely by settingsStore ('modelId' / 'sidecar' fields) and can
-// change at runtime (see registerSettingsIpc's onBackendSettingsChanged
-// hook). Everything downstream (IPC, renderer) only depends on the
-// InferenceBackend interface via backendController.getBackend().
-const backendController = new BackendController(
-  settingsStore,
-  modelManager,
-  app.getPath('userData'),
-  join(app.getPath('userData'), 'debug')
-)
+/**
+ * Establishes the self-managed runtime venv the packaged app's managed
+ * sidecar depends on, with no launcher (ps1/run.sh) involved - see
+ * `runtime/venvResolver.ts` / `runtime/firstRunSetup.ts`'s doc comments.
+ * Only meaningful on win32 (the packaged app's only real target - see
+ * WINDOWS.md); a no-op elsewhere so WSL/Linux/mac dev builds (which don't
+ * have `%LOCALAPPDATA%` at all) are unaffected and keep relying on their own
+ * dev launcher's settings.json seeding, unchanged.
+ *
+ * Returns the resolved venv paths on success (already-healthy or freshly
+ * set up), or `undefined` if setup failed - in which case a hard-error
+ * setup screen is already showing and the caller must not proceed to
+ * create the rest of the app (the caller quits once the user closes it).
+ */
+async function ensureRuntime(): Promise<VenvPaths | undefined> {
+  if (process.platform !== 'win32') return undefined
+
+  const venv = venvPathsFor(join(getRuntimeBaseDir(), 'venv'), 'win32')
+  if (isVenvHealthy(venv)) {
+    log.info(`runtime: venv healthy, reusing ${venv.venvDir}`)
+    return venv
+  }
+
+  log.info(`runtime: no healthy venv at ${venv.venvDir} - running first-run setup`)
+  const setupWindow = new SetupWindow(SETUP_STEPS)
+
+  try {
+    await runFirstRunSetup(venv, {
+      onStepStart: (id) => void setupWindow.setStepState(id, 'active'),
+      onStepDone: (id) => void setupWindow.setStepState(id, 'done'),
+      onLine: (line) => {
+        log.info(`runtime-setup: ${line}`)
+        void setupWindow.appendLog(line)
+      }
+    })
+    log.info(`runtime: first-run setup complete (${venv.venvDir})`)
+    setupWindow.close()
+    return venv
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    log.error(`runtime: first-run setup failed: ${message}`)
+    await setupWindow.showFatalError(message)
+    // The hard-error screen's only available action is closing the window
+    // (see setupWindow.ts) - wait for that, then let the caller quit rather
+    // than limping on with no working sidecar.
+    await new Promise<void>((resolve) => setupWindow.onClosed(resolve))
+    return undefined
+  }
+}
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -84,12 +130,41 @@ function toggleRecordingFromHotkey(): void {
   mainWindow.webContents.send(IPC.hotkey.toggleRecording)
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.windowseloquent.app')
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
+
+  const venvPaths = await ensureRuntime()
+  if (process.platform === 'win32' && !venvPaths) {
+    // ensureRuntime() already left a hard-error setup screen up and waited
+    // for the user to close it (see its doc comment) - nothing left to do
+    // but quit; there is no usable app without a runtime venv on Windows.
+    app.quit()
+    return
+  }
+
+  // The single seam that knows about LitertBackend (and its
+  // UnavailableBackend error-state placeholder) - which concrete
+  // InferenceBackend is active is driven entirely by settingsStore
+  // ('modelId' / 'sidecar' fields) and can change at runtime (see
+  // registerSettingsIpc's onBackendSettingsChanged hook). Everything
+  // downstream (IPC, renderer) only depends on the InferenceBackend
+  // interface via backendController.getBackend().
+  backendController = new BackendController(
+    settingsStore,
+    modelManager,
+    app.getPath('userData'),
+    join(app.getPath('userData'), 'debug'),
+    venvPaths
+  )
+  // Local, non-nullable alias: `backendController` (the outer `let`) reads
+  // back as possibly-null in the closures below (TS can't narrow a mutable
+  // outer binding across closure boundaries) even though it's only ever
+  // reassigned here, once, before any of them run.
+  const controller = backendController
 
   mainWindow = createWindow()
 
@@ -101,17 +176,17 @@ app.whenReady().then(() => {
   new OverlayController(pushToTalkController, () => overlayWindow, settingsStore, ipcMain)
   registerPushToTalkIpc(pushToTalkController)
 
-  registerBackendIpc(backendController, () => [mainWindow, overlayWindow])
+  registerBackendIpc(controller, () => [mainWindow, overlayWindow])
   // Cheap diagnostic parity with the overlay/push-to-talk logs above -
   // surfaces sidecar state and (once observed) the truthful effective
   // accelerator (see BackendStatus.effectiveAccelerator) without needing
   // devtools open.
-  backendController.on('status', (status) => log.info(`backend: status ${JSON.stringify(status)}`))
+  controller.on('status', (status) => log.info(`backend: status ${JSON.stringify(status)}`))
   registerHistoryIpc(historyStore)
   registerSettingsIpc(
     settingsStore,
     (accelerator) => applyGlobalShortcut(accelerator, toggleRecordingFromHotkey),
-    () => void backendController.rebuild(),
+    () => void controller.rebuild(),
     (pushToTalkSettings) => pushToTalkController?.applySettings(pushToTalkSettings)
   )
   registerModelManagerIpc(modelManager, settingsStore, () => mainWindow)
@@ -125,13 +200,13 @@ app.whenReady().then(() => {
     if (
       progress.state === 'done' &&
       progress.modelId === settingsStore.get().modelId &&
-      backendController.getStatus().state === 'error'
+      controller.getStatus().state === 'error'
     ) {
-      void backendController.rebuild()
+      void controller.rebuild()
     }
   })
 
-  void backendController.rebuild()
+  void controller.rebuild()
   applyGlobalShortcut(settingsStore.get().hotkey, toggleRecordingFromHotkey)
 
   app.on('activate', function () {
@@ -161,6 +236,9 @@ app.on('window-all-closed', () => {
 // doc comment for the real incident that motivated it.
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
-  backendController.dispose()
+  // Null only if the app quit before ensureRuntime() ever resolved (the
+  // first-run setup hard-error path - see ensureRuntime()'s doc comment) -
+  // nothing to dispose of in that case.
+  backendController?.dispose()
   pushToTalkController?.dispose()
 })

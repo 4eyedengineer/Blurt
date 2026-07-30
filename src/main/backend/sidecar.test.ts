@@ -6,6 +6,7 @@ import {
   PARENT_PID_ENV_VAR,
   renderManagedCommand,
   resolveImportCli,
+  resolveManagedCliForImport,
   tokenizeCommand
 } from './sidecar'
 
@@ -120,6 +121,34 @@ describe('renderManagedCommand', () => {
       wrapperPath: '/app/resources/serve_gpu.py'
     })
     expect(args).toEqual(['python', '/app/resources/serve_gpu.py', 'serve', '--port', '9379'])
+  })
+
+  it('substitutes {venvPython} and {litertLmCli} (used by the DEFAULT gpu/cpu templates)', () => {
+    const gpuArgs = renderManagedCommand('"{venvPython}" "{wrapperPath}" serve --port {port}', {
+      modelPath: '',
+      port: 9379,
+      wrapperPath: 'C:\\WindowsEloquent\\app\\resources\\serve_gpu.py',
+      venvPython: 'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe'
+    })
+    expect(gpuArgs).toEqual([
+      'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe',
+      'C:\\WindowsEloquent\\app\\resources\\serve_gpu.py',
+      'serve',
+      '--port',
+      '9379'
+    ])
+
+    const cpuArgs = renderManagedCommand('"{litertLmCli}" serve --port {port}', {
+      modelPath: '',
+      port: 9379,
+      litertLmCli: 'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+    })
+    expect(cpuArgs).toEqual([
+      'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe',
+      'serve',
+      '--port',
+      '9379'
+    ])
   })
 
   it('substitutes {wrapperPath} with an empty string when not provided', () => {
@@ -248,5 +277,44 @@ describe('resolveImportCli', () => {
     const shallow = resolveImportCli('C:\\python.exe serve --port {port}')
     expect(shallow.ok).toBe(false)
     expect(shallow.ok === false && shallow.error).toMatch(/venv's Scripts\/bin directory/i)
+  })
+})
+
+describe('resolveManagedCliForImport', () => {
+  const venvPaths = {
+    litertLmExe: 'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+  }
+
+  it('resolves the DEFAULT gpu template ({venvPython}/{wrapperPath}) directly from venvPaths', () => {
+    const result = resolveManagedCliForImport(
+      '"{venvPython}" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose',
+      venvPaths
+    )
+    expect(result).toEqual({ ok: true, cli: venvPaths.litertLmExe })
+  })
+
+  it('resolves the DEFAULT cpu template ({litertLmCli}) directly from venvPaths', () => {
+    const result = resolveManagedCliForImport(
+      '"{litertLmCli}" serve --host 127.0.0.1 --port {port}',
+      venvPaths
+    )
+    expect(result).toEqual({ ok: true, cli: venvPaths.litertLmExe })
+  })
+
+  it('hard-errors on a placeholder template when no venv has been resolved', () => {
+    const result = resolveManagedCliForImport(
+      '"{venvPython}" "{wrapperPath}" serve --port {port}',
+      undefined
+    )
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.error).toMatch(/no runtime venv has been resolved/i)
+  })
+
+  it('falls through to resolveImportCli for a custom (non-placeholder) command', () => {
+    const result = resolveManagedCliForImport(
+      'C:\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe serve --port {port}',
+      undefined
+    )
+    expect(result).toEqual({ ok: true, cli: 'C:\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe' })
   })
 })

@@ -30,6 +30,10 @@ export interface SidecarOptions {
   port: number
   /** Absolute path to `resources/serve_gpu.py`, substituted into `{wrapperPath}` - see `Accelerator`'s doc comment in shared/types.ts. Harmless to pass even when the template doesn't reference it. */
   wrapperPath?: string
+  /** Absolute path to the resolved runtime venv's python interpreter, substituted into `{venvPython}` - see `venvResolver.ts` and `Accelerator`'s doc comment in shared/types.ts. Harmless to pass even when the template doesn't reference it. */
+  venvPython?: string
+  /** Absolute path to the resolved runtime venv's `litert-lm` console-script CLI, substituted into `{litertLmCli}` - see `venvResolver.ts`. Harmless to pass even when the template doesn't reference it. */
+  litertLmCli?: string
   /** Extra environment variables merged over `process.env` for the spawned process (e.g. `LITERT_LM_DIR`, see ModelManager). Managed mode only. */
   env?: Record<string, string>
   /** Overridable for tests; defaults below. */
@@ -169,6 +173,40 @@ export function resolveImportCli(managedCommand: string): ImportCliResolution {
   }
 }
 
+/**
+ * Like `resolveImportCli`, but aware of the `{venvPython}`/`{litertLmCli}`
+ * placeholders the DEFAULT managed command templates now use (see
+ * `MANAGED_COMMAND_BY_ACCELERATOR` in shared/types.ts) - those are template
+ * placeholders, not real paths, so the name-sniffing in `resolveImportCli`
+ * can't (and shouldn't have to) understand them. If the *template* (not the
+ * rendered argv) references either placeholder, the import CLI is just
+ * `venvPaths.litertLmExe` directly - the same source of truth
+ * `BackendController` renders `{litertLmCli}` from at spawn time. Any other
+ * (custom, hand-edited) command template falls through to `resolveImportCli`
+ * unchanged, so a literal absolute path (what `Start-Eloquent.ps1`/`run.sh`
+ * still seed) keeps working exactly as before.
+ */
+export function resolveManagedCliForImport(
+  managedCommand: string,
+  venvPaths?: { litertLmExe: string }
+): ImportCliResolution {
+  const usesVenvPlaceholder =
+    managedCommand.includes('{venvPython}') || managedCommand.includes('{litertLmCli}')
+  if (usesVenvPlaceholder) {
+    if (!venvPaths) {
+      return {
+        ok: false,
+        error:
+          `Managed command references {venvPython}/{litertLmCli} but no runtime venv has been ` +
+          `resolved (this is expected only on non-Windows dev builds) - use an absolute ` +
+          `interpreter/CLI path in the managed command instead.`
+      }
+    }
+    return { ok: true, cli: venvPaths.litertLmExe }
+  }
+  return resolveImportCli(managedCommand)
+}
+
 const DEFAULT_READY_TIMEOUT_MS = 60_000
 const DEFAULT_READY_POLL_INTERVAL_MS = 500
 const MAX_RESTARTS = 3
@@ -211,12 +249,20 @@ export function tokenizeCommand(template: string): string[] {
 
 export function renderManagedCommand(
   template: string,
-  vars: { modelPath: string; port: number; wrapperPath?: string }
+  vars: {
+    modelPath: string
+    port: number
+    wrapperPath?: string
+    venvPython?: string
+    litertLmCli?: string
+  }
 ): string[] {
   const rendered = template
     .replaceAll('{modelPath}', vars.modelPath)
     .replaceAll('{port}', String(vars.port))
     .replaceAll('{wrapperPath}', vars.wrapperPath ?? '')
+    .replaceAll('{venvPython}', vars.venvPython ?? '')
+    .replaceAll('{litertLmCli}', vars.litertLmCli ?? '')
   return tokenizeCommand(rendered)
 }
 
@@ -350,7 +396,9 @@ export class Sidecar extends EventEmitter {
       args = renderManagedCommand(this.options.managedCommand, {
         modelPath: this.options.modelPath,
         port: this.options.port,
-        wrapperPath: this.options.wrapperPath
+        wrapperPath: this.options.wrapperPath,
+        venvPython: this.options.venvPython,
+        litertLmCli: this.options.litertLmCli
       })
     } catch (err) {
       this.setState('error', err instanceof Error ? err.message : String(err))
@@ -389,6 +437,9 @@ export class Sidecar extends EventEmitter {
     log.info(`sidecar: spawn ${cmd} ${rest.join(' ')}`)
     const child = spawn(cmd, rest, {
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Console-subsystem child of a GUI-subsystem parent: without this,
+      // Windows allocates a visible conhost that steals foreground focus.
+      windowsHide: true,
       // Always includes PARENT_PID_ENV_VAR - see its doc comment for why
       // (crash-safe cleanup via serve_gpu.py's parent watchdog).
       env: buildManagedChildEnv(process.env, this.options.env, process.pid)

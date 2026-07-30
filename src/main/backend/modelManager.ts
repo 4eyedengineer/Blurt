@@ -128,6 +128,9 @@ export class ModelManager extends EventEmitter {
     await new Promise<void>((resolve, reject) => {
       const child = spawn(cliBinary, ['import', filePath, alias], {
         stdio: ['ignore', 'pipe', 'pipe'],
+        // Console-subsystem child of a GUI-subsystem parent: without this,
+        // Windows allocates a visible conhost that steals foreground focus.
+        windowsHide: true,
         env: { ...process.env, LITERT_LM_DIR: this.litertLmDir }
       })
       let stderr = ''

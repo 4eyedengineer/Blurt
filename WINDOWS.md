@@ -11,6 +11,38 @@ guessed from documentation. GPU execution specifically was verified against a re
 GPU (via WSL interop into the actual Windows host this app targets, not just theorized about) - see
 "GPU acceleration" below for the exact commands/log lines and measured tokens/s.
 
+## Standalone app (no scripts)
+
+If you just want to run Windows Eloquent like a normal Windows app - not develop it - grab one of
+the built artifacts instead of cloning the repo:
+
+- **`windows-eloquent-<version>-setup.exe`** - a normal per-user NSIS installer: Start Menu +
+  desktop shortcuts, an entry in "Installed apps" with a proper uninstaller. Uninstalling deletes
+  your settings/history/models automatically, and separately asks (it's sized in the hundreds of
+  MB, so it's a prompt, not silent) whether to also remove the shared Python runtime under
+  `%LOCALAPPDATA%\WindowsEloquent`.
+- **`windows-eloquent-<version>-portable.exe`** - a single self-contained exe, no install step; run
+  it from anywhere (a USB stick, Downloads, wherever).
+
+Either way, the exe is fully self-sufficient on first launch - no `run-windows.bat`, no
+PowerShell, no manual `pip install`:
+
+- it looks for a healthy Python venv at `%LOCALAPPDATA%\WindowsEloquent\venv` (the same location
+  `Start-Eloquent.ps1` uses below - if you've already run that on this machine, the packaged app
+  just reuses it, no extra setup at all)
+- if none is found, it shows a small first-run **setup screen** (step list + live log) that finds a
+  Python 3.10+ interpreter (`py -3.12` / `py -3` / `python`, in that order), creates the venv, and
+  `pip install`s the pinned `litert-lm` version into it. If no Python 3.10+ install can be found, it
+  shows a plain error - **"Install Python 3.10+ from python.org, then relaunch"** - and does not try
+  to install anything on its own (no silent winget calls, unlike the ps1 launcher below)
+- the model itself is handled by the in-app Settings screen either way (download + import from
+  HuggingFace) - see "Model downloads" below; nothing here downloads the ~2.4 GiB model file, only
+  the ~46 MB `litert-lm` pip package
+
+This is the recommended path for actually *using* the app day-to-day. The rest of this document
+(`run-windows.bat`/`Start-Eloquent.ps1`, building from source) is the **developer** path - useful
+for working on the app itself, not required to just run it.
+
 ## Quick start: one-click launcher
 
 Steps 1-4 below (Python, the `litert-lm` CLI, importing a model, configuring the app) are
@@ -21,7 +53,7 @@ execution is locked down on your machine) and it will:
 - **if your source checkout lives on a UNC/WSL path** (e.g. you opened this repo via
   `\\wsl.localhost\<distro>\...` in Explorer, which is the common case when developing inside WSL) -
   mirror it with `robocopy /MIR` to a Windows-local working copy under
-  `%LOCALAPPDATA%\WindowsEloquent\app`, and do everything below *there* instead of on the network
+  `%LOCALAPPDATA%\WindowsEloquent\app`, and do everything below _there_ instead of on the network
   path. **Source of truth stays in WSL** - this is a one-way, repeatable sync (not a copy-once): the
   mirror is excluded from the copy for `node_modules`, `.runtime`, `out`, `dist`, and `.git`, so
   re-running the launcher after you change code re-syncs your changes into the same working copy,
@@ -234,6 +266,7 @@ Open the app's **Settings** tab and set:
     with a clear message the next time it needs to `litert-lm import` a model - point the command
     at this venv's absolute `python.exe` (`%LOCALAPPDATA%\WindowsEloquent\venv\Scripts\python.exe`)
     to fix it.
+
   - **External**: point at a `litert-lm serve` instance you started yourself (e.g. in its own
     terminal window with `--verbose` for visible logs while debugging). Useful if you want the
     server logs visible separately from the Electron app, or you're running the server on a
@@ -282,7 +315,7 @@ below explain why, and are still accurate as of `litert-lm` 0.14.0.
 GPU acceleration goes through **Dawn (WebGPU)**, whose Windows backend is **Direct3D 12** - any
 DX12-capable GPU is a supported adapter (NVIDIA, AMD, or Intel; discrete or integrated). Nothing in
 this app or `resources/serve_gpu.py` filters, checks, or branches on a vendor/adapter name - the
-RTX 3060 numbers throughout this doc are one *measured example*, not a requirement. Dawn logs
+RTX 3060 numbers throughout this doc are one _measured example_, not a requirement. Dawn logs
 whichever adapter it actually picked: `Selected adapter: <name>, vendor=<vendor>, backend=Direct3D
 12, adapterType=<Discrete|Integrated> GPU` - `<name>`/`<vendor>` come from your driver, never from
 this codebase.
@@ -329,7 +362,7 @@ Options:
 No `--backend`. Reading the installed `litert_lm_cli/commands/serve_util.py`, the server always
 calls `model.parse_backend(None, model_obj=m)` for the main model - i.e. it auto-detects from the
 model file's own metadata and never lets you force it via `serve`'s CLI. (`litert-lm benchmark` and
-`litert-lm run` *do* expose an explicit `--backend [cpu|gpu|npu]` flag - just not `serve`.)
+`litert-lm run` _do_ expose an explicit `--backend [cpu|gpu|npu]` flag - just not `serve`.)
 
 **Finding 2: the Gemma-4 `.litertlm` exports declare a hardcoded `cpu` backend constraint in their
 own metadata for every section** (including the optional audio/vision adapters), which is what
@@ -341,7 +374,7 @@ I0000 ... litert_lm_loader.cc:244] section_backend_constraint: cpu   (repeated p
 
 **But that constraint does not actually block GPU execution of the main model** - it turns out only
 to matter for the audio/vision adapters, which genuinely are CPU-only. Forcing `--backend gpu` on
-`litert-lm benchmark` against the *same* `cpu`-constrained E2B file, on the real RTX 3060 Laptop GPU
+`litert-lm benchmark` against the _same_ `cpu`-constrained E2B file, on the real RTX 3060 Laptop GPU
 (via WSL interop into the actual Windows host, not simulated), the engine happily initializes GPU
 and runs real inference:
 
@@ -361,14 +394,14 @@ Direct3D 12, as shown above.)
 **Measured tokens/s** (`litert-lm benchmark`, Gemma 4 E2B, RTX 3060 Laptop GPU, 128 prefill / 64
 decode tokens, `--cache disk` default):
 
-| Backend | Prefill tok/s | Decode tok/s | Init time |
-|---|---|---|---|
-| CPU | ~327 | ~16 | ~8s |
-| GPU (cold, first run) | ~49 | ~46 | ~15.5s (compiling WebGPU shaders) |
-| GPU (warm, disk-cached shaders) | ~85 | ~54 | ~7.8s |
+| Backend                         | Prefill tok/s | Decode tok/s | Init time                         |
+| ------------------------------- | ------------- | ------------ | --------------------------------- |
+| CPU                             | ~327          | ~16          | ~8s                               |
+| GPU (cold, first run)           | ~49           | ~46          | ~15.5s (compiling WebGPU shaders) |
+| GPU (warm, disk-cached shaders) | ~85           | ~54          | ~7.8s                             |
 
 Decode throughput - what dominates perceived latency for anything longer than a couple words - is
-**~3.4x faster on GPU once warm** (~54 vs ~16 tok/s). Prefill is actually *slower* on GPU in this
+**~3.4x faster on GPU once warm** (~54 vs ~16 tok/s). Prefill is actually _slower_ on GPU in this
 configuration; that's fine for a dictation/chat workload where prefill is already fast in absolute
 terms and decode length is what you feel. The first run after enabling GPU pays a one-time ~15s
 shader-compile cost (`--cache disk`, the default, persists the compiled shaders next to the model
@@ -376,16 +409,17 @@ file so every run after the first is warm).
 
 **How this app gets GPU without a `litert-lm serve --backend` flag:** `resources/serve_gpu.py` is
 a thin wrapper (see its own doc comment for the full mechanism) that monkeypatches
-`litert_lm_cli.commands.serve_util`'s backend-resolution function so the *main* model is forced
+`litert_lm_cli.commands.serve_util`'s backend-resolution function so the _main_ model is forced
 onto GPU while the audio/vision adapters are left on their own (correctly CPU-constrained) default
+
 - verified end-to-end against a real `litert-lm serve` process spawned this way, hitting
-`/v1/chat/completions` and getting back a real completion with `MainExecutorSettings: backend: GPU`
-and the `Selected adapter: ... Direct3D 12` line in the log. The Settings screen's accelerator
-toggle (see step 4 above) points the managed sidecar command at this wrapper instead of the bare
-`litert-lm serve`; both `Start-Eloquent.ps1` and `DEFAULT_SETTINGS` (see `src/shared/types.ts`)
-enable it by default for any fresh install. There's no settings migration for pre-existing installs
+  `/v1/chat/completions` and getting back a real completion with `MainExecutorSettings: backend: GPU`
+  and the `Selected adapter: ... Direct3D 12` line in the log. The Settings screen's accelerator
+  toggle (see step 4 above) points the managed sidecar command at this wrapper instead of the bare
+  `litert-lm serve`; both `Start-Eloquent.ps1` and `DEFAULT_SETTINGS` (see `src/shared/types.ts`)
+  enable it by default for any fresh install. There's no settings migration for pre-existing installs
 - run `uninstall.sh` / `uninstall-windows.bat` for a clean slate if you set one up before this was
-the default.
+  the default.
 
 **Fallback if GPU init fails**: the wrapper catches a failed GPU engine-creation (verified in WSL2,
 which has no Vulkan adapter - see the log excerpt above) and retries the same request on CPU,
@@ -425,10 +459,10 @@ yourself in under a minute:
   confirmed it - not just "Ready" alone, and not `Ready · CPU` (that means it fell back).
 - **main.log** (`%APPDATA%\windows-eloquent\logs\main.log`): grep for `effective-backend=gpu` - the
   line looks like `sidecar: effective-backend=gpu`. If you instead see `sidecar-hygiene: Port 9379
-  is already in use by another process (PID ...)`, some other process (commonly a stale sidecar left
+is already in use by another process (PID ...)`, some other process (commonly a stale sidecar left
   running from a previous app session that didn't shut down cleanly - see `src/main/backend/
-  portGuard.ts`) is squatting on the port; the message names its PID so you can `taskkill /PID
-  <pid> /F` it, then relaunch.
+portGuard.ts`) is squatting on the port; the message names its PID so you can `taskkill /PID
+<pid> /F` it, then relaunch.
 - **Task Manager** → Performance → GPU (or the GPU column on the Processes tab): a `python.exe`
   process should be visible with non-trivial VRAM usage (roughly 2-3 GiB for the E2B model) and its
   GPU-Util spikes while you're actively dictating/generating - not before, since the engine only runs
@@ -479,8 +513,7 @@ needs to provide, exactly as described in steps 1-3 above.
       "Quick start: one-click launcher" above - it mirrors a UNC/WSL checkout to a local working
       copy automatically; skim it before your first run)
 - [ ] `winget install -e --id Python.Python.3.12` (or any 3.10+)
-- [ ] `winget install -e --id OpenJS.NodeJS.LTS` and confirm `node --version` is >= 20.19.0 (or
-      >= 22.12.0) - see "Node.js version requirement" above; `run-windows.bat` does this for you
+- [ ] `winget install -e --id OpenJS.NodeJS.LTS` and confirm `node --version` is >= 20.19.0 (or >= 22.12.0) - see "Node.js version requirement" above; `run-windows.bat` does this for you
       automatically, including upgrading an existing too-old Node in place
 - [ ] `pip install litert-lm`
 - [ ] `litert-lm import --from-huggingface-repo litert-community/gemma-4-12B-it-litert-lm gemma-4-12B-it.litertlm 12b` (or e2b/e4b)
@@ -490,5 +523,5 @@ needs to provide, exactly as described in steps 1-3 above.
       RTX 3060 Laptop GPU - see section 6); falls back to CPU on its own if GPU init fails, and the
       Settings toggle/status pill say so truthfully if it
       does
-- [ ] Model/VRAM is cleaned up on quit *and* on a hard crash - see "Crash-safe cleanup" above
+- [ ] Model/VRAM is cleaned up on quit _and_ on a hard crash - see "Crash-safe cleanup" above
 - [ ] `npm run build && npm run build:win` on a real Windows machine to produce an installer

@@ -1,5 +1,17 @@
 appId: com.windowseloquent.app
 productName: windows-eloquent
+# Electron-builder's default "asarIntegrity" feature embeds a SHA256 hash of
+# app.asar's header into the exe (via a resedit-injected INTEGRITY
+# resource), which Electron validates at startup - found the hard way: with
+# it enabled, the packaged windows-eloquent.exe exited instantly (exit code
+# 1, zero stdout/stderr, no Windows Error Reporting entry - a deliberate,
+# silent tamper-response exit, not a crash) on every launch, while the exact
+# same app.asar loaded fine via a plain `electron.exe <path-to-asar>`
+# (bypasses the embedded-hash check entirely) - isolating the fault to this
+# specific mechanism rather than the app's own code. Disabling it trades
+# away that anti-tampering check (irrelevant for this app: no auto-update,
+# no untrusted redistribution) for an app that actually starts.
+disableAsarIntegrity: true
 directories:
   buildResources: build
 files:
@@ -9,8 +21,24 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
-asarUnpack:
-  - resources/**
+  # Any stray *.log file sitting in the project root (e.g. a build's own
+  # captured output, redirected to a file by mistake) must never be picked
+  # up by this glob - packing a file that's still being actively written
+  # DURING the very build run that globs it corrupts the resulting asar's
+  # internal offsets (hit this for real: out/main/index.js ended up
+  # containing unrelated electron-builder log text instead of app code,
+  # because build-win.log was growing mid-pack). Excluded unconditionally,
+  # not just as a one-off cleanup.
+  - '!**/*.log'
+# serve_gpu.py ships OUTSIDE the asar entirely (not asarUnpack'd inside it) -
+# a spawned child process reads it straight off disk, and it has no reason
+# to live inside (or as an unpacked sibling of) the asar archive at all.
+# extraResources copies resources/** directly into process.resourcesPath
+# (the directory app.asar itself lives in) - see
+# src/main/backend/gpuWrapperPath.ts for how that's resolved at runtime.
+extraResources:
+  - from: resources
+    to: .
 win:
   executableName: windows-eloquent
   target:
@@ -25,6 +53,18 @@ nsis:
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
+  # Deletes %APPDATA%\windows-eloquent (settings.json, history, downloaded
+  # model, logs - app.getPath('userData'), which defaults to package.json's
+  # "name"/this file's productName - both are "windows-eloquent") on
+  # uninstall, no prompt.
+  deleteAppDataOnUninstall: true
+  # Prompts separately (see build/installer.nsh) to also remove
+  # %LOCALAPPDATA%\WindowsEloquent (the shared Python venv + litert-lm -
+  # several hundred MB, not something to delete silently since it's also
+  # reused by the dev launchers) - electron-builder's own
+  # deleteAppDataOnUninstall only knows about the one %APPDATA% userData
+  # path above, not this separate %LOCALAPPDATA% runtime directory.
+  include: build/installer.nsh
 portable:
   artifactName: ${name}-${version}-portable.${ext}
 mac:

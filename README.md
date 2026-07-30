@@ -20,8 +20,14 @@ hotkey - and its single `InferenceBackend` implementation is:
 
 ## Quick start
 
-One-click launchers that bootstrap everything (Node deps, a `litert-lm` Python venv, the Gemma E2B
-model) and then start the app, safe to re-run any time:
+**Just want to run the app, not develop it?** Grab the standalone installer/portable exe instead of
+cloning this repo - see [WINDOWS.md's "Standalone app"](WINDOWS.md#standalone-app-no-scripts)
+section. No scripts, no PowerShell, no manual Python setup - it bootstraps its own Python venv on
+first launch if needed.
+
+Everything below is the **developer** path - one-click launchers that bootstrap everything (Node
+deps, a `litert-lm` Python venv, the Gemma E2B model) and then start the app in dev mode, safe to
+re-run any time:
 
 - **WSL / Linux**: `./run.sh`
 - **Windows**: double-click `run-windows.bat` (it just runs `Start-Eloquent.ps1` with
@@ -201,7 +207,7 @@ Two UX refinements sit on top of the base `InferenceBackend` contract, both impl
   (`DEFAULT_PARTIAL_WINDOW_MS`, ~4s) of audio, overlapping the previous window by
   `DEFAULT_PARTIAL_WINDOW_OVERLAP_MS` (~0.8s) so a word cut off at the boundary gets a full second
   chance to be heard whole. `src/main/backend/transcriptStitcher.ts`'s `stitchTranscript` (pure,
-  unit-tested) then finds the repeated words at that overlap and dedupes them, so the *displayed*
+  unit-tested) then finds the repeated words at that overlap and dedupes them, so the _displayed_
   text is always the full transcript-so-far - text from earlier windows is "committed" (fixed) once
   a later window's start advances past it, exactly like streaming-ASR "confirm on agreement"
   designs. This keeps every tick's request cost roughly flat regardless of how long the dictation
@@ -246,7 +252,7 @@ Two UX refinements sit on top of the base `InferenceBackend` contract, both impl
 `LitertBackend` (`src/main/backend/litertBackend.ts`) implements `InferenceBackend` by talking to
 [Google's LiteRT-LM runtime](https://github.com/google-ai-edge/LiteRT-LM), run out-of-process as
 `litert-lm serve` - an OpenAI-compatible HTTP/SSE server. This is Option A from the
-runtime's own de-risking notes: `litert-lm serve` already *is* the "wrapper exposing HTTP" this
+runtime's own de-risking notes: `litert-lm serve` already _is_ the "wrapper exposing HTTP" this
 app needs, so the app just spawns/talks to it rather than re-implementing an FFI binding.
 
 ### Architecture
@@ -338,14 +344,14 @@ Verified against a real `litert-lm` 0.14.0 pip install and a real gemma-4-E2B mo
   ~1122-1541ms (avg ~1316ms, noticeably variable run to run); after a **text+audio** warmup it landed
   at a tight, consistent ~1063-1065ms every time. The audio warmup's win is less about the average
   (~250ms faster than text-only) and more about eliminating the variance/tail latency - text-only
-  warmup's first audio request was still doing *some* unpredictable extra work text+audio warmup
+  warmup's first audio request was still doing _some_ unpredictable extra work text+audio warmup
   reliably avoids.
 
 ### Session lifecycle mapping
 
 - `startSession` allocates an in-memory buffer for the session's PCM16 audio (no request to the
   sidecar yet), plus a small rolling "recent audio" buffer used for partial ticks (see below).
-- `pushAudio` appends to both buffers. Once ~1.5 seconds of *new* audio has accumulated (and the
+- `pushAudio` appends to both buffers. Once ~1.5 seconds of _new_ audio has accumulated (and the
   spiral-guard idle gap has elapsed since the last tick completed - see "Streaming partials" above),
   a partial tick fires: only a bounded trailing **window** of audio (`DEFAULT_PARTIAL_WINDOW_MS`,
   ~4s, not the whole session) is WAV-encoded, base64'd, and sent as one transcription
@@ -393,24 +399,24 @@ Verified against a real `litert-lm` 0.14.0 pip install and a real gemma-4-E2B mo
 All under `Settings.sidecar` (`src/shared/types.ts`), editable from the Settings screen's
 "Model"/"Sidecar" groups:
 
-| Setting | Meaning |
-|---|---|
-| `modelId` | `'gemma-4-e2b' \| 'gemma-4-e4b' \| 'gemma-4-12b'` - which model `ModelManager` downloads/uses. |
-| `sidecar.mode` | `'managed'` (app spawns the process) or `'external'` (you already have one running). |
+| Setting                  | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `modelId`                | `'gemma-4-e2b' \| 'gemma-4-e4b' \| 'gemma-4-12b'` - which model `ModelManager` downloads/uses.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `sidecar.mode`           | `'managed'` (app spawns the process) or `'external'` (you already have one running).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `sidecar.managedCommand` | Command template for managed mode. Default: `litert-lm serve --host 127.0.0.1 --port {port}` - `{port}` is substituted, then split into argv (quote-aware) and spawned directly (no shell). `{modelPath}` is also substituted if present, for custom wrapper scripts, but the real `litert-lm serve` CLI takes no model-selection flag at all (verified - see "What it assumes about the sidecar" above); this is a setting rather than a hardcoded invocation mainly so a non-default `litert-lm` install location or extra flags (e.g. `--cors-origin`) can be configured without a code change. |
-| `sidecar.externalUrl` | Base URL for external mode, e.g. `http://127.0.0.1:9379` (litert-lm's real default port). |
-| `sidecar.port` | Port used to build the local URL in managed mode, and substituted into `managedCommand`. |
+| `sidecar.externalUrl`    | Base URL for external mode, e.g. `http://127.0.0.1:9379` (litert-lm's real default port).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `sidecar.port`           | Port used to build the local URL in managed mode, and substituted into `managedCommand`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ### Model downloads
 
 `ModelManager` (`src/main/backend/modelManager.ts`) downloads from the **ungated**
 `litert-community/*` HuggingFace mirrors (Apache-2.0, no HF account/token needed):
 
-| Model | HF repo | Sidecar alias | ~Size |
-|---|---|---|---|
-| Gemma 4 E2B | `litert-community/gemma-4-E2B-it-litert-lm` | `e2b` | ~2.4 GiB |
-| Gemma 4 E4B | `litert-community/gemma-4-E4B-it-litert-lm` | `e4b` | ~3.4 GiB |
-| Gemma 4 12B | `litert-community/gemma-4-12B-it-litert-lm` | `12b` | ~6.1 GiB |
+| Model       | HF repo                                     | Sidecar alias | ~Size    |
+| ----------- | ------------------------------------------- | ------------- | -------- |
+| Gemma 4 E2B | `litert-community/gemma-4-E2B-it-litert-lm` | `e2b`         | ~2.4 GiB |
+| Gemma 4 E4B | `litert-community/gemma-4-E4B-it-litert-lm` | `e4b`         | ~3.4 GiB |
+| Gemma 4 12B | `litert-community/gemma-4-12B-it-litert-lm` | `12b`         | ~6.1 GiB |
 
 The actual `.litertlm` filename inside each repo is **resolved at download time** via
 `https://huggingface.co/api/models/<repo>` rather than hardcoded (repo maintainers can rename
@@ -472,7 +478,7 @@ the wire-protocol level. `./run.sh` automates everything below.
   instrumentation, not shipped). One flag was required: `--noSandbox` (electron-vite's own flag,
   passed through as `npm run dev -- --noSandbox`) - `node_modules/electron/dist/chrome-sandbox`
   isn't setuid-root in a plain `npm install`, fixing that needs `sudo chown root:root
-  chrome-sandbox && sudo chmod 4755 chrome-sandbox`, and passwordless `sudo` isn't a safe thing to
+chrome-sandbox && sudo chmod 4755 chrome-sandbox`, and passwordless `sudo` isn't a safe thing to
   assume. `run.sh` detects this (checks the binary's owner/permission bits) and only adds
   `--noSandbox` when the setuid helper actually isn't usable, so a properly-configured Linux
   desktop keeps the real sandbox.
@@ -491,7 +497,7 @@ the wire-protocol level. `./run.sh` automates everything below.
 **Microphone - the honest, unresolved part:** WSLg exposes a PulseAudio source named `RDPSource`
 (`pactl list sources short`). It's `SUSPENDED` at idle (normal PulseAudio behavior) but transitions
 to `RUNNING` and produces genuinely non-silent sample data when captured with `parecord` - so
-WSLg's OS-level audio-bridge plumbing is real, not a stub. What this *doesn't* prove: whether that
+WSLg's OS-level audio-bridge plumbing is real, not a stub. What this _doesn't_ prove: whether that
 picks up an actual physical microphone on the Windows host (muted/absent input devices would still
 pass the same `parecord` check with just noise-floor samples), and whether Chromium's
 `getUserMedia()` inside Electron binds to it cleanly - that specific path wasn't separately
@@ -593,11 +599,11 @@ the app the user was actually dictating into instead of the pill itself.
 **Paste injection** (`src/main/paste.ts`) is platform-specific and always copies to the clipboard
 first regardless of whether injection succeeds:
 
-| Platform | Mechanism |
-|---|---|
-| Windows | Spawns `powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')"` |
-| macOS | `osascript -e 'tell application "System Events" to keystroke "v" using command down'` |
-| Linux | `xdotool key --clearmodifiers ctrl+v`, only if `xdotool` is found on `PATH` (probed once, cached) |
+| Platform | Mechanism                                                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows  | Spawns `powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')"` |
+| macOS    | `osascript -e 'tell application "System Events" to keystroke "v" using command down'`                                                  |
+| Linux    | `xdotool key --clearmodifiers ctrl+v`, only if `xdotool` is found on `PATH` (probed once, cached)                                      |
 
 Because the user is still physically releasing the push-to-talk key when this runs, a naive paste
 could be received as e.g. Ctrl+Alt+V if that key were still logically "down" - mitigated with a
@@ -697,7 +703,7 @@ remove it if you don't hit that issue.
   so the Electron UI itself was never exercised here." That was true of the box this app was
   originally scaffolded on, but not of every environment it's since been run in - see
   [Running under WSLg](#running-under-wslg) above for a headed run (real window, real backend
-  reaching "ready", screenshots captured) on a WSLg-enabled WSL2 box. What's *still* unexercised
+  reaching "ready", screenshots captured) on a WSLg-enabled WSL2 box. What's _still_ unexercised
   anywhere so far: real end-to-end dictation through an actually-confirmed physical microphone (see
   the WSLg section's honest caveat about `RDPSource`), and `npm run build:win` packaging (needs a
   real Windows/electron-builder toolchain - see the last bullet below). Independent of all that,
@@ -711,7 +717,7 @@ remove it if you don't hit that issue.
   wire-format assumptions remain isolated in `litertWire.ts` specifically so future drift only
   needs one file to change.
 - `BackendController`'s hot-swap doesn't cancel an in-flight `startSession`/`cleanup`/etc. call
-  against the *old* backend when settings change mid-call - it only stops accepting new work on
+  against the _old_ backend when settings change mid-call - it only stops accepting new work on
   the old instance and stops the old sidecar process once the new one is ready. A dictation
   session started just before a backend switch should still be allowed to finish naturally.
 - Packaging (`npm run build:win`) was intentionally **not** run - only the `electron-builder.yml`

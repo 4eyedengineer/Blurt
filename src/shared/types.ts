@@ -57,7 +57,15 @@ export interface SidecarSettings {
    * is substituted with the absolute path to `resources/serve_gpu.py` (see
    * `resolveServeGpuScriptPath` in `main/backend/gpuWrapperPath.ts`) -
    * only meaningful for the `accelerator: 'gpu'` default template below,
-   * but available to any custom template that wants it.
+   * but available to any custom template that wants it. `{venvPython}`/
+   * `{litertLmCli}` are substituted with the absolute paths to the
+   * self-managed runtime venv's python interpreter / `litert-lm` CLI (see
+   * `main/runtime/venvResolver.ts`), resolved dynamically by
+   * `BackendController` on every rebuild - this is what makes the DEFAULT
+   * templates below deterministic without any launcher having to bake a
+   * machine-specific absolute path into settings.json (contrast with a
+   * hand-edited custom command, which can still just use a literal
+   * absolute path directly, same as before).
    */
   managedCommand: string
   /** Base URL for 'external' mode, e.g. "http://127.0.0.1:9379" (litert-lm's default port). */
@@ -74,23 +82,25 @@ export interface SidecarSettings {
  * the matching entry here, so what's shown in the (still freely editable)
  * command box always matches what's actually configured.
  *
- * NOTE on the `gpu` template's bare `python`: this constant is a
- * compile-time default, so it can't embed a machine-specific absolute venv
- * path - it relies on PATH resolution at spawn time. `Start-Eloquent.ps1`
- * rewrites this to the venv's absolute `python.exe` path when it seeds a
- * fresh `settings.json` (see its "seed initial settings" step) specifically
- * because bare `python` is nondeterministic (PATH order can pick a system
- * Python instead of the app's own venv - `resolveImportCli` in
- * `main/backend/sidecar.ts` hard-errors on exactly this case for the
- * `import` step rather than guessing). A user who flips the Settings UI's
- * Accelerator toggle to GPU without ever having gone through that seeding
- * (or who hand-edits this field back to bare `python`) will hit that same
- * hard error at the next model import until they point it at an absolute
- * interpreter path.
+ * Both templates reference `{venvPython}`/`{litertLmCli}` rather than a bare
+ * `python`/`litert-lm` - those placeholders are resolved at every
+ * `BackendController.rebuild()` to the self-managed runtime venv's actual
+ * absolute paths (see `main/runtime/venvResolver.ts`), so a fresh install
+ * (packaged app, no settings.json yet) is deterministic out of the box with
+ * no launcher/seeding step required: PATH order can never pick a system
+ * Python (or some other `litert-lm`) instead of the app's own venv, which
+ * was a real bug this design specifically avoids re-introducing (see
+ * `resolveImportCli` in `main/backend/sidecar.ts`, which still hard-errors
+ * on a bare, un-placeholder'd interpreter name for any *custom* command that
+ * doesn't use these placeholders). A user who hand-edits this field to a
+ * literal absolute path (as `Start-Eloquent.ps1`/`run.sh` still do when they
+ * seed a fresh settings.json of their own, for the dev path) continues to
+ * work exactly as before - `{venvPython}`/`{litertLmCli}` are additive, not
+ * a requirement.
  */
 export const MANAGED_COMMAND_BY_ACCELERATOR: Record<Accelerator, string> = {
-  cpu: 'litert-lm serve --host 127.0.0.1 --port {port}',
-  gpu: 'python "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
+  cpu: '"{litertLmCli}" serve --host 127.0.0.1 --port {port}',
+  gpu: '"{venvPython}" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
 }
 
 export const DEFAULT_SIDECAR_SETTINGS: SidecarSettings = {
