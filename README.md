@@ -5,14 +5,18 @@ Record speech, get a live streaming transcript, an automatic cleanup pass, and o
 (Key Points / Formal / Short / Long), all backed by an on-device model.
 
 The app is fully wired end-to-end - UI, IPC, audio capture, local history, settings, global
-hotkey - and ships with two `InferenceBackend` implementations, switchable from Settings:
+hotkey - and its single `InferenceBackend` implementation is:
 
-- **Mock** - replays canned demo transcripts and rule-based text ops. No download, no external
-  process, works everywhere. Good for demoing the UI without any setup.
 - **LiteRT-LM** - a real on-device Gemma model, run via Google's `litert-lm` runtime as a local
   HTTP sidecar process. Requires downloading a `.litertlm` model (Settings does this for you) and
   either a `litert-lm` binary the app can spawn, or a `litert-lm serve` instance you already have
   running. See [The real backend: LiteRT-LM](#the-real-backend-litert-lm) below.
+
+  (An earlier version of this app also shipped a **Mock** backend - canned demo transcripts and
+  rule-based text ops, no download/model required - as a way to demo the UI without any setup. It
+  was removed: it didn't do anything a real user of this app needed, since the point is dictating
+  against a real model. If you want to poke at the UI without a GPU/model, the fastest real path
+  is still the Gemma 4 E2B download - see Quick start below.)
 
 ## Quick start
 
@@ -80,9 +84,6 @@ src/
       pushToTalkController.ts    Wraps uiohook keydown/keyup into hold-start/hold-end/
                                  accidental-tap events
     backend/
-      mockBackend.ts           MockBackend: canned-script InferenceBackend, no real model
-      textOps.ts                cleanup / transform / voiceEdit text logic used by MockBackend
-      scripts.ts                 Canned "recognized speech" used to fake streaming transcripts
       litertWire.ts             Pure request builders + SSE/JSON response parsers + WAV encoder
                                  for the LiteRT-LM sidecar's wire protocol - see below
       litertBackend.ts          InferenceBackend backed by a LiteRT-LM sidecar (HTTP/SSE)
@@ -171,42 +172,23 @@ This interface only ever runs in the **main process**. The renderer never touche
 it goes through the typed IPC bridge in `src/preload/index.ts` (`window.api.dictation.*`), which
 is wired to the concrete backend instance in `src/main/ipc/backendIpc.ts`.
 
-Two implementations exist today, and the active one is chosen per `settings.backend`
-(`'mock' | 'litert'`), built and hot-swapped by `BackendController`
-(`src/main/backend/backendController.ts`) - see
-[The real backend: LiteRT-LM](#the-real-backend-litert-lm) below for the second one.
+`LitertBackend` (`src/main/backend/litertBackend.ts`) is the only implementation, built and
+(re)constructed by `BackendController` (`src/main/backend/backendController.ts`) whenever
+model/sidecar settings change - see [The real backend: LiteRT-LM](#the-real-backend-litert-lm)
+below. If it fails to start (bad sidecar command, model not downloaded, sidecar crashed past its
+restart budget, ...), `BackendController` swaps in `UnavailableBackend` (defined alongside it) -
+every method rejects with a clear message rather than silently degrading to fake output, so the
+status pill and any in-flight call both surface the failure honestly.
 
-`MockBackend` (`src/main/backend/mockBackend.ts`):
-
-- `startSession` picks one of a handful of canned "raw ASR" scripts (lowercase, unpunctuated,
-  sprinkled with "um"/"uh") and returns a session id.
-- `pushAudio` doesn't actually run recognition - it estimates how much audio-time has accumulated
-  (from PCM chunk length / sample rate) and, roughly every 380ms of "speech", reveals the next word of the canned script via
-  `onPartialTranscript`. This simulates a live streaming transcript without a real model.
-- `endSession` returns the accumulated transcript and tears down the session.
-- `cleanup` waits ~1s (simulating inference latency) then strips filler words (um/uh/erm/hmm),
-  fixes capitalization, and adds terminal punctuation. When called with an `operationId`, it reveals
-  the cleaned text word-by-word over that ~1s (via `onTextStreamProgress`) instead of popping in
-  all at once - the same streaming path `LitertBackend` uses, so the UX is demoable without a real
-  model.
-- `transform` waits ~600ms then applies a simple rule-based rewrite for `keypoints` / `formal` /
-  `short` / `long` - streamed the same way when given an `operationId`.
-- `voiceEdit` recognizes a small set of command patterns (`"replace X with Y"`,
-  `"delete the last sentence"`, `"delete the first sentence"`, `"add a period"`, `"uppercase
-  everything"`) and no-ops on anything else - also streamable via `operationId`.
-
-All of the above is in `src/main/backend/textOps.ts` and `scripts.ts` if you want to see exactly
-how the mock behaves.
-
-The audio pipeline is shared by both backends: the renderer captures 16kHz mono PCM16 via an
-AudioWorklet - no fallback path; if it's unavailable, capture fails visibly instead - and forwards
-raw chunks over IPC as `AudioChunkPayload` (`{ buffer, sampleRate }`), which `backendIpc.ts`
-converts to `Int16Array` before calling `pushAudio`.
+The renderer captures 16kHz mono PCM16 via an AudioWorklet - no fallback path; if it's unavailable,
+capture fails visibly instead - and forwards raw chunks over IPC as `AudioChunkPayload`
+(`{ buffer, sampleRate }`), which `backendIpc.ts` converts to `Int16Array` before calling
+`pushAudio`.
 
 ## Streaming partials + the cleanup diff-reveal
 
-Two UX refinements sit on top of the base `InferenceBackend` contract, both exercised identically
-by `MockBackend` and `LitertBackend` so they're demoable without a real model:
+Two UX refinements sit on top of the base `InferenceBackend` contract, both implemented by
+`LitertBackend`:
 
 - **Real-time streaming partials, over a bounded rolling window.** `LitertBackend.pushAudio` fires
   a partial re-transcription tick every `DEFAULT_PARTIAL_INTERVAL_MS` (1.5s) of new audio, and each
@@ -270,11 +252,11 @@ app needs, so the app just spawns/talks to it rather than re-implementing an FFI
 ### Architecture
 
 ```
-Settings (backend, modelId, sidecar.*)
+Settings (modelId, sidecar.*)
         │
         ▼
 BackendController (src/main/backend/backendController.ts)
-  - reads settings, decides Mock vs LiteRT-LM
+  - reads settings, builds/rebuilds LitertBackend (or UnavailableBackend on failure)
   - owns the current Sidecar + LitertBackend, hot-swaps on settings changes
   - exposes getStatus()/'status' events -> header status pill
         │
@@ -409,11 +391,10 @@ Verified against a real `litert-lm` 0.14.0 pip install and a real gemma-4-E2B mo
 ### Settings that control it
 
 All under `Settings.sidecar` (`src/shared/types.ts`), editable from the Settings screen's
-"Backend"/"Model"/"Sidecar" groups:
+"Model"/"Sidecar" groups:
 
 | Setting | Meaning |
 |---|---|
-| `backend` | `'mock'` or `'litert'` - which `InferenceBackend` to construct. |
 | `modelId` | `'gemma-4-e2b' \| 'gemma-4-e4b' \| 'gemma-4-12b'` - which model `ModelManager` downloads/uses. |
 | `sidecar.mode` | `'managed'` (app spawns the process) or `'external'` (you already have one running). |
 | `sidecar.managedCommand` | Command template for managed mode. Default: `litert-lm serve --host 127.0.0.1 --port {port}` - `{port}` is substituted, then split into argv (quote-aware) and spawned directly (no shell). `{modelPath}` is also substituted if present, for custom wrapper scripts, but the real `litert-lm serve` CLI takes no model-selection flag at all (verified - see "What it assumes about the sidecar" above); this is a setting rather than a hardcoded invocation mainly so a non-default `litert-lm` install location or extra flags (e.g. `--cors-origin`) can be configured without a code change. |
@@ -536,16 +517,16 @@ tokens/s numbers.
 2. **History** - every completed dictation is persisted as JSON in Electron's `userData` dir
    (`history.json`), searchable by text, deletable, and clickable to reopen (re-loads the raw,
    cleaned, and last-transformed text plus its original stats into the Dictate screen).
-3. **Settings** - backend selection (Mock / LiteRT-LM), model choice (Gemma 4 E2B / E4B / 12B)
-   with per-model download/install state and a progress bar, sidecar mode/command/URL/port fields
-   (only shown when LiteRT-LM is selected), offline/cloud toggle placeholder, custom vocabulary
-   list (add/remove, persisted in `settings.json`), auto-copy toggle, and a global hotkey field
-   that calls `globalShortcut.register` in the main process for real (default `Ctrl+Shift+Space`)
-   - triggering it brings the window to front and toggles recording from anywhere in Windows.
+3. **Settings** - model choice (Gemma 4 E2B / E4B / 12B) with per-model download/install state and
+   a progress bar, accelerator toggle (GPU/CPU), sidecar mode/command/URL/port fields, offline/cloud
+   toggle placeholder, custom vocabulary list (add/remove, persisted in `settings.json`), auto-copy
+   toggle, and a global hotkey field that calls `globalShortcut.register` in the main process for
+   real (default `Ctrl+Shift+Space`) - triggering it brings the window to front and toggles
+   recording from anywhere in Windows.
 4. **Session stats** - word count and words-per-minute, computed from the cleaned transcript and
    wall-clock recording duration, shown after every dictation.
 5. **Backend status pill** - a small pill at the bottom of the sidebar showing the active
-   backend's connectivity state (mock / starting / ready / error, with the error message as a
+   backend's connectivity state (starting / ready / error, with the error message as a
    tooltip), fed by `useBackendStatus` (`src/renderer/src/hooks/useBackendStatus.ts`).
 6. **Push-to-talk overlay** - hold a configurable key (default Right Alt) anywhere to pop up a
    small always-on-top toolbar and dictate; release to clean up, copy, and (optionally)
@@ -702,9 +683,9 @@ remove it if you don't hit that issue.
 ## Known deviations / notes
 
 - The AudioWorklet capture path requests a 16kHz `AudioContext`; some browsers/OS audio stacks
-  ignore the requested sample rate and use the device default instead. Since `MockBackend` only
-  uses chunk *duration* (not actual samples) to pace fake transcription, this doesn't affect the
-  demo, but a real backend should resample defensively rather than assume exactly 16kHz.
+  ignore the requested sample rate and use the device default instead - `LitertBackend` doesn't
+  assume exactly 16kHz, it tags the WAV it builds (`pcm16ToWavBase64` in `litertWire.ts`) with
+  whatever sample rate `startSession`/the audio pipeline actually reported.
 - `voiceEdit` has no dedicated screen mock-up in the original spec - it's exposed here as a small
   text-command input on the Dictate screen so the full `InferenceBackend` contract is actually
   exercised by the UI, not just implemented.

@@ -26,10 +26,6 @@
   background: var(--color-text-faint);
 }
 
-.status-pill--mock .status-pill__dot {
-  background: var(--color-text-faint);
-}
-
 .status-pill--starting .status-pill__dot {
   background: var(--color-primary);
   box-shadow: 0 0 6px var(--color-primary);

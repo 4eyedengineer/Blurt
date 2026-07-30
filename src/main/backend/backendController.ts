@@ -4,9 +4,8 @@ import type { Accelerator } from '../../shared/types'
 import { getCatalogEntry } from '../../shared/models'
 import type { SettingsStore } from '../store/settingsStore'
 import type { ModelManager } from './modelManager'
-import { MockBackend } from './mockBackend'
 import { LitertBackend } from './litertBackend'
-import { getManagedCommandBinary, Sidecar } from './sidecar'
+import { resolveImportCli, Sidecar } from './sidecar'
 import { resolveServeGpuScriptPath } from './gpuWrapperPath'
 import { log } from '../log'
 
@@ -52,14 +51,14 @@ class UnavailableBackend implements InferenceBackend {
 /**
  * Builds the active InferenceBackend from current settings, and rebuilds it
  * (disposing the old sidecar/backend cleanly) whenever the backend-relevant
- * settings change. This is the one place that knows about both
- * `MockBackend` and `LitertBackend` - everything else (IPC, renderer) only
- * ever sees the current `InferenceBackend` via `getBackend()`.
+ * settings change. This is the one place that knows about `LitertBackend` -
+ * everything else (IPC, renderer) only ever sees the current
+ * `InferenceBackend` via `getBackend()`.
  */
 export class BackendController extends EventEmitter {
   private backend: InferenceBackend
   private sidecar: Sidecar | null = null
-  private status: BackendStatus = { state: 'mock' }
+  private status: BackendStatus = { state: 'starting' }
   /** Bumped on every rebuild so a slow-to-start previous attempt can detect it's stale and back off. */
   private generation = 0
   /** See `BackendStatus.effectiveAccelerator`. Reset at the start of every rebuild. */
@@ -72,7 +71,10 @@ export class BackendController extends EventEmitter {
     private readonly debugAudioDir?: string
   ) {
     super()
-    this.backend = new MockBackend()
+    // Replaced immediately by the first rebuild() (see main/index.ts, which
+    // calls it right after construction) - this is just a safe placeholder
+    // so `backend` is never left `undefined` in between.
+    this.backend = new UnavailableBackend('Backend not yet initialized - call rebuild() first.')
   }
 
   getBackend(): InferenceBackend {
@@ -86,21 +88,13 @@ export class BackendController extends EventEmitter {
   /** Call once at startup, and again after any settings change that could affect the backend. */
   async rebuild(): Promise<void> {
     const generation = ++this.generation
-    log.info(`backend: rebuild start (backend=${this.settingsStore.get().backend})`)
+    log.info('backend: rebuild start')
     const settings = this.settingsStore.get()
     const previousSidecar = this.sidecar
     // Nothing's been observed about a not-yet-started (or freshly rebuilt)
     // sidecar's real backend yet - a stale value from a previous attempt
     // must not linger and be shown as if it were current.
     this.effectiveAccelerator = undefined
-
-    if (settings.backend === 'mock') {
-      this.sidecar = null
-      this.setBackend(new MockBackend())
-      this.setStatus({ state: 'mock' })
-      previousSidecar?.stop()
-      return
-    }
 
     this.setStatus({ state: 'starting' })
 
@@ -120,8 +114,11 @@ export class BackendController extends EventEmitter {
       // guard here too in case the import step failed previously, or the
       // sandboxed LITERT_LM_DIR was cleared independently of the download.
       if (settings.sidecar.mode === 'managed' && !this.modelManager.isImported(settings.modelId)) {
-        const cliBinary = getManagedCommandBinary(settings.sidecar.managedCommand)
-        await this.modelManager.importModel(settings.modelId, cliBinary)
+        const cliResolution = resolveImportCli(settings.sidecar.managedCommand)
+        if (!cliResolution.ok) {
+          throw new Error(`Cannot import model: ${cliResolution.error}`)
+        }
+        await this.modelManager.importModel(settings.modelId, cliResolution.cli)
         if (generation !== this.generation) return
       }
 

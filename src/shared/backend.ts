@@ -2,11 +2,12 @@
  * The InferenceBackend contract.
  *
  * This is the single seam between the app and whatever is actually doing
- * speech recognition / text generation. Today it is satisfied by
- * `MockBackend` (src/main/backend/mockBackend.ts). Later it will be
- * satisfied by a real backend that spawns Google LiteRT-LM running Gemma
- * as a subprocess sidecar, talks to it over stdio/IPC, and adapts its
- * output to this same shape.
+ * speech recognition / text generation. Satisfied by `LitertBackend`
+ * (src/main/backend/litertBackend.ts), which spawns Google LiteRT-LM running
+ * Gemma as a subprocess sidecar, talks to it over HTTP, and adapts its output
+ * to this same shape - or by `UnavailableBackend`
+ * (src/main/backend/backendController.ts) as an error-state placeholder
+ * whenever that failed to start.
  *
  * The interface only ever runs in the Electron *main* process. The
  * renderer never talks to it directly - it goes through the typed IPC
@@ -61,12 +62,11 @@ export interface StartSessionOptions {
  */
 /**
  * Backend connectivity state, surfaced to the renderer as a small status
- * pill in the app header. `MockBackend` is always 'mock'/'ready'-ish (it
- * never fails); the LiteRT-LM sidecar backend moves through
+ * pill in the app header. The LiteRT-LM sidecar backend moves through
  * starting -> ready, or -> error if the sidecar process fails to spawn,
  * never answers, or dies mid-session.
  */
-export type BackendStatusState = 'mock' | 'starting' | 'ready' | 'error'
+export type BackendStatusState = 'starting' | 'ready' | 'error'
 
 export interface BackendStatus {
   state: BackendStatusState
@@ -108,8 +108,8 @@ export interface BackendError {
 /**
  * Optional extra surface a backend may implement alongside
  * `InferenceBackend` to report out-of-band session errors. Checked with an
- * `in` guard at the IPC wiring layer (`src/main/ipc/backendIpc.ts`) so
- * `MockBackend` isn't required to implement it.
+ * `in` guard at the IPC wiring layer (`src/main/ipc/backendIpc.ts`) so not
+ * every `InferenceBackend` implementation is required to implement it.
  */
 export interface BackendErrorSource {
   onError(listener: (sessionId: string, error: BackendError) => void): () => void

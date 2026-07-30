@@ -4,9 +4,6 @@ export type ModelId = 'gemma-4-e2b' | 'gemma-4-e4b' | 'gemma-4-12b'
 
 export type BackendMode = 'offline' | 'cloud'
 
-/** Which InferenceBackend implementation the app should construct. */
-export type BackendKind = 'mock' | 'litert'
-
 /**
  * How the LiteRT-LM sidecar HTTP server is obtained:
  * - 'managed': the app spawns it itself, using `managedCommand` as a
@@ -71,7 +68,26 @@ export interface SidecarSettings {
   accelerator: Accelerator
 }
 
-/** Default `managedCommand` for each accelerator - see `Accelerator`'s doc comment. Selecting an accelerator in Settings rewrites `managedCommand` to the matching entry here, so what's shown in the (still freely editable) command box always matches what's actually configured. */
+/**
+ * Default `managedCommand` for each accelerator - see `Accelerator`'s doc
+ * comment. Selecting an accelerator in Settings rewrites `managedCommand` to
+ * the matching entry here, so what's shown in the (still freely editable)
+ * command box always matches what's actually configured.
+ *
+ * NOTE on the `gpu` template's bare `python`: this constant is a
+ * compile-time default, so it can't embed a machine-specific absolute venv
+ * path - it relies on PATH resolution at spawn time. `Start-Eloquent.ps1`
+ * rewrites this to the venv's absolute `python.exe` path when it seeds a
+ * fresh `settings.json` (see its "seed initial settings" step) specifically
+ * because bare `python` is nondeterministic (PATH order can pick a system
+ * Python instead of the app's own venv - `resolveImportCli` in
+ * `main/backend/sidecar.ts` hard-errors on exactly this case for the
+ * `import` step rather than guessing). A user who flips the Settings UI's
+ * Accelerator toggle to GPU without ever having gone through that seeding
+ * (or who hand-edits this field back to bare `python`) will hit that same
+ * hard error at the next model import until they point it at an absolute
+ * interpreter path.
+ */
 export const MANAGED_COMMAND_BY_ACCELERATOR: Record<Accelerator, string> = {
   cpu: 'litert-lm serve --host 127.0.0.1 --port {port}',
   gpu: 'python "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
@@ -141,8 +157,6 @@ export interface PasteOutcome {
 export interface Settings {
   modelId: ModelId
   mode: BackendMode
-  /** Which InferenceBackend to actually construct: mocked demo data, or the real LiteRT-LM sidecar. */
-  backend: BackendKind
   sidecar: SidecarSettings
   autoCopyOnCleanup: boolean
   customVocabulary: string[]
@@ -154,7 +168,6 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   modelId: 'gemma-4-e2b',
   mode: 'offline',
-  backend: 'mock',
   sidecar: DEFAULT_SIDECAR_SETTINGS,
   autoCopyOnCleanup: false,
   customVocabulary: [],

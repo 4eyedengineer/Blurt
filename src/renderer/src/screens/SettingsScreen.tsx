@@ -189,36 +189,6 @@ export function SettingsScreen(): React.JSX.Element {
       <h1>Settings</h1>
 
       <div className="settings-screen__group">
-        <h2>Backend</h2>
-        <div className="settings-screen__radio-group">
-          <label className="settings-screen__radio">
-            <input
-              type="radio"
-              name="backend"
-              checked={settings.backend === 'mock'}
-              onChange={() => void update({ backend: 'mock' })}
-            />
-            <div>
-              <span className="settings-screen__radio-title">Mock</span>
-              <span className="settings-screen__radio-desc">Demo data, no download.</span>
-            </div>
-          </label>
-          <label className="settings-screen__radio">
-            <input
-              type="radio"
-              name="backend"
-              checked={settings.backend === 'litert'}
-              onChange={() => void update({ backend: 'litert' })}
-            />
-            <div>
-              <span className="settings-screen__radio-title">LiteRT-LM</span>
-              <span className="settings-screen__radio-desc">Real on-device model.</span>
-            </div>
-          </label>
-        </div>
-      </div>
-
-      <div className="settings-screen__group">
         <h2>Model</h2>
         <div className="settings-screen__radio-group">
           {MODEL_OPTIONS.map((opt) => (
@@ -233,123 +203,114 @@ export function SettingsScreen(): React.JSX.Element {
         </div>
       </div>
 
-      {settings.backend === 'litert' && (
-        <>
-          {settings.sidecar.mode === 'managed' && (
-            <div className="settings-screen__group">
-              <label className="settings-screen__toggle-row">
-                <span>
-                  <strong>
-                    {acceleratorLabel(
-                      settings.sidecar.accelerator,
-                      backendStatus.effectiveAccelerator
-                    )}
-                  </strong>
-                  {settings.sidecar.accelerator === 'gpu' &&
-                    backendStatus.effectiveAccelerator === 'cpu' && (
-                      <p className="settings-screen__hint">
-                        GPU init failed on this machine - running on CPU instead.
-                      </p>
-                    )}
-                </span>
-                <Toggle
-                  checked={settings.sidecar.accelerator === 'gpu'}
-                  onChange={(checked) => setAccelerator(checked ? 'gpu' : 'cpu')}
-                  label="Accelerator"
-                />
-              </label>
-            </div>
-          )}
-
-          <details className="settings-screen__group settings-screen__advanced">
-            <summary>Advanced</summary>
-
-            <div className="settings-screen__radio-group">
-              {(['managed', 'external'] as SidecarMode[]).map((mode) => (
-                <label key={mode} className="settings-screen__radio">
-                  <input
-                    type="radio"
-                    name="sidecar-mode"
-                    checked={settings.sidecar.mode === mode}
-                    onChange={() => void update({ sidecar: { ...settings.sidecar, mode } })}
-                  />
-                  <div>
-                    <span className="settings-screen__radio-title">
-                      {mode === 'managed'
-                        ? 'Managed (app spawns it)'
-                        : 'External (already running)'}
-                    </span>
-                  </div>
-                </label>
-              ))}
-            </div>
-
-            {settings.sidecar.mode === 'managed' ? (
-              <>
-                <label className="settings-screen__field-label" htmlFor="sidecar-command">
-                  Command template
-                </label>
-                <div className="settings-screen__inline-input">
-                  <input
-                    id="sidecar-command"
-                    type="text"
-                    value={settings.sidecar.managedCommand}
-                    onChange={(e) =>
-                      void update({
-                        sidecar: { ...settings.sidecar, managedCommand: e.target.value }
-                      })
-                    }
-                  />
-                </div>
-                <label className="settings-screen__field-label" htmlFor="sidecar-port">
-                  Port
-                </label>
-                <div className="settings-screen__inline-input">
-                  <input
-                    id="sidecar-port"
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={settings.sidecar.port}
-                    onChange={(e) =>
-                      void update({
-                        sidecar: { ...settings.sidecar, port: Number(e.target.value) || 9379 }
-                      })
-                    }
-                  />
-                </div>
-              </>
-            ) : (
-              <>
-                <label className="settings-screen__field-label" htmlFor="sidecar-url">
-                  Server URL
-                </label>
-                <div className="settings-screen__inline-input">
-                  <input
-                    id="sidecar-url"
-                    type="text"
-                    placeholder="http://127.0.0.1:9379"
-                    value={settings.sidecar.externalUrl}
-                    onChange={(e) =>
-                      void update({
-                        sidecar: { ...settings.sidecar, externalUrl: e.target.value }
-                      })
-                    }
-                  />
-                </div>
-              </>
-            )}
-
-            <button
-              type="button"
-              className="settings-screen__logs-link"
-              onClick={() => void window.api.log.openFolder()}
-            >
-              Open logs folder
-            </button>
-          </details>
-        </>
+      {settings.sidecar.mode === 'managed' && (
+        <div className="settings-screen__group">
+          <label className="settings-screen__toggle-row">
+            <span>
+              <strong>
+                {acceleratorLabel(settings.sidecar.accelerator, backendStatus.effectiveAccelerator)}
+              </strong>
+              {settings.sidecar.accelerator === 'gpu' &&
+                backendStatus.effectiveAccelerator === 'cpu' && (
+                  <p className="settings-screen__hint">
+                    GPU init failed on this machine - running on CPU instead.
+                  </p>
+                )}
+            </span>
+            <Toggle
+              checked={settings.sidecar.accelerator === 'gpu'}
+              onChange={(checked) => setAccelerator(checked ? 'gpu' : 'cpu')}
+              label="Accelerator"
+            />
+          </label>
+        </div>
       )}
+
+      <details className="settings-screen__group settings-screen__advanced">
+        <summary>Advanced</summary>
+
+        <div className="settings-screen__radio-group">
+          {(['managed', 'external'] as SidecarMode[]).map((mode) => (
+            <label key={mode} className="settings-screen__radio">
+              <input
+                type="radio"
+                name="sidecar-mode"
+                checked={settings.sidecar.mode === mode}
+                onChange={() => void update({ sidecar: { ...settings.sidecar, mode } })}
+              />
+              <div>
+                <span className="settings-screen__radio-title">
+                  {mode === 'managed' ? 'Managed (app spawns it)' : 'External (already running)'}
+                </span>
+              </div>
+            </label>
+          ))}
+        </div>
+
+        {settings.sidecar.mode === 'managed' ? (
+          <>
+            <label className="settings-screen__field-label" htmlFor="sidecar-command">
+              Command template
+            </label>
+            <div className="settings-screen__inline-input">
+              <input
+                id="sidecar-command"
+                type="text"
+                value={settings.sidecar.managedCommand}
+                onChange={(e) =>
+                  void update({
+                    sidecar: { ...settings.sidecar, managedCommand: e.target.value }
+                  })
+                }
+              />
+            </div>
+            <label className="settings-screen__field-label" htmlFor="sidecar-port">
+              Port
+            </label>
+            <div className="settings-screen__inline-input">
+              <input
+                id="sidecar-port"
+                type="number"
+                min={1}
+                max={65535}
+                value={settings.sidecar.port}
+                onChange={(e) =>
+                  void update({
+                    sidecar: { ...settings.sidecar, port: Number(e.target.value) || 9379 }
+                  })
+                }
+              />
+            </div>
+          </>
+        ) : (
+          <>
+            <label className="settings-screen__field-label" htmlFor="sidecar-url">
+              Server URL
+            </label>
+            <div className="settings-screen__inline-input">
+              <input
+                id="sidecar-url"
+                type="text"
+                placeholder="http://127.0.0.1:9379"
+                value={settings.sidecar.externalUrl}
+                onChange={(e) =>
+                  void update({
+                    sidecar: { ...settings.sidecar, externalUrl: e.target.value }
+                  })
+                }
+              />
+            </div>
+          </>
+        )}
+
+        <button
+          type="button"
+          className="settings-screen__logs-link"
+          onClick={() => void window.api.log.openFolder()}
+        >
+          Open logs folder
+        </button>
+      </details>
 
       <div className="settings-screen__group">
         <h2>Processing</h2>

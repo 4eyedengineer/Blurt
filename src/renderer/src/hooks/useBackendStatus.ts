@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { BackendStatus } from '@shared/backend'
 
-const INITIAL_STATUS: BackendStatus = { state: 'mock' }
+const INITIAL_STATUS: BackendStatus = { state: 'starting' }
 
 /** Tracks the main process's current InferenceBackend connectivity state, for the header status pill. */
 export function useBackendStatus(): BackendStatus {

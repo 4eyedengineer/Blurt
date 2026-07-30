@@ -28,11 +28,11 @@ const historyStore = new HistoryStore(app.getPath('userData'))
 const settingsStore = new SettingsStore(app.getPath('userData'))
 const modelManager = new ModelManager(app.getPath('userData'))
 
-// The single seam that knows about both MockBackend and LitertBackend -
-// which concrete InferenceBackend is active is driven entirely by
-// settingsStore ('backend' / 'modelId' / 'sidecar' fields) and can change
-// at runtime (see registerSettingsIpc's onBackendSettingsChanged hook).
-// Everything downstream (IPC, renderer) only depends on the
+// The single seam that knows about LitertBackend (and its UnavailableBackend
+// error-state placeholder) - which concrete InferenceBackend is active is
+// driven entirely by settingsStore ('modelId' / 'sidecar' fields) and can
+// change at runtime (see registerSettingsIpc's onBackendSettingsChanged
+// hook). Everything downstream (IPC, renderer) only depends on the
 // InferenceBackend interface via backendController.getBackend().
 const backendController = new BackendController(
   settingsStore,

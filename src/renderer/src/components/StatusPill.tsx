@@ -2,7 +2,6 @@ import type { BackendStatus } from '@shared/backend'
 import './StatusPill.css'
 
 const LABELS: Record<BackendStatus['state'], string> = {
-  mock: 'Mock',
   starting: 'Starting…',
   ready: 'Ready',
   error: 'Error'

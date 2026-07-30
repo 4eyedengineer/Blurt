@@ -18,6 +18,7 @@ import {
   type ModelDownloadProgress,
   type ModelDownloadState
 } from '../../shared/models'
+import type { ImportCliResolution } from './sidecar'
 import { log } from '../log'
 
 interface HfSibling {
@@ -123,6 +124,7 @@ export class ModelManager extends EventEmitter {
     }
     const alias = getCatalogEntry(modelId).alias
 
+    log.info(`model: import spawn '${cliBinary} import ${filePath} ${alias}'`)
     await new Promise<void>((resolve, reject) => {
       const child = spawn(cliBinary, ['import', filePath, alias], {
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -209,14 +211,28 @@ export class ModelManager extends EventEmitter {
    * download, then registers the result with `litert-lm import` (see class
    * doc) so it's immediately usable by a managed sidecar - the Settings
    * screen's single "Download" button covers both steps, surfaced as the
-   * 'downloading' -> 'importing' -> 'done' progression. `cliBinary` is the
-   * `litert-lm` executable to run for the import step (defaults to the
-   * bare command, resolved via PATH) - pass the same binary your managed
-   * sidecar command uses so the import lands somewhere `serve` will find it.
-   * Progress is emitted via 'progress'.
+   * 'downloading' -> 'importing' -> 'done' progression. `cliResolution` is
+   * the outcome of `resolveImportCli` against the current managed sidecar
+   * command - if it failed to resolve a usable CLI, the download is not
+   * attempted at all (fails immediately with that same error, surfaced via
+   * 'progress' as state 'error') rather than downloading ~GBs just to fail
+   * at the import step. Progress is emitted via 'progress'.
    */
-  async download(modelId: ModelId, cliBinary = 'litert-lm'): Promise<void> {
+  async download(modelId: ModelId, cliResolution: ImportCliResolution): Promise<void> {
     if (this.getProgress(modelId).state === 'downloading') return
+
+    if (!cliResolution.ok) {
+      log.error(`model: download aborted for ${modelId}: ${cliResolution.error}`)
+      this.setProgress({
+        modelId,
+        state: 'error',
+        receivedBytes: 0,
+        totalBytes: null,
+        error: cliResolution.error
+      })
+      return
+    }
+    const cliBinary = cliResolution.cli
 
     log.info(`model: download start ${modelId}`)
     this.setProgress({ modelId, state: 'resolving', receivedBytes: 0, totalBytes: null })

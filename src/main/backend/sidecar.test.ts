@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { parseEffectiveBackendLine, renderManagedCommand, tokenizeCommand } from './sidecar'
+import {
+  parseEffectiveBackendLine,
+  renderManagedCommand,
+  resolveImportCli,
+  tokenizeCommand
+} from './sidecar'
 
 describe('parseEffectiveBackendLine', () => {
   it('parses the gpu marker', () => {
@@ -104,5 +109,82 @@ describe('renderManagedCommand', () => {
       '--port',
       '8765'
     ])
+  })
+})
+
+describe('resolveImportCli', () => {
+  it('resolves a bare litert-lm CLI as-is (the cpu accelerator template)', () => {
+    expect(resolveImportCli('litert-lm serve --host 127.0.0.1 --port {port}')).toEqual({
+      ok: true,
+      cli: 'litert-lm'
+    })
+  })
+
+  it('resolves an absolute litert-lm CLI path (with .exe) as-is', () => {
+    expect(
+      resolveImportCli('C:\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe serve --port {port}')
+    ).toEqual({ ok: true, cli: 'C:\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe' })
+  })
+
+  it('resolves the sibling litert-lm.exe from an absolute win32 venv python path', () => {
+    const result = resolveImportCli(
+      'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
+    )
+    expect(result).toEqual({
+      ok: true,
+      cli: 'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+    })
+  })
+
+  it('resolves the sibling bin/litert-lm from an absolute posix venv python path', () => {
+    const result = resolveImportCli(
+      '/home/user/.cache/windows-eloquent/venv/bin/python3.11 "{wrapperPath}" serve --port {port}'
+    )
+    expect(result).toEqual({
+      ok: true,
+      cli: '/home/user/.cache/windows-eloquent/venv/bin/litert-lm'
+    })
+  })
+
+  it('resolves correctly from a full wrapper-style managed command template, ignoring the extra args', () => {
+    const result = resolveImportCli(
+      '"C:\\WindowsEloquent\\venv\\Scripts\\python.exe" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
+    )
+    expect(result).toEqual({
+      ok: true,
+      cli: 'C:\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+    })
+  })
+
+  it('hard-errors on a bare "python" with no directory component (the actual bug: PATH resolution is nondeterministic)', () => {
+    const result = resolveImportCli(
+      'python "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
+    )
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.error).toMatch(/bare Python interpreter/i)
+    expect(result.ok === false && result.error).toMatch(/nondeterministic/i)
+  })
+
+  it('hard-errors on an unrecognized binary', () => {
+    const result = resolveImportCli('my-custom-server.exe --port {port}')
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.error).toMatch(/Can't derive the litert-lm import CLI/i)
+  })
+
+  it('hard-errors on an empty managed command', () => {
+    const result = resolveImportCli('   ')
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.error).toMatch(/empty/i)
+  })
+
+  it('hard-errors on a python interpreter path with no venv Scripts/bin ancestor', () => {
+    const result = resolveImportCli('python.exe serve --port {port}')
+    // Bare name (no directory) still hits the "bare interpreter" branch, not this one -
+    // exercise the "has one directory level but not two" case explicitly instead.
+    expect(result.ok).toBe(false)
+
+    const shallow = resolveImportCli('C:\\python.exe serve --port {port}')
+    expect(shallow.ok).toBe(false)
+    expect(shallow.ok === false && shallow.error).toMatch(/venv's Scripts\/bin directory/i)
   })
 })

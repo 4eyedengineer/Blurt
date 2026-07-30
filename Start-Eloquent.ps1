@@ -442,7 +442,17 @@ if ($NeedsNpmInstall) {
         Write-Host "ERROR: npm install failed (exit code $LASTEXITCODE)." -ForegroundColor Red
         exit 1
     }
-    Set-Content -Path $NodeVersionStampFile -Value $NodeMajorMinor -Encoding UTF8 -NoNewline
+    # Plain `Set-Content -Encoding UTF8` on Windows PowerShell 5.1 writes a
+    # UTF-8 BOM by default - harmless for this particular file (nothing
+    # parses it as JSON) but written BOM-less anyway, consistently with
+    # every other file this script writes, via .NET's UTF8Encoding($false)
+    # (the `$false` means "no BOM" - see the settings.json write below for
+    # where a BOM here actually broke things).
+    [System.IO.File]::WriteAllText(
+        $NodeVersionStampFile,
+        $NodeMajorMinor,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
     Write-Ok "Stamped $NodeVersionStampFile with Node $NodeMajorMinor"
 }
 
@@ -486,16 +496,25 @@ if (Test-Path $SettingsFile) {
     Write-Ok "(Measured on an RTX 3060 Laptop GPU: GPU decode is ~3.4x faster than CPU once warm -"
     Write-Ok " see WINDOWS.md 'GPU acceleration'. If GPU init fails on this machine, the sidecar"
     Write-Ok " wrapper falls back to CPU on its own after the first request - no action needed.)"
+    # This venv's own absolute python.exe path - NOT bare "python". Bare
+    # "python" is resolved via PATH at spawn time, which is nondeterministic
+    # (a machine can have a system-wide Python earlier on PATH than this
+    # venv's Scripts dir - that's a real bug that was hit: the app ran
+    # `python import ...` against a system Python 3.12 install instead of
+    # this venv, and failed). The app's own import-CLI resolver
+    # (main/backend/sidecar.ts's resolveImportCli) requires an absolute
+    # interpreter path for exactly this reason - it hard-errors rather than
+    # guessing on a bare interpreter name.
+    $VenvPythonExe = Join-Path $VenvDir 'Scripts\python.exe'
     $settings = @{
         modelId = $ModelId
         mode = 'offline'
-        backend = 'litert'
         sidecar = @{
             mode = 'managed'
             # {wrapperPath} is substituted at spawn time by the app itself
             # (main/backend/gpuWrapperPath.ts) with the absolute path to
             # resources/serve_gpu.py - leave the placeholder literal here.
-            managedCommand = 'python "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
+            managedCommand = '"' + $VenvPythonExe + '" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
             externalUrl = 'http://127.0.0.1:9379'
             port = 9379
             accelerator = 'gpu'
@@ -505,7 +524,18 @@ if (Test-Path $SettingsFile) {
         hotkey = 'Ctrl+Shift+Space'
     }
     New-Item -ItemType Directory -Force -Path $AppUserDataDir | Out-Null
-    $settings | ConvertTo-Json -Depth 5 | Set-Content -Path $SettingsFile -Encoding UTF8
+    # Plain `ConvertTo-Json | Set-Content -Encoding UTF8` on Windows
+    # PowerShell 5.1 writes a UTF-8 BOM by default - jsonStore.ts (the app's
+    # JSON reader) now tolerates a BOM defensively, but this was the actual
+    # root cause of a real bug (JSON.parse choked on the BOM, silently
+    # falling back to defaults=mock backend every boot) - write BOM-less via
+    # .NET directly instead of relying on that tolerance.
+    $settingsJson = $settings | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText(
+        $SettingsFile,
+        $settingsJson,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
 }
 
 # --- 7. Launch -------------------------------------------------------------

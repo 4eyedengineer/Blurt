@@ -1,7 +1,7 @@
 # Running Windows Eloquent on Windows (RTX 3060)
 
 This is the practical setup guide for running the real LiteRT-LM backend on a Windows host, as
-opposed to the Mock backend or Linux/WSL2 dev/test loop. It assumes you've already read the
+opposed to the Linux/WSL2 dev/test loop. It assumes you've already read the
 "[The real backend: LiteRT-LM](README.md#the-real-backend-litert-lm)" section of the README - this
 doc is the Windows-specific how-to; the README has the wire-protocol/architecture background.
 
@@ -222,6 +222,18 @@ Open the app's **Settings** tab and set:
     template. The toggle's own label always tells the truth about what's actually running - if GPU
     was requested but the sidecar's engine fell back to CPU, it reads "CPU (GPU unavailable)"
     instead of just staying on "GPU" (see `BackendStatus.effectiveAccelerator`).
+
+    **Important**: that bare `python` in the template above is only safe if this venv's `Scripts`
+    directory is genuinely first on `PATH` when the app runs. `Start-Eloquent.ps1` seeds a fresh
+    `settings.json` with this venv's **absolute** `python.exe` path instead of bare `python`
+    specifically to avoid that assumption (a real bug: PATH order picked a system-wide Python
+    install instead of this venv, and the model-import step failed against it). If you flip this
+    toggle by hand (or hand-edit the command field) back to bare `python`, the sidecar itself may
+    still start fine via PATH, but the app's import-CLI resolver
+    (`resolveImportCli` in `src/main/backend/sidecar.ts`) will refuse to guess and hard-errors
+    with a clear message the next time it needs to `litert-lm import` a model - point the command
+    at this venv's absolute `python.exe` (`%LOCALAPPDATA%\WindowsEloquent\venv\Scripts\python.exe`)
+    to fix it.
   - **External**: point at a `litert-lm serve` instance you started yourself (e.g. in its own
     terminal window with `--verbose` for visible logs while debugging). Useful if you want the
     server logs visible separately from the Electron app, or you're running the server on a

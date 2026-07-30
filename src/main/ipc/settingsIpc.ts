@@ -5,9 +5,7 @@ import type { SettingsStore } from '../store/settingsStore'
 
 function backendRelevantFieldsChanged(prev: Settings, next: Settings): boolean {
   return (
-    prev.backend !== next.backend ||
-    prev.modelId !== next.modelId ||
-    JSON.stringify(prev.sidecar) !== JSON.stringify(next.sidecar)
+    prev.modelId !== next.modelId || JSON.stringify(prev.sidecar) !== JSON.stringify(next.sidecar)
   )
 }
 

@@ -36,9 +36,113 @@ export interface SidecarOptions {
   readyPollIntervalMs?: number
 }
 
-/** Extracts the executable name/path from a managed-command template (its first whitespace/quote-aware token), e.g. for shelling out to the same `litert-lm` binary for `import` as `serve` uses. */
-export function getManagedCommandBinary(template: string): string {
-  return tokenizeCommand(template)[0] ?? 'litert-lm'
+/** Outcome of `resolveImportCli` - see its doc comment. */
+export type ImportCliResolution = { ok: true; cli: string } | { ok: false; error: string }
+
+/** Matches `litert-lm`/`litert-lm.exe` by name only (any path prefix). */
+const LITERT_LM_CLI_NAME = /^litert-lm(\.exe)?$/i
+/** Matches a Python interpreter by name only: `python`, `python3`, `python3.11`, `python.exe`, `python3.exe`, ... */
+const PYTHON_INTERPRETER_NAME = /^python(?:\d+(?:\.\d+)?)?(\.exe)?$/i
+
+/** The path-separator-agnostic last component of a path (works for both `/` and `\`-separated paths, regardless of host OS). */
+function baseName(path: string): string {
+  const normalized = path.replace(/\\/g, '/')
+  const idx = normalized.lastIndexOf('/')
+  return idx === -1 ? path : path.slice(idx + 1)
+}
+
+/** Whether `path` looks like a Windows-style path (backslashes, a drive letter, or a `.exe` suffix) as opposed to a posix one - used only to decide which sibling-CLI convention (`Scripts\...exe` vs `bin/...`) to apply, never to decide *whether* to resolve at all. */
+function looksWindowsStyle(path: string): boolean {
+  return path.includes('\\') || /^[A-Za-z]:/.test(path) || path.toLowerCase().endsWith('.exe')
+}
+
+/**
+ * Resolves the `litert-lm` CLI to run the `import` step with, from a managed
+ * sidecar command *template* (`SidecarSettings.managedCommand`) - NOT
+ * necessarily the same binary used to `serve`. The two can differ: the GPU
+ * accelerator's default template is `python "{wrapperPath}" serve ...` (see
+ * `MANAGED_COMMAND_BY_ACCELERATOR` in shared/types.ts), whose first token is
+ * a *Python interpreter*, not `litert-lm` - naively using it for `import`
+ * produces `python import <file> <alias>`, which is nonsense (this was a
+ * real bug: it spawned the system Python instead of `litert-lm`, then failed
+ * with a confusing "can't open file 'import'" error).
+ *
+ * Deterministic, no probing/PATH-searching/trying-multiple-candidates:
+ *  - if the first token's *name* already looks like the `litert-lm` CLI
+ *    (`litert-lm` or `litert-lm.exe`, any path or none) - use it as-is.
+ *  - if the first token's name looks like a Python interpreter AND it has an
+ *    actual directory component (i.e. it's a real path into a venv, not a
+ *    bare name PATH would resolve unpredictably) - the CLI is the sibling
+ *    console-script installed into the same venv: `<venvRoot>\Scripts\
+ *    litert-lm.exe` for a Windows-style interpreter path, or `<venvRoot>/bin/
+ *    litert-lm` for a posix-style one, where `<venvRoot>` is the interpreter
+ *    path's grandparent directory (`.../venv/Scripts/python.exe` ->
+ *    `.../venv`, `.../venv/bin/python` -> `.../venv`).
+ *  - anything else - including a *bare* Python interpreter name with no
+ *    directory component (exactly the nondeterministic case above: which
+ *    `python` PATH picks depends on machine/session state, not something
+ *    this app controls) - is a hard error: no import command can be safely
+ *    derived, so the caller must surface this as a failed rebuild/download
+ *    rather than guessing.
+ */
+export function resolveImportCli(managedCommand: string): ImportCliResolution {
+  const binary = tokenizeCommand(managedCommand)[0]
+  if (!binary) {
+    return {
+      ok: false,
+      error: `Managed sidecar command is empty - nothing to derive the litert-lm import CLI from: "${managedCommand}"`
+    }
+  }
+
+  const name = baseName(binary)
+
+  if (LITERT_LM_CLI_NAME.test(name)) {
+    return { ok: true, cli: binary }
+  }
+
+  if (PYTHON_INTERPRETER_NAME.test(name)) {
+    if (binary === name) {
+      // A bare interpreter name, e.g. "python" - no directory to derive a
+      // venv root from. This is the exact bug: PATH resolution for this is
+      // nondeterministic (may pick a system Python instead of the app's
+      // venv) - see this function's doc comment.
+      return {
+        ok: false,
+        error:
+          `Managed command's binary is a bare Python interpreter ("${binary}") with no path - ` +
+          `resolving it via PATH is nondeterministic and may not be the app's own venv. ` +
+          `Use the venv's absolute python path in the managed command instead ` +
+          `(looked for: an absolute path ending in python/python.exe, so a sibling litert-lm CLI could be derived).`
+      }
+    }
+
+    const normalized = binary.replace(/\\/g, '/')
+    const lastSlash = normalized.lastIndexOf('/')
+    const secondLastSlash = normalized.lastIndexOf('/', lastSlash - 1)
+    if (secondLastSlash === -1) {
+      return {
+        ok: false,
+        error:
+          `Managed command's Python interpreter path ("${binary}") isn't inside a venv's ` +
+          `Scripts/bin directory - can't derive a sibling litert-lm CLI from it ` +
+          `(looked for at least two directory levels above the interpreter, e.g. ".../venv/Scripts/python.exe" or ".../venv/bin/python").`
+      }
+    }
+
+    const venvRoot = normalized.slice(0, secondLastSlash)
+    const cli = looksWindowsStyle(binary)
+      ? `${venvRoot.replace(/\//g, '\\')}\\Scripts\\litert-lm.exe`
+      : `${venvRoot}/bin/litert-lm`
+    return { ok: true, cli }
+  }
+
+  return {
+    ok: false,
+    error:
+      `Can't derive the litert-lm import CLI from managed command's binary "${binary}" ` +
+      `(looked for: a name matching litert-lm/litert-lm.exe, or a python/python3/python.exe ` +
+      `interpreter path inside a venv's Scripts/bin directory).`
+  }
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 60_000
