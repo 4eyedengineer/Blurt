@@ -61,6 +61,21 @@ interface LitertSession {
   msSinceLastPartial: number
   hasAudio: boolean
   partialInFlight: boolean
+  /**
+   * The in-flight mid-recording partial tick's own streaming promise, if
+   * any - `endSession` awaits and reuses this directly instead of
+   * discarding it and paying for a second full re-transcription of the same
+   * audio when nothing changed since it started (see `endSession`'s doc
+   * comment). Cleared whenever no tick is in flight.
+   */
+  partialPromise: Promise<string> | null
+  /**
+   * `chunks.length` at the moment the in-flight tick above took its
+   * buffer snapshot - lets `endSession` detect whether *more* audio arrived
+   * after that snapshot (in which case the tick's result is stale and a
+   * fresh final re-transcription covering the full buffer is still needed).
+   */
+  partialSnapshotChunkCount: number
   lastTranscript: string
   ended: boolean
   vocabulary?: string[]
@@ -157,6 +172,8 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       msSinceLastPartial: 0,
       hasAudio: false,
       partialInFlight: false,
+      partialPromise: null,
+      partialSnapshotChunkCount: 0,
       lastTranscript: '',
       ended: false,
       vocabulary: opts?.vocabulary ?? this.options.getVocabulary?.(),
@@ -237,8 +254,18 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     return text
   }
 
+  /**
+   * Fires one mid-recording re-transcription tick. Streams its result out
+   * over the same 'partial' event throughout - including after `endSession`
+   * has already been called for this session (no `!session.ended` guard
+   * here, deliberately: see `endSession`'s doc comment for why silencing
+   * this stream used to create a long visible "frozen" gap right when
+   * recording stops, which is exactly when the user is watching most
+   * closely).
+   */
   private async runPartialTranscription(session: LitertSession): Promise<void> {
     session.partialInFlight = true
+    session.partialSnapshotChunkCount = session.chunks.length
     try {
       const samples = concatInt16(session.chunks)
       if (this.isSilentBuffer(samples)) {
@@ -253,16 +280,17 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
         )
         return
       }
-      await this.transcribeSamplesStreaming(session, samples, (text) => {
-        if (!session.ended) {
-          session.lastTranscript = text
-          this.emitter.emit('partial', session.id, text)
-        }
+      const promise = this.transcribeSamplesStreaming(session, samples, (text) => {
+        session.lastTranscript = text
+        this.emitter.emit('partial', session.id, text)
       })
+      session.partialPromise = promise
+      await promise
     } catch (err) {
       this.emitError(session.id, err)
     } finally {
       session.partialInFlight = false
+      session.partialPromise = null
     }
   }
 
@@ -302,10 +330,43 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
 
     if (!session.hasAudio) return session.lastTranscript
 
-    // Serialize with any still-in-flight partial rather than racing it -
-    // both would hit the same sidecar session-less endpoint concurrently
-    // otherwise. Bounded by requestTimeoutMs so a stuck partial can't hang
-    // endSession forever.
+    // If a mid-recording partial tick is still in flight *and* no new audio
+    // arrived after it took its buffer snapshot, its result covers exactly
+    // the same audio a fresh final re-transcription would - so just await
+    // and reuse it instead of discarding it and paying for a second full
+    // round trip over the identical buffer.
+    //
+    // This used to always discard the in-flight tick (via a `!session.ended`
+    // guard on its stream callback, removed) and unconditionally re-run a
+    // brand new transcription from scratch after it finished. For a short
+    // recording - very common, e.g. anyone's first "does this work?" test
+    // utterance - there is *often exactly one* tick in flight when the user
+    // stops, so 100% of the streaming window got thrown away: the renderer
+    // saw nothing at all from the moment recording stopped until this
+    // second, fully-redundant request completed, doubling real-world
+    // latency and making the live-streaming feature look completely broken
+    // even though the sidecar and the throttled-emit plumbing were working
+    // correctly the whole time (see litertBackend's onPartialTranscript
+    // proof harnesses referenced in the fix's commit).
+    if (
+      session.partialInFlight &&
+      session.partialPromise &&
+      session.partialSnapshotChunkCount === session.chunks.length
+    ) {
+      void this.maybeDumpDebugWav(concatInt16(session.chunks), session.sampleRate)
+      try {
+        return await session.partialPromise
+      } catch (err) {
+        this.emitError(sessionId, err)
+        return session.lastTranscript
+      }
+    }
+
+    // Otherwise (no tick in flight, or more audio arrived after the last
+    // tick's snapshot so its result is stale) - serialize with any
+    // still-in-flight partial rather than racing it, both would hit the
+    // same sidecar session-less endpoint concurrently otherwise. Bounded by
+    // requestTimeoutMs so a stuck partial can't hang endSession forever.
     const deadline = Date.now() + this.requestTimeoutMs
     while (session.partialInFlight && Date.now() < deadline) {
       await sleep(50)
