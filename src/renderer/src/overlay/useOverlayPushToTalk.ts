@@ -64,7 +64,7 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
       unsubscribePartialRef.current()
       sessionIdRef.current = null
       void window.api.dictation.endSession(sessionId).catch(() => {})
-      dispatch({ type: 'mic-error', message: `Microphone capture failed: ${reason}` })
+      dispatch({ type: 'failed', message: `Microphone capture failed: ${reason}` })
       clearSettleTimer()
       settleTimerRef.current = setTimeout(() => {
         dispatch({ type: 'reset' })
@@ -73,26 +73,46 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
     }
   }, [audio, clearSettleTimer])
 
+  /**
+   * Always reports back to the main process - success or failure. The pill
+   * is only ever hidden in response to this (see overlayController.ts), so
+   * a silent early return or a thrown transcription error would leave it
+   * floating on screen forever with no way to dismiss it.
+   */
   const stop = useCallback(async () => {
     const sessionId = sessionIdRef.current
     sessionIdRef.current = null
     unsubscribePartialRef.current()
     audio.stop()
-    if (!sessionId) return
+    if (!sessionId) {
+      window.api.overlay.sendResult({
+        rawTranscript: '',
+        cleanedText: '',
+        error: 'No dictation session was running when the key was released.'
+      })
+      return
+    }
 
     dispatch({ type: 'stop' })
-    const raw = await window.api.dictation.endSession(sessionId)
-    const cleaned = await window.api.dictation.cleanup(raw)
-    dispatch({ type: 'cleaned', raw, text: cleaned })
-    // Clipboard copy/paste fire immediately on cleanup completion - only the
-    // visual diff-reveal (settled via the timer below) lingers.
-    window.api.overlay.sendResult({ rawTranscript: raw, cleanedText: cleaned })
+    try {
+      const raw = await window.api.dictation.endSession(sessionId)
+      const cleaned = await window.api.dictation.cleanup(raw)
+      dispatch({ type: 'cleaned', raw, text: cleaned })
+      // Clipboard copy/paste fire immediately on cleanup completion - only the
+      // visual diff-reveal (settled via the timer below) lingers.
+      window.api.overlay.sendResult({ rawTranscript: raw, cleanedText: cleaned })
 
-    clearSettleTimer()
-    settleTimerRef.current = setTimeout(() => {
-      dispatch({ type: 'settle' })
-      settleTimerRef.current = null
-    }, REVEAL_SETTLE_MS)
+      clearSettleTimer()
+      settleTimerRef.current = setTimeout(() => {
+        dispatch({ type: 'settle' })
+        settleTimerRef.current = null
+      }, REVEAL_SETTLE_MS)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      window.api.log.rendererError(`overlay dictation failed: ${reason}`)
+      dispatch({ type: 'failed', message: reason })
+      window.api.overlay.sendResult({ rawTranscript: '', cleanedText: '', error: reason })
+    }
   }, [audio, clearSettleTimer])
 
   const cancel = useCallback(() => {

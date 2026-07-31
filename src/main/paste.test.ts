@@ -59,10 +59,10 @@ describe('paste command builders', () => {
 })
 
 describe('copyAndPaste', () => {
-  it('always writes to the clipboard, even with an empty string', async () => {
+  it('leaves the clipboard untouched when there is nothing to copy', async () => {
     const clipboard = fakeClipboard()
     const outcome = await copyAndPaste(clipboard, '', true)
-    expect(clipboard.written).toEqual([''])
+    expect(clipboard.written).toEqual([])
     expect(outcome).toEqual({ copied: false, pasted: false, message: 'Nothing to copy.' })
   })
 

@@ -32,6 +32,19 @@ let overlayWindow: BrowserWindow | null = null
 let pushToTalkController: PushToTalkController | null = null
 let backendController: BackendController | null = null
 
+/**
+ * Exactly one instance may run at a time. Two instances is not a cosmetic
+ * problem here: both bind the same sidecar port and share one
+ * `userData/sidecar.pid`, so each one's pre-spawn port hygiene (see
+ * `portGuard.ts`) recognizes the *other's* freshly-spawned child as "our
+ * stale sidecar" and kills it - observed on a real host as an endless
+ * mutual-kill loop that flashed several "Error" states in the status pill
+ * before one side finally won. A second launch just focuses the first
+ * window instead.
+ */
+const isPrimaryInstance = app.requestSingleInstanceLock()
+if (!isPrimaryInstance) app.quit()
+
 initLog(app.getPath('userData'), is.dev)
 const historyStore = new HistoryStore(app.getPath('userData'))
 const settingsStore = new SettingsStore(app.getPath('userData'))
@@ -131,7 +144,18 @@ function toggleRecordingFromHotkey(): void {
 }
 
 app.whenReady().then(async () => {
+  // A second instance already called app.quit() above - don't build an app
+  // (or a second sidecar) on the way out.
+  if (!isPrimaryInstance) return
+
   electronApp.setAppUserModelId('com.windowseloquent.app')
+
+  app.on('second-instance', () => {
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  })
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -167,6 +191,15 @@ app.whenReady().then(async () => {
   const controller = backendController
 
   mainWindow = createWindow()
+  // The push-to-talk overlay below is a real BrowserWindow that stays open
+  // (just hidden) for the app's whole lifetime, so 'window-all-closed' can
+  // never fire on its own - closing the main window used to leave the
+  // process running with the overlay pill still floating on screen. Closing
+  // the main window is the user closing the app, so quit explicitly.
+  mainWindow.on('closed', () => {
+    mainWindow = null
+    if (process.platform !== 'darwin') app.quit()
+  })
 
   overlayWindow = createOverlayWindow()
   log.info('overlay: window created')

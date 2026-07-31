@@ -5,14 +5,27 @@ import type { SettingsStore } from './store/settingsStore'
 import type { PushToTalkController } from './pushToTalk/pushToTalkController'
 import { showOverlayWindow } from './overlay'
 import { copyAndPaste } from './paste'
+import { log } from './log'
 
 const AUTO_HIDE_MS = 2500
 /** Accidental taps get a much shorter grace period since there's nothing for the user to read. */
 const CANCEL_HIDE_MS = 350
+/**
+ * Hard ceiling on how long the pill may stay up after the key is released
+ * while waiting for the renderer's result. The renderer always reports back
+ * (success *or* failure - see useOverlayPushToTalk.stop's finally), so this
+ * only fires if a transcription/cleanup request never settles at all (a hung
+ * sidecar). Without it, that hangs the pill on screen permanently with no
+ * way to dismiss it - which is exactly what a user hit. Logged when it
+ * fires, since it always means something upstream never finished.
+ */
+const STUCK_HIDE_MS = 30_000
 
 interface OverlayResultPayload {
   rawTranscript: string
   cleanedText: string
+  /** Set instead of the text fields when the overlay's own dictation session failed - see useOverlayPushToTalk.stop. */
+  error?: string
 }
 
 /**
@@ -65,6 +78,7 @@ export class OverlayController {
 
   private handleHoldEnd(): void {
     this.send(IPC.overlay.pttStop)
+    this.scheduleHide(STUCK_HIDE_MS)
   }
 
   private handleAccidentalTap(): void {
@@ -73,6 +87,11 @@ export class OverlayController {
   }
 
   private async handleResult(payload: OverlayResultPayload): Promise<void> {
+    if (payload.error) {
+      log.error(`overlay: dictation failed: ${payload.error}`)
+      this.scheduleHide(AUTO_HIDE_MS)
+      return
+    }
     const { autoPaste } = this.settingsStore.get().pushToTalk
     const outcome = await copyAndPaste(clipboard, payload.cleanedText, autoPaste)
     this.send(IPC.overlay.pasteStatus, outcome)
@@ -82,6 +101,9 @@ export class OverlayController {
   private scheduleHide(ms: number): void {
     this.clearHideTimer()
     this.hideTimer = setTimeout(() => {
+      if (ms === STUCK_HIDE_MS) {
+        log.warn(`overlay: no result ${STUCK_HIDE_MS}ms after key release - hiding anyway`)
+      }
       this.getOverlayWindow()?.hide()
       this.send(IPC.overlay.reset)
       this.hideTimer = null

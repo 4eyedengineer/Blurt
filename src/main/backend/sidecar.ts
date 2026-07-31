@@ -74,11 +74,10 @@ function looksWindowsStyle(path: string): boolean {
  * Whether a *rendered* managed command's argv references the
  * `serve_gpu.py` wrapper - the deterministic rule (see `waitUntilReady`)
  * for whether the `ELOQUENT_EFFECTIVE_BACKEND` marker is required before
- * reporting ready. A plain `litert-lm serve` (the 'cpu' accelerator's
- * default template) never prints that marker, so requiring it there would
- * mean *never* becoming ready - checked against the actual argv the child
- * is about to be spawned with, not the accelerator setting, so a custom
- * managed command is handled correctly either way.
+ * reporting ready. A plain `litert-lm serve` never prints
+ * that marker, so requiring it there would mean *never* becoming ready -
+ * checked against the actual argv the child is about to be spawned with, so
+ * a custom managed command is handled correctly either way.
  */
 export function commandReferencesServeGpuWrapper(args: string[]): boolean {
   return args.some((arg) => baseName(arg).toLowerCase() === 'serve_gpu.py')
@@ -87,9 +86,9 @@ export function commandReferencesServeGpuWrapper(args: string[]): boolean {
 /**
  * Resolves the `litert-lm` CLI to run the `import` step with, from a managed
  * sidecar command *template* (`SidecarSettings.managedCommand`) - NOT
- * necessarily the same binary used to `serve`. The two can differ: the GPU
- * accelerator's default template is `python "{wrapperPath}" serve ...` (see
- * `MANAGED_COMMAND_BY_ACCELERATOR` in shared/types.ts), whose first token is
+ * necessarily the same binary used to `serve`. The two can differ: the
+ * default template is `python "{wrapperPath}" serve ...` (see
+ * `DEFAULT_MANAGED_COMMAND` in shared/types.ts), whose first token is
  * a *Python interpreter*, not `litert-lm` - naively using it for `import`
  * produces `python import <file> <alias>`, which is nonsense (this was a
  * real bug: it spawned the system Python instead of `litert-lm`, then failed
@@ -175,8 +174,8 @@ export function resolveImportCli(managedCommand: string): ImportCliResolution {
 
 /**
  * Like `resolveImportCli`, but aware of the `{venvPython}`/`{litertLmCli}`
- * placeholders the DEFAULT managed command templates now use (see
- * `MANAGED_COMMAND_BY_ACCELERATOR` in shared/types.ts) - those are template
+ * placeholders the default managed command now uses (see
+ * `DEFAULT_MANAGED_COMMAND` in shared/types.ts) - those are template
  * placeholders, not real paths, so the name-sniffing in `resolveImportCli`
  * can't (and shouldn't have to) understand them. If the *template* (not the
  * rendered argv) references either placeholder, the import CLI is just
@@ -323,6 +322,8 @@ export class Sidecar extends EventEmitter {
   private lastOutputLines: string[] = []
   /** Human-readable detail about the most recent unexpected spawn failure/exit, if any - surfaced by `waitUntilReady` when it notices the child is gone. */
   private lastExitDetail: string | undefined
+  /** Whether this sidecar has ever reached 'ready'. Gates auto-restart - see `scheduleRestart`. */
+  private hasBeenReady = false
 
   constructor(private readonly options: SidecarOptions) {
     super()
@@ -490,6 +491,16 @@ export class Sidecar extends EventEmitter {
 
   private scheduleRestart(): void {
     if (this.options.mode !== 'managed') return
+    // Auto-restart is for a sidecar that *was* working and then crashed. A
+    // child that dies before ever becoming ready is a configuration/
+    // environment failure - retrying it just repeats the same failure while
+    // racing `waitUntilReady` (which is already watching the same child and
+    // will reject with the exit detail), producing a burst of contradictory
+    // 'error'/'starting' states in the UI for one underlying problem.
+    if (!this.hasBeenReady) {
+      log.warn('sidecar: child died before ever becoming ready - not auto-restarting')
+      return
+    }
     if (this.restarts >= MAX_RESTARTS) {
       log.error(`sidecar: exceeded ${MAX_RESTARTS} restart attempts, giving up`)
       this.setState(
@@ -649,6 +660,7 @@ export class Sidecar extends EventEmitter {
 
   private setState(state: SidecarState, message?: string): void {
     this.state = state
+    if (state === 'ready') this.hasBeenReady = true
     this.emit('state', state, message)
   }
 }

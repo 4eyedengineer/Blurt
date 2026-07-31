@@ -7,8 +7,34 @@ import {
   renderManagedCommand,
   resolveImportCli,
   resolveManagedCliForImport,
+  Sidecar,
   tokenizeCommand
 } from './sidecar'
+
+describe('Sidecar auto-restart', () => {
+  it('does not restart a child that dies before ever becoming ready', async () => {
+    const states: string[] = []
+    const sidecar = new Sidecar({
+      mode: 'managed',
+      externalUrl: '',
+      // A binary that cannot exist - spawn fails immediately, which is the
+      // "never became ready" case.
+      managedCommand: 'eloquent-no-such-binary-8f3a serve --port {port}',
+      modelPath: '',
+      port: 65535,
+      readyTimeoutMs: 400,
+      readyPollIntervalMs: 50
+    })
+    sidecar.on('state', (state: string) => states.push(state))
+
+    await expect(sidecar.start()).rejects.toThrow(/exited before becoming ready/)
+    // 'restarting' would mean the retry storm is back: several contradictory
+    // error/starting flashes in the UI for one underlying failure.
+    expect(states).not.toContain('restarting')
+    expect(states.filter((s) => s === 'error')).toHaveLength(1)
+    sidecar.stop()
+  })
+})
 
 describe('parseEffectiveBackendLine', () => {
   it('parses the gpu marker', () => {
@@ -168,7 +194,7 @@ describe('renderManagedCommand', () => {
 })
 
 describe('commandReferencesServeGpuWrapper', () => {
-  it('is true for the GPU accelerator template rendered with a Windows-style wrapper path', () => {
+  it('is true for the default template rendered with a Windows-style wrapper path', () => {
     const args = renderManagedCommand('python "{wrapperPath}" serve --port {port}', {
       modelPath: '',
       port: 9379,
@@ -186,7 +212,7 @@ describe('commandReferencesServeGpuWrapper', () => {
     expect(commandReferencesServeGpuWrapper(args)).toBe(true)
   })
 
-  it('is false for the plain cpu accelerator template (no wrapper at all)', () => {
+  it('is false for a plain `litert-lm serve` command (no wrapper at all)', () => {
     const args = renderManagedCommand('litert-lm serve --host 127.0.0.1 --port {port}', {
       modelPath: '',
       port: 9379
@@ -204,7 +230,7 @@ describe('commandReferencesServeGpuWrapper', () => {
 })
 
 describe('resolveImportCli', () => {
-  it('resolves a bare litert-lm CLI as-is (the cpu accelerator template)', () => {
+  it('resolves a bare litert-lm CLI as-is', () => {
     expect(resolveImportCli('litert-lm serve --host 127.0.0.1 --port {port}')).toEqual({
       ok: true,
       cli: 'litert-lm'

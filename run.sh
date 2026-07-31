@@ -147,7 +147,7 @@ else
   "backend": "litert",
   "sidecar": {
     "mode": "managed",
-    "managedCommand": "litert-lm serve --host 127.0.0.1 --port {port}",
+    "managedCommand": "$VENV_DIR/bin/python $REPO_ROOT/resources/serve_gpu.py serve --host 127.0.0.1 --port {port} --verbose",
     "externalUrl": "http://127.0.0.1:9379",
     "port": 9379
   },

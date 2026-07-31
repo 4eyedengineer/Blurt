@@ -15,30 +15,21 @@ export type BackendMode = 'offline' | 'cloud'
 export type SidecarMode = 'managed' | 'external'
 
 /**
- * Which hardware backend a *managed* sidecar should run the model on.
+ * Which hardware backend a managed sidecar's engine actually ended up
+ * running on. Observed, never requested: there is no accelerator setting -
+ * the managed sidecar always runs `resources/serve_gpu.py`, which puts the
+ * model on the GPU (WebGPU/Dawn -> Direct3D 12 on Windows) when the machine
+ * supports it and drops to CPU by itself when it doesn't, then reports which
+ * one happened on stdout (see that file's "Effective-backend reporting"
+ * doc comment, `parseEffectiveBackendLine` in main/backend/sidecar.ts, and
+ * `BackendStatus.effectiveAccelerator`). The UI only ever displays this
+ * observed value.
  *
- * The pip `litert-lm serve` CLI has no `--backend` flag at all - it always
- * loads the model on whatever its `.litertlm` metadata's
- * `backend_constraint` says (which is "cpu" for every section of the
- * Gemma-4 `litert-community` files, including their optional audio/vision
- * adapters). Empirically, though, the *main* prefill/decode graph runs
- * fine on GPU (WebGPU/Dawn -> Direct3D 12 on Windows) despite that
- * constraint - measured on an RTX 3060 Laptop GPU against the Gemma-4 E2B
- * model: ~3.4x faster decode throughput than CPU (~54 vs ~16 tok/s, warm),
- * at the cost of slower prefill and a one-time ~15s GPU shader-compile on
- * the very first run (see resources/serve_gpu.py's doc comment for exact
- * numbers/commands and WINDOWS.md's GPU section for the full writeup).
- *
- * 'gpu' only changes anything for `mode: 'managed'` - it's implemented by
- * swapping in `resources/serve_gpu.py` (a thin wrapper around the same
- * `litert-lm serve`, see that file) as the managed command instead of the
- * bare `litert-lm` binary; 'external' mode is whatever backend the user's
- * already-running server happens to be using, out of this app's control.
- * If GPU initialization genuinely fails (no compatible adapter), the
- * wrapper falls back to CPU on its own for the rest of that process's
- * lifetime - see serve_gpu.py's fallback logic - so picking 'gpu' here is
- * safe even on a machine that turns out not to support it, just slower to
- * report ready on its very first request.
+ * Measured on an RTX 3060 Laptop GPU against the Gemma-4 E2B model: ~3.4x
+ * faster decode throughput than CPU (~54 vs ~16 tok/s, warm), at the cost of
+ * slower prefill and a one-time ~15s GPU shader-compile on the very first
+ * run (see resources/serve_gpu.py for exact numbers and WINDOWS.md's GPU
+ * section for the full writeup).
  */
 export type Accelerator = 'cpu' | 'gpu'
 
@@ -55,14 +46,13 @@ export interface SidecarSettings {
    * `litert-lm import`-ed as, see `ModelCatalogEntry.alias`), which is why
    * the default template below doesn't reference `{modelPath}`. `{wrapperPath}`
    * is substituted with the absolute path to `resources/serve_gpu.py` (see
-   * `resolveServeGpuScriptPath` in `main/backend/gpuWrapperPath.ts`) -
-   * only meaningful for the `accelerator: 'gpu'` default template below,
-   * but available to any custom template that wants it. `{venvPython}`/
+   * `resolveServeGpuScriptPath` in `main/backend/gpuWrapperPath.ts`).
+   * `{venvPython}`/
    * `{litertLmCli}` are substituted with the absolute paths to the
    * self-managed runtime venv's python interpreter / `litert-lm` CLI (see
    * `main/runtime/venvResolver.ts`), resolved dynamically by
    * `BackendController` on every rebuild - this is what makes the DEFAULT
-   * templates below deterministic without any launcher having to bake a
+   * template below deterministic without any launcher having to bake a
    * machine-specific absolute path into settings.json (contrast with a
    * hand-edited custom command, which can still just use a literal
    * absolute path directly, same as before).
@@ -72,18 +62,17 @@ export interface SidecarSettings {
   externalUrl: string
   /** Port used to build the local URL in 'managed' mode, and substituted into managedCommand. */
   port: number
-  /** See `Accelerator`'s doc comment. Only affects `mode: 'managed'`. */
-  accelerator: Accelerator
 }
 
 /**
- * Default `managedCommand` for each accelerator - see `Accelerator`'s doc
- * comment. Selecting an accelerator in Settings rewrites `managedCommand` to
- * the matching entry here, so what's shown in the (still freely editable)
- * command box always matches what's actually configured.
+ * The one default `managedCommand`: `resources/serve_gpu.py`, which uses the
+ * GPU when the machine has a usable one and falls back to CPU by itself when
+ * it doesn't, reporting which happened (see `Accelerator`'s doc comment).
+ * There is deliberately no CPU variant to choose between - the wrapper
+ * already picks the best available backend and tells the truth about it.
  *
- * Both templates reference `{venvPython}`/`{litertLmCli}` rather than a bare
- * `python`/`litert-lm` - those placeholders are resolved at every
+ * It references `{venvPython}`/`{wrapperPath}` rather than a bare
+ * `python` - those placeholders are resolved at every
  * `BackendController.rebuild()` to the self-managed runtime venv's actual
  * absolute paths (see `main/runtime/venvResolver.ts`), so a fresh install
  * (packaged app, no settings.json yet) is deterministic out of the box with
@@ -98,17 +87,14 @@ export interface SidecarSettings {
  * work exactly as before - `{venvPython}`/`{litertLmCli}` are additive, not
  * a requirement.
  */
-export const MANAGED_COMMAND_BY_ACCELERATOR: Record<Accelerator, string> = {
-  cpu: '"{litertLmCli}" serve --host 127.0.0.1 --port {port}',
-  gpu: '"{venvPython}" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
-}
+export const DEFAULT_MANAGED_COMMAND =
+  '"{venvPython}" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
 
 export const DEFAULT_SIDECAR_SETTINGS: SidecarSettings = {
   mode: 'managed',
-  managedCommand: MANAGED_COMMAND_BY_ACCELERATOR.gpu,
+  managedCommand: DEFAULT_MANAGED_COMMAND,
   externalUrl: 'http://127.0.0.1:9379',
-  port: 9379,
-  accelerator: 'gpu'
+  port: 9379
 }
 
 /**

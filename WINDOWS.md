@@ -245,15 +245,13 @@ Open the app's **Settings** tab and set:
     correctly (see `BackendController.rebuild()`). Only change this field if your `litert-lm`
     binary/Python venv isn't on `PATH` (put an absolute path instead) or you need non-default flags
     like `--cors-origin`.
-  - **GPU acceleration toggle** (Settings, right above this field): on by default for a fresh
-    install (see "GPU acceleration" below) - it swaps the command
-    template to `python "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose`, i.e. the
-    same `litert-lm serve` but launched through `resources/serve_gpu.py`, a small wrapper that
-    forces the model onto GPU (the real `serve` CLI has no flag to do this itself - see below for
-    why). Turning it off reverts to the plain `litert-lm serve --host 127.0.0.1 --port {port}`
-    template. The toggle's own label always tells the truth about what's actually running - if GPU
-    was requested but the sidecar's engine fell back to CPU, it reads "CPU (GPU unavailable)"
-    instead of just staying on "GPU" (see `BackendStatus.effectiveAccelerator`).
+  - **GPU acceleration**: there is no setting to choose. The one default command template is
+    `python "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose`, i.e. the same
+    `litert-lm serve` launched through `resources/serve_gpu.py`, a small wrapper that puts the
+    model on the GPU (the real `serve` CLI has no flag to do this itself - see below for why) and
+    drops to CPU by itself on a machine without a usable one. Settings and the status pill show
+    only what the running engine reported - "Running on GPU" / "Running on CPU", and nothing at
+    all while it isn't running (see `BackendStatus.effectiveAccelerator`).
 
     **Important**: that bare `python` in the template above is only safe if this venv's `Scripts`
     directory is genuinely first on `PATH` when the app runs. `Start-Eloquent.ps1` seeds a fresh
@@ -296,8 +294,8 @@ npm run dev
    stack. A WSL2 process sits behind WSLg/virtualized GPU passthrough (no real Vulkan ICD in that
    sandbox as of this writing - confirmed empirically, see step 6), so running the sidecar there
    falls back to CPU via the wrapper's own fallback logic instead of actually using the GPU - and,
-   unlike before, the app now knows and shows this truthfully (Settings toggle reads "CPU (GPU
-   unavailable)", status pill reads "Ready · CPU") rather than just displaying the requested setting.
+   unlike before, the app now knows and shows this truthfully (Settings reads "Running on CPU",
+   status pill reads "Ready · CPU") rather than displaying anything it hasn't observed.
 
 Both the Electron app and the `litert-lm serve` sidecar should run as native Windows processes on
 the same machine. There's no need to split them across hosts for this hardware profile.
@@ -430,7 +428,7 @@ both the failed-GPU-attempt cost and a CPU cold-start, and everything after that
 like CPU mode. Crucially, this fallback is never silent to the user: the wrapper eagerly creates the
 engine at process startup (before the sidecar looks "ready" to the Electron app) and prints an
 unambiguous `ELOQUENT_EFFECTIVE_BACKEND=gpu`/`=cpu` marker line to stdout as soon as it knows which
-backend it actually got - `sidecar.ts` parses that marker and the Settings toggle / status pill
+backend it actually got - `sidecar.ts` parses that marker and the Settings readout / status pill
 reflect the real backend, not just the requested one (see `BackendStatus.effectiveAccelerator`
 and `resources/serve_gpu.py`'s "Effective-backend reporting"/"Eager engine creation" doc comments).
 
@@ -452,7 +450,7 @@ that), only for going beyond what the pip wheel + wrapper combination exposes.
 
 ### Verifying GPU: "is it actually on?"
 
-The Settings toggle and status pill (see step 4) tell the truth, but here's how to double-check for
+The Settings readout and status pill (see step 4) tell the truth, but here's how to double-check for
 yourself in under a minute:
 
 - **Status pill** (top of the app window): `Ready · GPU` once the sidecar's engine has actually
@@ -519,9 +517,8 @@ needs to provide, exactly as described in steps 1-3 above.
 - [ ] `litert-lm import --from-huggingface-repo litert-community/gemma-4-12B-it-litert-lm gemma-4-12B-it.litertlm 12b` (or e2b/e4b)
 - [ ] App Settings: Backend = LiteRT-LM, Model = the one you imported, Sidecar mode = Managed, Port = 9379
 - [ ] `npm run dev` on the Windows host (not WSL2) for real mic access and real GPU acceleration
-- [ ] GPU acceleration is on by default for a fresh install (~3.4x faster decode, measured on an
-      RTX 3060 Laptop GPU - see section 6); falls back to CPU on its own if GPU init fails, and the
-      Settings toggle/status pill say so truthfully if it
-      does
+- [ ] GPU acceleration is always on (~3.4x faster decode, measured on an RTX 3060 Laptop GPU -
+      see section 6); drops to CPU on its own if GPU init fails, and Settings/the status pill say
+      so truthfully if it does
 - [ ] Model/VRAM is cleaned up on quit _and_ on a hard crash - see "Crash-safe cleanup" above
 - [ ] `npm run build && npm run build:win` on a real Windows machine to produce an installer

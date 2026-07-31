@@ -111,17 +111,17 @@ describe('overlayReducer', () => {
     expect(ignored).toBe(initialOverlayState)
   })
 
-  it('mic-error moves recording -> error with the failure message, ignored outside recording', () => {
+  it('failed moves an active phase -> error with the failure message, ignored when idle', () => {
     const recording = overlayReducer(initialOverlayState, { type: 'start' })
     const next = overlayReducer(recording, {
-      type: 'mic-error',
+      type: 'failed',
       message: 'Microphone capture failed: denied'
     })
     expect(next.phase).toBe('error')
     expect(next.errorMessage).toBe('Microphone capture failed: denied')
 
     const ignored = overlayReducer(initialOverlayState, {
-      type: 'mic-error',
+      type: 'failed',
       message: 'should be ignored'
     })
     expect(ignored).toBe(initialOverlayState)

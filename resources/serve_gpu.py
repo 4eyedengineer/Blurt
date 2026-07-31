@@ -182,7 +182,10 @@ _orig_parse_backend = _model.parse_backend
 # Mutable so the fallback below can flip it after a failed GPU engine
 # creation, without needing to re-import/re-patch anything.
 _state = {
-    "backend": os.environ.get("LITERT_LM_SERVE_BACKEND", "gpu").strip().lower() or "gpu"
+    "backend": os.environ.get("LITERT_LM_SERVE_BACKEND", "gpu").strip().lower() or "gpu",
+    # Whether the ELOQUENT_EFFECTIVE_BACKEND marker has already been printed
+    # - see `_report_effective_backend`.
+    "reported": False,
 }
 
 
@@ -229,7 +232,15 @@ def _report_effective_backend() -> None:
   which is only ever "gpu" if that's genuinely what the just-created (or
   reused) engine is running on - the fallback below always flips it to
   "cpu" *before* this is called, if that's what actually happened.
+
+  Printed at most once per process. The engine is created once and cached
+  for this process's lifetime, so every later call would just repeat the
+  same answer - and it's called on the *reuse* path too, which meant one
+  marker line per HTTP request flooding the parent's log.
   """
+  if _state["reported"]:
+    return
+  _state["reported"] = True
   sys.stdout.write(f"ELOQUENT_EFFECTIVE_BACKEND={_state['backend']}\n")
   sys.stdout.flush()
 

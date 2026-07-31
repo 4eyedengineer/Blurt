@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { Accelerator, ModelId, PushToTalkStatus, SidecarMode } from '@shared/types'
-import { MANAGED_COMMAND_BY_ACCELERATOR, PTT_KEY_OPTIONS } from '@shared/types'
+import type { ModelId, PushToTalkStatus, SidecarMode } from '@shared/types'
+import { PTT_KEY_OPTIONS } from '@shared/types'
 import type { ModelDownloadState } from '@shared/models'
 import { getCatalogEntry } from '@shared/models'
 import { useSettings } from '../context/SettingsContext'
@@ -112,18 +112,6 @@ function ModelRow({ option, selected, onSelect, models }: ModelRowProps): React.
   )
 }
 
-/**
- * The Accelerator toggle's own label, per the "requested vs. actually
- * running" rule (see BackendStatus.effectiveAccelerator's doc comment):
- * reflects the requested setting, except when GPU was requested but the
- * sidecar's engine truthfully reported it fell back to CPU - that case must
- * never read as "GPU".
- */
-function acceleratorLabel(requested: Accelerator, effective: Accelerator | undefined): string {
-  if (requested === 'gpu' && effective === 'cpu') return 'CPU (GPU unavailable)'
-  return requested === 'gpu' ? 'GPU' : 'CPU'
-}
-
 export function SettingsScreen(): React.JSX.Element {
   const { settings, update, addVocabularyWord, removeVocabularyWord, updateHotkey } = useSettings()
   const models = useModelManager()
@@ -132,25 +120,6 @@ export function SettingsScreen(): React.JSX.Element {
   const [hotkeyInput, setHotkeyInput] = useState(settings.hotkey)
   const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus>('idle')
   const [pttStatus, setPttStatus] = useState<PushToTalkStatus | null>(null)
-
-  // Only overwrites managedCommand if it's still exactly one of the known
-  // default templates (i.e. the user hasn't hand-edited it) - so flipping
-  // this toggle does the right thing for the common case without silently
-  // clobbering a custom command someone typed into the field below.
-  const setAccelerator = (accelerator: Accelerator): void => {
-    const isUnmodifiedDefault = Object.values(MANAGED_COMMAND_BY_ACCELERATOR).includes(
-      settings.sidecar.managedCommand
-    )
-    void update({
-      sidecar: {
-        ...settings.sidecar,
-        accelerator,
-        managedCommand: isUnmodifiedDefault
-          ? MANAGED_COMMAND_BY_ACCELERATOR[accelerator]
-          : settings.sidecar.managedCommand
-      }
-    })
-  }
 
   useEffect(() => {
     let cancelled = false
@@ -203,25 +172,23 @@ export function SettingsScreen(): React.JSX.Element {
         </div>
       </div>
 
-      {settings.sidecar.mode === 'managed' && (
+      {/*
+        Read-only on purpose: there is nothing to choose (see Accelerator in
+        shared/types.ts). This shows only what the running engine reported,
+        and shows nothing at all while it isn't running - never a guess from
+        a setting.
+      */}
+      {backendStatus.effectiveAccelerator && (
         <div className="settings-screen__group">
           <label className="settings-screen__toggle-row">
             <span>
               <strong>
-                {acceleratorLabel(settings.sidecar.accelerator, backendStatus.effectiveAccelerator)}
+                Running on {backendStatus.effectiveAccelerator === 'gpu' ? 'GPU' : 'CPU'}
               </strong>
-              {settings.sidecar.accelerator === 'gpu' &&
-                backendStatus.effectiveAccelerator === 'cpu' && (
-                  <p className="settings-screen__hint">
-                    GPU init failed on this machine - running on CPU instead.
-                  </p>
-                )}
+              {backendStatus.effectiveAccelerator === 'cpu' && (
+                <p className="settings-screen__hint">No usable GPU on this machine.</p>
+              )}
             </span>
-            <Toggle
-              checked={settings.sidecar.accelerator === 'gpu'}
-              onChange={(checked) => setAccelerator(checked ? 'gpu' : 'cpu')}
-              label="Accelerator"
-            />
           </label>
         </div>
       )}

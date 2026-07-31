@@ -164,7 +164,7 @@ const overlayApi = {
     ipcRenderer.on(IPC.overlay.pasteStatus, handler)
     return () => ipcRenderer.removeListener(IPC.overlay.pasteStatus, handler)
   },
-  sendResult: (payload: { rawTranscript: string; cleanedText: string }): void => {
+  sendResult: (payload: { rawTranscript: string; cleanedText: string; error?: string }): void => {
     ipcRenderer.send(IPC.overlay.result, payload)
   }
 }

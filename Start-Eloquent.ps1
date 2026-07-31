@@ -537,7 +537,6 @@ if ($NeedsSeed) {
             managedCommand = '"' + $VenvPythonExe + '" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
             externalUrl = 'http://127.0.0.1:9379'
             port = 9379
-            accelerator = 'gpu'
         }
         autoCopyOnCleanup = $false
         customVocabulary = @()

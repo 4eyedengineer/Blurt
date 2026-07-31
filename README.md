@@ -528,7 +528,8 @@ tokens/s numbers.
    (`history.json`), searchable by text, deletable, and clickable to reopen (re-loads the raw,
    cleaned, and last-transformed text plus its original stats into the Dictate screen).
 3. **Settings** - model choice (Gemma 4 E2B / E4B / 12B) with per-model download/install state and
-   a progress bar, accelerator toggle (GPU/CPU), sidecar mode/command/URL/port fields, offline/cloud
+   a progress bar, a read-only GPU/CPU readout of what the engine actually reported, sidecar
+   mode/command/URL/port fields, offline/cloud
    toggle placeholder, custom vocabulary list (add/remove, persisted in `settings.json`), auto-copy
    toggle, and a global hotkey field that calls `globalShortcut.register` in the main process for
    real (default `Ctrl+Shift+Space`) - triggering it brings the window to front and toggles

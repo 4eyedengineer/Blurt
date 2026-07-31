@@ -16,7 +16,7 @@ export interface OverlayState {
   copied: boolean
   pasted: boolean
   pasteMessage: string | null
-  /** Set (with phase 'error') when audio capture failed mid-recording - see useOverlayPushToTalk. */
+  /** Set (with phase 'error') when the dictation attempt failed - see useOverlayPushToTalk. */
   errorMessage: string | null
 }
 
@@ -41,8 +41,8 @@ export type OverlayAction =
   /** The diff-reveal window has elapsed - settle to the plain final text. */
   | { type: 'settle' }
   | { type: 'paste-status'; copied: boolean; pasted: boolean; message: string | null }
-  /** Audio capture failed mid-recording - see useAudioCapture. Recording stops, message shown until reset. */
-  | { type: 'mic-error'; message: string }
+  /** The dictation attempt failed (mic capture, transcription, or cleanup). Message shown until reset. */
+  | { type: 'failed'; message: string }
   | { type: 'reset' }
 
 /**
@@ -89,10 +89,13 @@ export function overlayReducer(state: OverlayState, action: OverlayAction): Over
           }
         : state
 
-    case 'mic-error':
-      return state.phase === 'recording'
-        ? { ...initialOverlayState, phase: 'error', errorMessage: action.message }
-        : state
+    case 'failed':
+      // Accepted from any active phase (recording *or* cleaning) - a
+      // transcription/cleanup rejection is just as much a failed dictation
+      // as a dead microphone, and both must surface rather than be dropped.
+      return state.phase === 'idle'
+        ? state
+        : { ...initialOverlayState, phase: 'error', errorMessage: action.message }
 
     case 'cancel':
       return state.phase === 'idle' ? state : { ...initialOverlayState }

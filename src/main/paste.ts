@@ -158,10 +158,13 @@ export async function copyAndPaste(
   autoPasteEnabled: boolean,
   injectPaste: () => Promise<void> = injectPasteReal
 ): Promise<PasteOutcome> {
-  clipboard.writeText(text)
   if (!text) {
+    // Deliberately does NOT write the empty string first - that would wipe
+    // whatever the user already had on their clipboard as the reward for a
+    // dictation that produced nothing.
     return { copied: false, pasted: false, message: 'Nothing to copy.' }
   }
+  clipboard.writeText(text)
   if (!autoPasteEnabled) {
     return { copied: true, pasted: false, message: 'Copied — press Ctrl+V to paste.' }
   }

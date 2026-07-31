@@ -74,7 +74,7 @@ export function serializePidRecord(record: SidecarPidRecord): string {
 /**
  * Whether a process's cmdline looks like one of our own managed sidecar
  * spawns - either the GPU wrapper (`serve_gpu.py`) or a plain `litert-lm
- * ... serve` invocation (the 'cpu' accelerator's default template). Used to
+ * ... serve` invocation (what an external/custom command looks like). Used to
  * avoid killing an unrelated process that happens to have reused a
  * recycled PID recorded in a stale pid-file - see this module's doc
  * comment.
