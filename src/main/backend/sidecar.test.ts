@@ -6,6 +6,8 @@ import { log } from '../log'
 import {
   buildManagedChildEnv,
   commandReferencesServeGpuWrapper,
+  describeMissingManagedBinary,
+  isMissingManagedBinary,
   parseEffectiveBackendLine,
   parseGpuCorroborationLine,
   PARENT_PID_ENV_VAR,
@@ -157,6 +159,51 @@ describe('Sidecar auto-restart', () => {
     expect(states.filter((s) => s === 'starting')).toHaveLength(2)
     expect(states).not.toContain('restarting')
     sidecar.stop()
+  })
+
+  it('fails fast on an absolute, nonexistent managed binary - actionable error, no GPU->CPU retry, no restart storm', async () => {
+    const states: Array<{ state: string; message?: string }> = []
+    const warnSpy = vi.spyOn(log, 'warn')
+    // Same shape as the real incident: an absolute interpreter path that no
+    // longer exists (stale after an app rename/upgrade), referencing
+    // serve_gpu.py so this would be GPU-retry-eligible if the process ever
+    // actually spawned - it must not get that far.
+    const missingBinary =
+      'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe'
+    const sidecar = new Sidecar({
+      mode: 'managed',
+      externalUrl: '',
+      managedCommand: `"${missingBinary}" "{wrapperPath}" serve --port {port}`,
+      modelPath: '',
+      port: 18466,
+      wrapperPath: '/fake/resources/serve_gpu.py',
+      readyTimeoutMs: 400,
+      readyPollIntervalMs: 50
+    })
+    sidecar.on('state', (state: string, message?: string) => states.push({ state, message }))
+
+    // Resolves, not rejects: spawnManaged returns false and start() reports
+    // the error state directly - see spawnManaged's pre-flight check.
+    await sidecar.start()
+
+    expect(sidecar.getState()).toBe('error')
+    const errorStates = states.filter((s) => s.state === 'error')
+    expect(errorStates).toHaveLength(1)
+    expect(errorStates[0].message).toContain(missingBinary)
+    expect(errorStates[0].message).toMatch(/Settings.*Advanced/)
+    // Only the initial 'starting' - no second attempt was ever spawned.
+    expect(states.filter((s) => s.state === 'starting')).toHaveLength(1)
+    expect(states.map((s) => s.state)).not.toContain('restarting')
+    expect(
+      warnSpy.mock.calls.some(
+        ([line]) =>
+          typeof line === 'string' &&
+          line.includes('retrying once with LITERT_LM_SERVE_BACKEND=cpu')
+      )
+    ).toBe(false)
+
+    sidecar.stop()
+    warnSpy.mockRestore()
   })
 })
 
@@ -479,6 +526,62 @@ describe('commandReferencesServeGpuWrapper', () => {
       port: 9379
     })
     expect(commandReferencesServeGpuWrapper(args)).toBe(false)
+  })
+})
+
+describe('isMissingManagedBinary', () => {
+  it('flags an absolute path as missing when the injected exists-check says no', () => {
+    const exists = vi.fn(() => false)
+    expect(
+      isMissingManagedBinary(
+        'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe',
+        exists
+      )
+    ).toBe(true)
+    expect(exists).toHaveBeenCalledWith(
+      'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe'
+    )
+  })
+
+  it('does not flag an absolute path that the exists-check says is present', () => {
+    expect(isMissingManagedBinary('/usr/bin/python3', () => true)).toBe(false)
+  })
+
+  it('does not pre-flight a bare (non-absolute) command name - PATH resolution is the OS`s job, not ours', () => {
+    const exists = vi.fn(() => false)
+    expect(isMissingManagedBinary('litert-lm', exists)).toBe(false)
+    expect(isMissingManagedBinary('python', exists)).toBe(false)
+    // Never even calls the exists-check for a name it isn't the app's place to judge.
+    expect(exists).not.toHaveBeenCalled()
+  })
+
+  it('does not pre-flight a relative path either - only absolute paths are eligible', () => {
+    const exists = vi.fn(() => false)
+    expect(isMissingManagedBinary('venv/bin/python', exists)).toBe(false)
+    expect(isMissingManagedBinary('..\\venv\\Scripts\\python.exe', exists)).toBe(false)
+    expect(exists).not.toHaveBeenCalled()
+  })
+
+  it('recognizes Windows UNC paths as absolute', () => {
+    const exists = vi.fn(() => false)
+    expect(isMissingManagedBinary('\\\\server\\share\\venv\\python.exe', exists)).toBe(true)
+    expect(exists).toHaveBeenCalled()
+  })
+
+  it('defaults to the real filesystem when no exists-check is passed', () => {
+    // process.execPath is a real, currently-existing absolute path - proves
+    // the default parameter actually wires up fs.existsSync.
+    expect(isMissingManagedBinary(process.execPath)).toBe(false)
+    expect(isMissingManagedBinary(`${process.execPath}-definitely-not-a-real-file`)).toBe(true)
+  })
+})
+
+describe('describeMissingManagedBinary', () => {
+  it('names the exact missing path and points at the Settings > Advanced reset', () => {
+    const message = describeMissingManagedBinary('C:\\stale\\venv\\Scripts\\python.exe')
+    expect(message).toContain('C:\\stale\\venv\\Scripts\\python.exe')
+    expect(message).toMatch(/Settings.*Advanced/)
+    expect(message).toMatch(/Reset to default/)
   })
 })
 

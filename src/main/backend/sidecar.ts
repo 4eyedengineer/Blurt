@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process'
+import { existsSync } from 'fs'
 import { EventEmitter } from 'events'
 import type { Accelerator } from '../../shared/types'
 import { log } from '../log'
@@ -105,6 +106,70 @@ function baseName(path: string): string {
 /** Whether `path` looks like a Windows-style path (backslashes, a drive letter, or a `.exe` suffix) as opposed to a posix one - used only to decide which sibling-CLI convention (`Scripts\...exe` vs `bin/...`) to apply, never to decide *whether* to resolve at all. */
 function looksWindowsStyle(path: string): boolean {
   return path.includes('\\') || /^[A-Za-z]:/.test(path) || path.toLowerCase().endsWith('.exe')
+}
+
+/**
+ * Whether `path` is an ABSOLUTE path - Windows drive-letter (`C:\...` or
+ * `C:/...`), Windows UNC (`\\server\share\...`), or posix (`/...`) - as
+ * opposed to a bare name or a relative path. Deliberately not node's own
+ * `path.isAbsolute`, which reasons in terms of the *host* OS's conventions
+ * and would misjudge a Windows-style path when this app is built/tested on
+ * Linux/Mac (same reason `looksWindowsStyle` exists as its own thing rather
+ * than reusing node's `path` module). Used only to decide *whether* a
+ * managed command's binary is eligible for the existence pre-flight in
+ * `isMissingManagedBinary` - never to resolve or normalize the path itself.
+ */
+function isAbsolutePath(path: string): boolean {
+  if (path.startsWith('/')) return true
+  if (path.startsWith('\\\\')) return true
+  if (/^[A-Za-z]:[\\/]/.test(path)) return true
+  return false
+}
+
+/**
+ * Whether `binary` - the rendered managed command's first token, about to be
+ * passed to `spawn()` - is an absolute path that does not exist on disk.
+ * Real incident this fixes: a user's settings.json carried a stale absolute
+ * interpreter path (`...\WindowsEloquent\venv\Scripts\python.exe`) left over
+ * from before the app was renamed, so that runtime dir no longer existed.
+ * Spawning it produced a bare `spawn ... ENOENT` with no actionable message,
+ * and - worse - the GPU->CPU fallback retry (`canRetryGpuFallbackOnCpu`)
+ * treated the dead process as a GPU crash and burned its one retry on a
+ * failure that was never about the GPU. Checking this *before* ever calling
+ * `spawn()` (see `Sidecar.spawnManaged`) lets the caller fail fast with a
+ * clear message instead of either of those.
+ *
+ * Deliberately only checks ABSOLUTE paths. A bare name like `litert-lm` (or
+ * any relative path) is resolved by the OS via PATH/cwd at spawn time - this
+ * function has no reliable way to predict that resolution, and a false
+ * "missing" verdict on a bare name would break an otherwise-working custom
+ * command. So a non-absolute binary is never flagged, full stop.
+ *
+ * Takes an injectable existence-check function (defaulting to the real
+ * `fs.existsSync`) so this - and the `spawnManaged` pre-flight that calls it
+ * - stay testable without touching the real filesystem.
+ */
+export function isMissingManagedBinary(
+  binary: string,
+  exists: (path: string) => boolean = existsSync
+): boolean {
+  return isAbsolutePath(binary) && !exists(binary)
+}
+
+/**
+ * The actionable error message for a binary `isMissingManagedBinary` flagged
+ * - names the exact path that's missing and points at the one-click fix
+ * (the "Reset to default" button next to the managed-command field in
+ * Settings > Advanced, see SettingsScreen.tsx) rather than leaving the user
+ * with a bare ENOENT to decode.
+ */
+export function describeMissingManagedBinary(binary: string): string {
+  return (
+    `Sidecar command's interpreter/binary was not found: "${binary}". This usually means ` +
+    `the app was moved, renamed, or upgraded (or the command was hand-edited) and the path ` +
+    `no longer points anywhere real. Fix it in Settings > Advanced - use "Reset to default" ` +
+    `next to the command field, or correct the path yourself.`
+  )
 }
 
 /**
@@ -457,6 +522,17 @@ export class Sidecar extends EventEmitter {
    * `litert-lm serve` has no GPU-forcing to fall back *from*, and this must
    * never apply to a child that already reached 'ready' at some point (that
    * failure mode is `scheduleRestart`'s ordinary crash-restart, not this).
+   *
+   * Only ever reached for a child that actually spawned. A managed command
+   * whose binary doesn't exist never gets this far: `spawnManaged` pre-flights
+   * it (see `isMissingManagedBinary`) and returns false before `spawn()` is
+   * even called, so `start()` reports the error directly and this function
+   * is never consulted. That's deliberate, not incidental - a missing
+   * executable is a configuration problem, not the mid-init GPU crash (e.g.
+   * VRAM exhaustion) this retry exists for, and treating it as one would
+   * misdiagnose the failure and waste this instance's one retry on a case it
+   * can never fix. Noted here explicitly so a future edit to this function
+   * doesn't silently re-broaden it to cover that case too.
    */
   private canRetryGpuFallbackOnCpu(): boolean {
     return (
@@ -505,6 +581,19 @@ export class Sidecar extends EventEmitter {
     const [cmd, ...rest] = args
     if (!cmd) {
       this.setState('error', 'Sidecar command is empty - check the managed command setting.')
+      return false
+    }
+
+    // Pre-flight the binary before ever calling spawn() - see
+    // `isMissingManagedBinary`'s doc comment for the real incident (a stale
+    // absolute path left over from an app rename/upgrade) this closes.
+    // Returning false here (not throwing) means `start()` reports the error
+    // state directly and never reaches `waitUntilReady`'s catch block at
+    // all - so the GPU->CPU fallback retry never even considers this case.
+    if (isMissingManagedBinary(cmd)) {
+      const message = describeMissingManagedBinary(cmd)
+      log.error(`sidecar: ${message}`)
+      this.setState('error', message)
       return false
     }
 

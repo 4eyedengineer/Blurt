@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ModelId, PushToTalkStatus, SidecarMode } from '@shared/types'
-import { PTT_KEY_OPTIONS } from '@shared/types'
+import { DEFAULT_MANAGED_COMMAND, PTT_KEY_OPTIONS } from '@shared/types'
 import type { ModelDownloadState } from '@shared/models'
 import { getCatalogEntry } from '@shared/models'
 import type { HardwareProbeResult } from '@shared/hardware'
@@ -268,6 +268,19 @@ export function SettingsScreen(): React.JSX.Element {
                   })
                 }
               />
+              {/* Escape hatch for a stale/hand-edited command pointing at a
+                  path that no longer exists (e.g. after a rename/upgrade
+                  moved the venv) - see sidecar.ts's isMissingManagedBinary. */}
+              <button
+                type="button"
+                onClick={() =>
+                  void update({
+                    sidecar: { ...settings.sidecar, managedCommand: DEFAULT_MANAGED_COMMAND }
+                  })
+                }
+              >
+                Reset to default
+              </button>
             </div>
             <label className="settings-screen__field-label" htmlFor="sidecar-port">
               Port
