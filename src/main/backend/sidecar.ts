@@ -19,6 +19,43 @@ export function parseEffectiveBackendLine(line: string): Accelerator | null {
   return match ? (match[1] as Accelerator) : null
 }
 
+/**
+ * Which native-library log-line literal corroborated a real GPU backend
+ * selection - see `parseGpuCorroborationLine`'s doc comment.
+ */
+export type GpuCorroborationEvidence = 'selected-adapter' | 'main-executor-settings'
+
+/**
+ * Returns which literal (if any) a line of managed-sidecar output matches,
+ * out of the two native-library log-line literals confirmed (via `strings`
+ * on the bundled native library - see WINDOWS.md step 6, "GPU acceleration -
+ * how it works and what was measured") to exist:
+ *   - "Selected adapter: " - Dawn/WebGPU's log of the physical adapter it
+ *     actually picked, e.g. WINDOWS.md's real captured example:
+ *     "Selected adapter: NVIDIA GeForce RTX 3060 Laptop GPU, arch=ampere,
+ *     vendor=nvidia, backend=Direct3D 12, adapterType=Discrete GPU".
+ *   - "MainExecutorSettings: backend: GPU" - the engine's own log of which
+ *     backend the *main* model executor was actually configured with.
+ * Neither is the same kind of evidence as `serve_gpu.py`'s
+ * `ELOQUENT_EFFECTIVE_BACKEND=gpu` marker, which only means "engine creation
+ * didn't raise" (see that file's "Effective-backend reporting" doc comment)
+ * - these are independent confirmation, from the native library itself, that
+ * a real GPU backend was engaged. Matched case-sensitively against exactly
+ * those literals - a false "confirmed" here is worse than a false
+ * "unconfirmed" (see `Sidecar.warnIfGpuUnconfirmed`), so this deliberately
+ * does not try to be clever about variant phrasing. Exported so it's
+ * unit-testable without spawning a real process.
+ */
+export function parseGpuCorroborationLine(line: string): GpuCorroborationEvidence | null {
+  if (line.includes('MainExecutorSettings: backend: GPU')) return 'main-executor-settings'
+  // "Selected adapter: " alone isn't GPU-specific - a CPU/software adapter
+  // would print the same line, just naming a non-GPU adapterType - so this
+  // only counts as corroboration when the same line's adapter description
+  // also says GPU.
+  if (line.includes('Selected adapter: ') && line.includes('GPU')) return 'selected-adapter'
+  return null
+}
+
 export interface SidecarOptions {
   mode: 'managed' | 'external'
   /** Base URL to use directly when mode === 'external'. */
@@ -324,6 +361,22 @@ export class Sidecar extends EventEmitter {
   private lastExitDetail: string | undefined
   /** Whether this sidecar has ever reached 'ready'. Gates auto-restart - see `scheduleRestart`. */
   private hasBeenReady = false
+  /**
+   * Whether the one-shot GPU->CPU fallback retry (see `start()`) has already
+   * been attempted for this Sidecar instance - never reset, so it can fire
+   * at most once per instance no matter how many times the child is
+   * respawned afterwards (both the retry itself and, once `hasBeenReady`,
+   * any later crash-restart via `scheduleRestart` - see `spawnManaged`'s use
+   * of this flag to keep forcing CPU on every subsequent spawn).
+   */
+  private gpuFallbackRetried = false
+  /**
+   * Whether a native adapter/backend log line corroborating a genuine GPU
+   * selection (see `parseGpuCorroborationLine`) has been observed on the
+   * current child's stdout/stderr. Reset on every (re)spawn - it's a fact
+   * about *this* child's output, not the Sidecar instance overall.
+   */
+  private sawGpuCorroboration = false
 
   constructor(private readonly options: SidecarOptions) {
     super()
@@ -363,11 +416,56 @@ export class Sidecar extends EventEmitter {
       if (!spawned) return // setState('error', ...) already called - port hygiene refused to spawn.
     }
 
-    await this.waitUntilReady()
+    try {
+      await this.waitUntilReady()
+    } catch (err) {
+      if (!this.canRetryGpuFallbackOnCpu()) throw err
+      // Real gap this closes: serve_gpu.py forces every managed sidecar onto
+      // GPU with no in-app way to disable it (the only override,
+      // LITERT_LM_SERVE_BACKEND=cpu, is an env var nothing in this app sets),
+      // and its own `except RuntimeError` fallback (see that file's
+      // "Fallback" doc comment) only catches a *handled* GPU-init failure -
+      // it can never catch the process dying outright, e.g. a native crash
+      // from VRAM exhaustion on a small GPU. Without this, that would
+      // permanently brick startup on such a machine. So: exactly one retry,
+      // forcing CPU via the child env - see `spawnManaged`'s use of
+      // `gpuFallbackRetried`. If this CPU attempt also fails, its rejection
+      // propagates below unchanged - no further retries.
+      this.gpuFallbackRetried = true
+      const detail = err instanceof Error ? err.message : String(err)
+      log.warn(
+        `sidecar: GPU-forced sidecar died before ever becoming ready (${detail}) - ` +
+          'retrying once with LITERT_LM_SERVE_BACKEND=cpu'
+      )
+      this.setState('starting', 'GPU sidecar failed to start - retrying once on CPU…')
+      const spawned = await this.spawnManaged()
+      if (!spawned) return // setState('error', ...) already called - port hygiene refused to spawn.
+      await this.waitUntilReady()
+    }
+
     if (!this.stopping) {
       log.info(`sidecar: ready at ${this.baseUrl}`)
+      this.warnIfGpuUnconfirmed()
       this.setState('ready')
     }
+  }
+
+  /**
+   * Whether the child that just failed `waitUntilReady` is eligible for the
+   * one-shot GPU->CPU fallback retry in `start()` - true at most once per
+   * Sidecar instance, and only when the managed command actually forces GPU
+   * (see `commandReferencesServeGpuWrapper`/`markerRequired`): a plain
+   * `litert-lm serve` has no GPU-forcing to fall back *from*, and this must
+   * never apply to a child that already reached 'ready' at some point (that
+   * failure mode is `scheduleRestart`'s ordinary crash-restart, not this).
+   */
+  private canRetryGpuFallbackOnCpu(): boolean {
+    return (
+      this.options.mode === 'managed' &&
+      this.markerRequired &&
+      !this.hasBeenReady &&
+      !this.gpuFallbackRetried
+    )
   }
 
   /** Stops the sidecar (kills the managed process, if any) and suppresses further auto-restarts. */
@@ -419,6 +517,7 @@ export class Sidecar extends EventEmitter {
     this.stderrTail = ''
     this.lastOutputLines = []
     this.lastExitDetail = undefined
+    this.sawGpuCorroboration = false
     this.markerRequired = commandReferencesServeGpuWrapper(args)
     log.info(
       `sidecar: marker rule = ${this.markerRequired ? 'required (command references serve_gpu.py)' : 'not required (command does not reference serve_gpu.py)'}`
@@ -436,6 +535,17 @@ export class Sidecar extends EventEmitter {
     }
 
     log.info(`sidecar: spawn ${cmd} ${rest.join(' ')}`)
+    // Once the one-shot GPU->CPU fallback (see `start()`) has kicked in for
+    // this Sidecar instance, force CPU on every subsequent spawn too - not
+    // just the retry itself. serve_gpu.py already stays on CPU "for the rest
+    // of that process's lifetime" after its own in-process fallback (see its
+    // "Fallback" doc comment); this is the same idea one level up, for a
+    // process that died before it could even reach that fallback. Merged
+    // ahead of `this.options.env` so a custom managed env can't silently
+    // re-enable GPU on a machine already known not to support it.
+    const extraEnv = this.gpuFallbackRetried
+      ? { ...this.options.env, LITERT_LM_SERVE_BACKEND: 'cpu' }
+      : this.options.env
     const child = spawn(cmd, rest, {
       stdio: ['ignore', 'pipe', 'pipe'],
       // Console-subsystem child of a GUI-subsystem parent: without this,
@@ -443,7 +553,7 @@ export class Sidecar extends EventEmitter {
       windowsHide: true,
       // Always includes PARENT_PID_ENV_VAR - see its doc comment for why
       // (crash-safe cleanup via serve_gpu.py's parent watchdog).
-      env: buildManagedChildEnv(process.env, this.options.env, process.pid)
+      env: buildManagedChildEnv(process.env, extraEnv, process.pid)
     })
     this.proc = child
 
@@ -496,7 +606,10 @@ export class Sidecar extends EventEmitter {
     // environment failure - retrying it just repeats the same failure while
     // racing `waitUntilReady` (which is already watching the same child and
     // will reject with the exit detail), producing a burst of contradictory
-    // 'error'/'starting' states in the UI for one underlying problem.
+    // 'error'/'starting' states in the UI for one underlying problem. (The
+    // one deliberate exception - a GPU-forced sidecar that never reached
+    // ready - is handled separately, once, in `start()`; nothing here needs
+    // to know about it.)
     if (!this.hasBeenReady) {
       log.warn('sidecar: child died before ever becoming ready - not auto-restarting')
       return
@@ -521,7 +634,10 @@ export class Sidecar extends EventEmitter {
         if (!spawned) return // setState('error', ...) already called by spawnManaged.
         try {
           await this.waitUntilReady()
-          if (!this.stopping) this.setState('ready')
+          if (!this.stopping) {
+            this.warnIfGpuUnconfirmed()
+            this.setState('ready')
+          }
         } catch (err) {
           if (!this.stopping)
             this.setState('error', err instanceof Error ? err.message : String(err))
@@ -610,6 +726,7 @@ export class Sidecar extends EventEmitter {
     this.stdoutTail = lines.pop() ?? ''
     for (const line of lines) {
       this.logChildLine('out', line)
+      this.noteGpuCorroboration(line)
       const accelerator = parseEffectiveBackendLine(line)
       if (accelerator) {
         log.info(`sidecar: effective-backend=${accelerator}`)
@@ -619,7 +736,13 @@ export class Sidecar extends EventEmitter {
     }
   }
 
-  /** Same treatment as `handleStdout`, minus the marker scan - stderr never carries the marker, only diagnostics (GPU fallback notices, native stack traces, etc). */
+  /**
+   * Same treatment as `handleStdout`, minus the marker scan - stderr never
+   * carries the marker, only diagnostics (GPU fallback notices, native stack
+   * traces, etc). Still scanned for GPU-corroboration evidence (see
+   * `noteGpuCorroboration`): the native library's own adapter/backend log
+   * lines are glog-style output, which goes to stderr, not stdout.
+   */
   private handleStderr(chunk: Buffer): void {
     const text = chunk.toString('utf-8')
     this.emit('log', text)
@@ -627,7 +750,44 @@ export class Sidecar extends EventEmitter {
     const combined = this.stderrTail + text
     const lines = combined.split('\n')
     this.stderrTail = lines.pop() ?? ''
-    for (const line of lines) this.logChildLine('err', line)
+    for (const line of lines) {
+      this.logChildLine('err', line)
+      this.noteGpuCorroboration(line)
+    }
+  }
+
+  /**
+   * Records the first GPU-corroboration evidence (see
+   * `parseGpuCorroborationLine`) observed on the current child's output.
+   * Logged once, not per matching line - eager engine creation typically
+   * prints a handful of native log lines, and one confirmation is enough.
+   */
+  private noteGpuCorroboration(line: string): void {
+    if (this.sawGpuCorroboration) return
+    const evidence = parseGpuCorroborationLine(line)
+    if (!evidence) return
+    this.sawGpuCorroboration = true
+    log.info(`sidecar: observed GPU corroboration (${evidence})`)
+  }
+
+  /**
+   * Logs a WARNING - diagnostic only, never changes `effectiveAccelerator`
+   * or any reported state, the marker stays the source of truth for the UI -
+   * if the marker claimed GPU but nothing in the child's stdout/stderr
+   * corroborated it. serve_gpu.py's `ELOQUENT_EFFECTIVE_BACKEND=gpu` only
+   * means engine creation didn't raise (see that file's "Effective-backend
+   * reporting" doc comment), not confirmed GPU execution. This is what turns
+   * that gap into something visible in a real user's main.log, instead of a
+   * silent assumption.
+   */
+  private warnIfGpuUnconfirmed(): void {
+    if (this.effectiveAccelerator !== 'gpu' || this.sawGpuCorroboration) return
+    log.warn(
+      'sidecar: ELOQUENT_EFFECTIVE_BACKEND=gpu reported but unconfirmed - looked for a ' +
+        '"Selected adapter: ... GPU" or "MainExecutorSettings: backend: GPU" line in the ' +
+        "child's stdout/stderr and found neither; the marker only reflects that engine " +
+        'creation did not raise, not confirmed GPU execution.'
+    )
   }
 
   /**

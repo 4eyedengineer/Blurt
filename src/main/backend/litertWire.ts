@@ -5,8 +5,8 @@
  * and trivial to adjust once the exact request/response shapes are
  * verified empirically against a real `litert-lm serve` instance.
  *
- * Verified against a real `litert-lm` 0.14.0 pip-installed server (see
- * scratchpad/sidecar-verification.md for the full raw req/resp captures):
+ * Verified against a real `litert-lm` 0.14.0 pip-installed server, from raw
+ * req/resp captures:
  *   - `litert-lm serve` exposes an OpenAI-compatible
  *     `POST /v1/chat/completions`, with `stream: true` giving SSE
  *     (`text/event-stream`) chunks shaped like OpenAI's
@@ -152,13 +152,12 @@ export function buildTransformRequest(
  * sidecar's lazy model load to happen up front instead of on the user's
  * first real utterance. Verified empirically that the first request against
  * a cold engine pays a multi-second load cost (~5.6s for E2B on CPU) vs.
- * ~1.4s once warm - see scratchpad/sidecar-verification.md §3. Non-streaming
- * so the caller doesn't need SSE plumbing just to throw the result away.
+ * ~1.4s once warm. Non-streaming so the caller doesn't need SSE plumbing
+ * just to throw the result away.
  *
  * Includes a tiny (~0.3s) silent `input_audio` part alongside the text part,
- * not just text: per the HuggingFace model-card note (quoted in
- * scratchpad/perf-review.md §2 "Gap found"), the audio submodel is loaded
- * lazily and *separately* from the text backbone to save memory, so a
+ * not just text: per the HuggingFace model-card note, the audio submodel is
+ * loaded lazily and *separately* from the text backbone to save memory, so a
  * text-only warmup does not force it to load - the user's first real
  * dictation utterance would otherwise still pay that hidden cold-start cost.
  * Silence is intentionally fine here (cheap to synthesize, cheap to
@@ -374,7 +373,7 @@ export function concatInt16(chunks: Int16Array[]): Int16Array {
  * caller keeps `chunks` itself bounded to roughly the range it will ever
  * ask for (see `LitertBackend`'s `recentChunks` rolling buffer), this stays
  * cheap regardless of total session length - the whole point of the
- * rolling-window partial-tick design (scratchpad/perf-review.md §2b).
+ * rolling-window partial-tick design.
  *
  * Pure/stateless: rounds ms to the nearest sample, clamps `startMs` up to
  * `chunksStartMs` if it asks further back than `chunks` actually covers.

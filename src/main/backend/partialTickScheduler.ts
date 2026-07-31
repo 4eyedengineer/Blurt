@@ -5,9 +5,9 @@
  * unit-testable with an injectable clock, no fake session/fetch plumbing
  * needed.
  *
- * Background (see scratchpad/perf-review.md §1 "spiral" finding): the
- * original guard only checked "has enough new audio arrived since the last
- * tick *launched*, and is no tick currently in flight" - `msSinceLastPartial`
+ * Background (the "spiral" finding): the original guard only checked "has
+ * enough new audio arrived since the last tick *launched*, and is no tick
+ * currently in flight" - `msSinceLastPartial`
  * kept accruing for the whole duration a tick was in flight, so the instant
  * a slow tick completed, the very next `pushAudio` call would already be
  * over threshold and launch immediately, back-to-back, with zero breathing

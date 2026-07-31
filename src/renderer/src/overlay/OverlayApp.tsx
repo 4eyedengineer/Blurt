@@ -35,8 +35,8 @@ interface TeleprompterProps {
  * still *looks* like the old, shorter layout, then on the next animation
  * frame the nudge is released (transition back on) so it eases up to its
  * real (CSS-anchored) resting position over ~120ms. Verified via a
- * standalone harness (see this session's scratchpad) that this settles
- * well under 150ms and monotonically (no springiness) even under
+ * standalone harness that this settles well under 150ms and monotonically
+ * (no springiness) even under
  * continuous ~100ms streaming updates, and that it only engages when the
  * line count actually grows (harmless/no-op on updates that just add
  * characters to the current bottom line).

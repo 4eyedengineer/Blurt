@@ -55,10 +55,9 @@ function closeStream(stream: WriteStream): Promise<void> {
  * serve` only recognizes models that appear in `litert-lm list` (i.e. that
  * have gone through `litert-lm import <file> <alias>`), and selects between
  * them per-request via the JSON body's `model` field set to that alias -
- * see `ModelCatalogEntry.alias` and scratchpad/sidecar-verification.md §2/§3.
- * `litert-lm import` on a local file is just `shutil.copy(source, dest)`
- * under the hood (confirmed by reading the installed
- * `litert_lm_cli/commands/import.py`) into
+ * see `ModelCatalogEntry.alias`. `litert-lm import` on a local file is just
+ * `shutil.copy(source, dest)` under the hood (confirmed by reading the
+ * installed `litert_lm_cli/commands/import.py`) into
  * `$LITERT_LM_DIR/models/<alias>/model.litertlm` (`$LITERT_LM_DIR` defaults
  * to `~/.litert-lm` but is fully overridable via that env var - also
  * confirmed by reading `litert_lm_cli/model.py::get_cli_base_dir`). Rather

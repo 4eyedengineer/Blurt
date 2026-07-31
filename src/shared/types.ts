@@ -38,11 +38,11 @@ export interface SidecarSettings {
    * segments are respected) and spawned directly - no shell involved.
    * `{port}` is substituted at spawn time; `{modelPath}` is also supported
    * for custom wrapper scripts but the real `litert-lm serve` CLI takes no
-   * model-selection flag at all (verified empirically - see
-   * scratchpad/sidecar-verification.md §3) - the model is selected
-   * per-request via the JSON body's `model` field (the alias it was
-   * `litert-lm import`-ed as, see `ModelCatalogEntry.alias`), which is why
-   * the default template below doesn't reference `{modelPath}`. `{wrapperPath}`
+   * model-selection flag at all (verified empirically against a running
+   * server) - the model is selected per-request via the JSON body's `model`
+   * field (the alias it was `litert-lm import`-ed as, see
+   * `ModelCatalogEntry.alias`), which is why the default template below
+   * doesn't reference `{modelPath}`. `{wrapperPath}`
    * is substituted with the absolute path to `resources/serve_gpu.py` (see
    * `resolveServeGpuScriptPath` in `main/backend/gpuWrapperPath.ts`).
    * `{venvPython}`/

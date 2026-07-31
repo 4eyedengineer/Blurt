@@ -17,8 +17,7 @@
  * This is inherently a live-display approximation - unlike `endSession`'s
  * single full-buffer final pass (see litertBackend.ts), there is no
  * guarantee the seam is clean. Seam flicker/artifacts are an accepted
- * tradeoff for keeping partial-tick cost flat regardless of session length
- * (see scratchpad/perf-review.md §2b).
+ * tradeoff for keeping partial-tick cost flat regardless of session length.
  */
 
 /** Strips leading/trailing non-alphanumeric characters and lowercases, for tolerant word-boundary comparison. */

@@ -46,11 +46,11 @@ const DEFAULT_PARTIAL_INTERVAL_MS = 1500
 /**
  * Bound on how much trailing audio a *partial* tick re-transcribes (see
  * `runPartialTranscription`'s window/commit logic), instead of the whole
- * session buffer. Sized against the CPU throughput numbers in
- * scratchpad/perf-review.md §2b: a ~4s window keeps a tick's cost under the
- * `DEFAULT_PARTIAL_INTERVAL_MS` cadence indefinitely, regardless of how long
- * the session has been running - the fix for the "unbounded per-tick cost"
- * finding in §1. `endSession`'s final pass is unaffected - it still
+ * session buffer. Sized against measured CPU throughput numbers: a ~4s
+ * window keeps a tick's cost under the `DEFAULT_PARTIAL_INTERVAL_MS` cadence
+ * indefinitely, regardless of how long the session has been running - the
+ * fix for the "unbounded per-tick cost" finding. `endSession`'s final pass is
+ * unaffected - it still
  * re-transcribes the *entire* buffer once, for accuracy (see its doc
  * comment).
  */
@@ -70,7 +70,7 @@ export const DEFAULT_PARTIAL_WINDOW_OVERLAP_MS = 800
 const RECENT_CHUNKS_PRUNE_SLACK_MS = 500
 /**
  * Minimum real-world ms required between a partial tick completing and the
- * next one launching - the "spiral guard" from scratchpad/perf-review.md §1:
+ * next one launching - the "spiral guard" from the divergent-spiral finding:
  * without this, `msSinceLastPartial` (which keeps accruing new-audio ms
  * while a tick is in flight, by design - see `shouldLaunchPartialTick`'s doc
  * comment) is often already over threshold the instant a slow tick
@@ -227,8 +227,8 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   /**
    * The real `litert-lm serve` is a plain `http.server.HTTPServer` (not
    * `ThreadingHTTPServer`) - verified empirically that a second concurrent
-   * request just blocks on the TCP accept until the first fully completes
-   * (scratchpad/sidecar-verification.md gotcha 2). Every outgoing request
+   * request just blocks on the TCP accept until the first fully completes.
+   * Every outgoing request
    * (transcription, cleanup, transform, voice-edit, warmup) is funneled
    * through this one promise chain so we never have two fetches in flight
    * at once, each racing its own timeout clock while actually queued
@@ -260,10 +260,10 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
 
   /**
    * Best-effort: sends a throwaway minimal request through the same serial
-   * queue as real requests, to force the sidecar's lazy model load (see
-   * scratchpad/sidecar-verification.md §3/gotcha 5 - ~5.6s cold vs ~1.4s warm
-   * for E2B on CPU) to happen right after the sidecar comes up instead of
-   * blocking the user's first real utterance. Failures are swallowed - a
+   * queue as real requests, to force the sidecar's lazy model load (measured
+   * at ~5.6s cold vs ~1.4s warm for E2B on CPU) to happen right after the
+   * sidecar comes up instead of blocking the user's first real utterance.
+   * Failures are swallowed - a
    * failed warmup just means the first real request pays the cold-start
    * cost instead of this one.
    */
@@ -395,7 +395,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
    * bounded trailing *window* of audio (not the whole session, see
    * `DEFAULT_PARTIAL_WINDOW_MS`) - the direct fix for the "per-tick cost
    * grows with session length, falls behind the tick interval after ~4s on
-   * CPU" finding (scratchpad/perf-review.md §1/§2b).
+   * CPU" finding.
    *
    * Window/commit bookkeeping: each tick first checks whether a *plain*
    * trailing window (ending "now", `partialWindowMs` long) would start
@@ -567,9 +567,9 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     // with any still-in-flight partial rather than racing it, both would hit
     // the same sidecar session-less endpoint concurrently otherwise. This is
     // the ONE O(session length) full-buffer pass a longer session still
-    // pays, deliberately, for final accuracy (scratchpad/perf-review.md
-    // §2b) - but only once, not doubled on top of the (now bounded-cost)
-    // partial ticks. Bounded by requestTimeoutMs so a stuck partial can't
+    // pays, deliberately, for final accuracy - but only once, not doubled on
+    // top of the (now bounded-cost) partial ticks. Bounded by
+    // requestTimeoutMs so a stuck partial can't
     // hang endSession forever.
     const deadline = Date.now() + this.requestTimeoutMs
     while (session.partialInFlight && Date.now() < deadline) {

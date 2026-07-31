@@ -18,10 +18,9 @@ export interface ModelCatalogEntry {
    * The model ID `litert-lm import <file> <alias>` registers this model
    * under, and therefore the exact string that must be sent as the `model`
    * field on every `/v1/chat/completions` request (verified empirically
-   * against a real `litert-lm serve` - see scratchpad/sidecar-verification.md
-   * §2/§4a). This is NOT the same as our internal `ModelId` - the server has
-   * no idea what "gemma-4-e2b" means, only whatever alias it was imported
-   * as.
+   * against a real `litert-lm serve`). This is NOT the same as our internal
+   * `ModelId` - the server has no idea what "gemma-4-e2b" means, only
+   * whatever alias it was imported as.
    */
   alias: string
   /** Rough download size, for UI display before the real size is resolved. */

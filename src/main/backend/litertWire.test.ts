@@ -68,10 +68,10 @@ describe('request builders', () => {
   })
 
   it('builds a warmup request that includes BOTH a text part and a tiny silent input_audio part', () => {
-    // Regression coverage for the "audio submodel never gets warmed up"
-    // gap (scratchpad/perf-review.md §2 "Gap found") - a text-only warmup
-    // loads the text backbone but likely leaves the (separately, lazily
-    // loaded) audio submodel cold for the user's first real utterance.
+    // Regression coverage for the "audio submodel never gets warmed up" gap
+    // (the "Gap found" finding) - a text-only warmup loads the text backbone
+    // but likely leaves the (separately, lazily loaded) audio submodel cold
+    // for the user's first real utterance.
     const req = buildWarmupRequest('gemma-4-e2b')
     expect(req.stream).toBe(false)
     expect(Array.isArray(req.messages[0].content)).toBe(true)

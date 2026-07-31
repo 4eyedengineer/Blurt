@@ -185,9 +185,9 @@ describe('LitertBackend - rolling-window partial ticks', () => {
   })
 
   /**
-   * Regression test for the "unbounded per-tick cost" finding
-   * (scratchpad/perf-review.md §1): before the rolling-window fix, every
-   * partial tick re-transcribed the ENTIRE session buffer, so the audio
+   * Regression test for the "unbounded per-tick cost" finding: before the
+   * rolling-window fix, every partial tick re-transcribed the ENTIRE session
+   * buffer, so the audio
    * sent to the model grew linearly with session length. Feeds a session
    * far longer than one window's worth of audio and asserts every request's
    * WAV payload stays bounded by `partialWindowMs`, never approaching the
@@ -301,9 +301,8 @@ describe('LitertBackend - spiral guard (minPartialIdleGapMs)', () => {
   })
 
   /**
-   * Regression test for the "divergent spiral" finding
-   * (scratchpad/perf-review.md §1): `msSinceLastPartial` keeps accruing new
-   * audio ms while a tick is in flight (by design, see
+   * Regression test for the "divergent spiral" finding: `msSinceLastPartial`
+   * keeps accruing new audio ms while a tick is in flight (by design, see
    * partialTickScheduler.ts's doc comment), so the instant a tick completes
    * the backlog is often already far over the interval threshold - without
    * an idle-gap guard, the very next `pushAudio` call would launch another
