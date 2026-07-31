@@ -20,6 +20,9 @@ import {
 } from '../../shared/models'
 import type { ImportCliResolution } from './sidecar'
 import { log } from '../log'
+import { probeHardware } from '../hardware/hardwareProbe'
+import { checkModelRequirements } from '../../shared/modelRequirements'
+import type { HardwareProbeResult } from '../../shared/hardware'
 
 interface HfSibling {
   rfilename: string
@@ -74,12 +77,28 @@ export class ModelManager extends EventEmitter {
   private readonly litertLmDir: string
   private readonly progress = new Map<ModelId, ModelDownloadProgress>()
   private readonly abortControllers = new Map<ModelId, AbortController>()
+  /**
+   * Injectable so tests can supply hardware facts without spawning
+   * PowerShell or depending on the real host's RAM/disk - see
+   * hardwareProbe.ts's doc comment for why the real one can't be trusted to
+   * resolve quickly or at all on unknown hardware.
+   */
+  private readonly probeHardware: (modelsDir: string) => Promise<HardwareProbeResult>
 
-  constructor(userDataDir: string) {
+  constructor(
+    userDataDir: string,
+    probeHardwareFn: (modelsDir: string) => Promise<HardwareProbeResult> = probeHardware
+  ) {
     super()
     this.modelsDir = join(userDataDir, 'models')
     this.litertLmDir = join(userDataDir, 'litert-lm-home')
+    this.probeHardware = probeHardwareFn
     mkdirSync(this.modelsDir, { recursive: true })
+  }
+
+  /** The directory downloads land in - also the directory whose free space is checked before a download starts (see download()). */
+  getModelsDir(): string {
+    return this.modelsDir
   }
 
   private finalPath(modelId: ModelId): string {
@@ -219,6 +238,13 @@ export class ModelManager extends EventEmitter {
    * attempted at all (fails immediately with that same error, surfaced via
    * 'progress' as state 'error') rather than downloading ~GBs just to fail
    * at the import step. Progress is emitted via 'progress'.
+   *
+   * Also runs the disk/RAM hardware check (see modelRequirements.ts) before
+   * touching the network, for the same reason: this is the one method that
+   * actually writes model bytes to disk, regardless of which IPC handler or
+   * future call site triggers it, so this is where the gate has to live to
+   * be un-bypassable - a renderer-side check alone would only stop the
+   * Settings screen's own button, not e.g. a future auto-download path.
    */
   async download(modelId: ModelId, cliResolution: ImportCliResolution): Promise<void> {
     if (this.getProgress(modelId).state === 'downloading') return
@@ -231,6 +257,21 @@ export class ModelManager extends EventEmitter {
         receivedBytes: 0,
         totalBytes: null,
         error: cliResolution.error
+      })
+      return
+    }
+
+    const hardware = await this.probeHardware(this.modelsDir)
+    const requirements = checkModelRequirements(getCatalogEntry(modelId), hardware)
+    if (requirements.blockers.length > 0) {
+      const message = requirements.blockers.join(' ')
+      log.warn(`model: download blocked for ${modelId}: ${message}`)
+      this.setProgress({
+        modelId,
+        state: 'error',
+        receivedBytes: 0,
+        totalBytes: null,
+        error: message
       })
       return
     }

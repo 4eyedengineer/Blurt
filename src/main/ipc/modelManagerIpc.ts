@@ -1,8 +1,10 @@
 import { BrowserWindow, ipcMain } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { ModelId } from '../../shared/types'
+import type { HardwareProbeResult } from '../../shared/hardware'
 import type { ModelManager } from '../backend/modelManager'
 import { resolveImportCli } from '../backend/sidecar'
+import { probeHardware } from '../hardware/hardwareProbe'
 import type { SettingsStore } from '../store/settingsStore'
 
 /** Wires the ModelManager (download/list/cancel/remove) up to IPC, forwarding progress events to the renderer for the Settings screen's progress bars. */
@@ -34,6 +36,14 @@ export function registerModelManagerIpc(
   ipcMain.handle(IPC.models.remove, (_event, modelId: ModelId) => {
     modelManager.remove(modelId)
   })
+
+  // Raw facts only - the Settings screen applies the same shared/modelRequirements.ts
+  // policy to these that download() uses to gate itself, so the two never
+  // drift apart. Re-probed on every call (not cached) since free disk space
+  // can change between visits to the Settings screen.
+  ipcMain.handle(IPC.models.hardware, (): Promise<HardwareProbeResult> =>
+    probeHardware(modelManager.getModelsDir())
+  )
 
   modelManager.on('progress', (progress) => {
     getWindow()?.webContents.send(IPC.models.progress, progress)

@@ -16,6 +16,7 @@ import type {
   Settings
 } from '../shared/types'
 import type { InstalledModelInfo, ModelDownloadProgress } from '../shared/models'
+import type { HardwareProbeResult } from '../shared/hardware'
 
 /**
  * The renderer-facing API surface. Renderer code never touches Electron or
@@ -116,6 +117,7 @@ const modelsApi = {
   cancelDownload: (modelId: ModelId): Promise<void> =>
     ipcRenderer.invoke(IPC.models.cancelDownload, modelId),
   remove: (modelId: ModelId): Promise<void> => ipcRenderer.invoke(IPC.models.remove, modelId),
+  getHardware: (): Promise<HardwareProbeResult> => ipcRenderer.invoke(IPC.models.hardware),
   onProgress: (listener: (progress: ModelDownloadProgress) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: ModelDownloadProgress): void =>
       listener(progress)

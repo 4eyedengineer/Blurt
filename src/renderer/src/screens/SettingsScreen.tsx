@@ -3,9 +3,12 @@ import type { ModelId, PushToTalkStatus, SidecarMode } from '@shared/types'
 import { PTT_KEY_OPTIONS } from '@shared/types'
 import type { ModelDownloadState } from '@shared/models'
 import { getCatalogEntry } from '@shared/models'
+import type { HardwareProbeResult } from '@shared/hardware'
+import { checkModelRequirements, requiredDiskBytes } from '@shared/modelRequirements'
 import { useSettings } from '../context/SettingsContext'
 import { useModelManager } from '../hooks/useModelManager'
 import { useBackendStatus } from '../hooks/useBackendStatus'
+import { useHardwareInfo } from '../hooks/useHardwareInfo'
 import { Toggle } from '../components/Toggle'
 import { formatBytes } from '../lib/format'
 import './SettingsScreen.css'
@@ -44,17 +47,33 @@ interface ModelRowProps {
   selected: boolean
   onSelect: () => void
   models: ReturnType<typeof useModelManager>
+  hardware: HardwareProbeResult | null
 }
 
-function ModelRow({ option, selected, onSelect, models }: ModelRowProps): React.JSX.Element {
+function ModelRow({
+  option,
+  selected,
+  onSelect,
+  models,
+  hardware
+}: ModelRowProps): React.JSX.Element {
   const installed = models.installed.some((m) => m.modelId === option.id)
   const progress = models.progress[option.id]
-  const approxSize = getCatalogEntry(option.id).approxSizeBytes
+  const entry = getCatalogEntry(option.id)
   const busy = progress?.state === 'downloading' || progress?.state === 'resolving'
   const pct =
     progress?.totalBytes && progress.totalBytes > 0
       ? Math.min(100, Math.round((progress.receivedBytes / progress.totalBytes) * 100))
       : null
+  // Real disk cost once installed is ~2x the download plus caches (see
+  // modelRequirements.ts) - not just the download size, which is all the UI
+  // used to show.
+  const totalDiskNeeded = requiredDiskBytes(entry.approxSizeBytes)
+  // hardware === null means "still probing" (the GPU probe alone can take a
+  // few seconds on Windows) - show nothing blocker/note-wise until it
+  // resolves rather than flashing a false all-clear.
+  const requirements = hardware ? checkModelRequirements(entry, hardware) : null
+  const blocked = !installed && !busy && (requirements?.blockers.length ?? 0) > 0
 
   return (
     <label className="settings-screen__radio">
@@ -63,7 +82,7 @@ function ModelRow({ option, selected, onSelect, models }: ModelRowProps): React.
         <div>
           <span className="settings-screen__radio-title">{option.label}</span>
           <span className="settings-screen__radio-desc">
-            {modelStateLabel(progress?.state ?? 'idle')} · ~{formatBytes(approxSize)}
+            {modelStateLabel(progress?.state ?? 'idle')} · ~{formatBytes(totalDiskNeeded)} on disk
             {busy && pct !== null ? ` · ${pct}%` : ''}
           </span>
           {busy && (
@@ -71,11 +90,28 @@ function ModelRow({ option, selected, onSelect, models }: ModelRowProps): React.
               <div className="settings-screen__progress-fill" style={{ width: `${pct ?? 8}%` }} />
             </div>
           )}
+          {progress?.state === 'error' && progress.error && (
+            <span className="settings-screen__status settings-screen__status--error">
+              {progress.error}
+            </span>
+          )}
+          {requirements?.blockers.map((blocker) => (
+            <span key={blocker} className="settings-screen__status settings-screen__status--error">
+              {blocker}
+            </span>
+          ))}
+          {requirements?.notes.map((note) => (
+            <span key={note} className="settings-screen__hint">
+              {note}
+            </span>
+          ))}
         </div>
         <div className="settings-screen__model-actions">
           {!installed && !busy && (
             <button
               type="button"
+              disabled={blocked}
+              title={blocked ? requirements?.blockers.join(' ') : undefined}
               onClick={(e) => {
                 e.preventDefault()
                 models.download(option.id)
@@ -116,6 +152,7 @@ export function SettingsScreen(): React.JSX.Element {
   const { settings, update, addVocabularyWord, removeVocabularyWord, updateHotkey } = useSettings()
   const models = useModelManager()
   const backendStatus = useBackendStatus()
+  const hardware = useHardwareInfo()
   const [vocabInput, setVocabInput] = useState('')
   const [hotkeyInput, setHotkeyInput] = useState(settings.hotkey)
   const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus>('idle')
@@ -167,6 +204,7 @@ export function SettingsScreen(): React.JSX.Element {
               selected={settings.modelId === opt.id}
               onSelect={() => void update({ modelId: opt.id })}
               models={models}
+              hardware={hardware}
             />
           ))}
         </div>

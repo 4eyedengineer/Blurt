@@ -42,7 +42,9 @@ export const IPC = {
     download: 'models:download',
     cancelDownload: 'models:cancel-download',
     remove: 'models:remove',
-    progress: 'models:progress' // main -> renderer event
+    progress: 'models:progress', // main -> renderer event
+    /** RAM/disk/GPU facts for the current machine - see src/main/hardware/hardwareProbe.ts. */
+    hardware: 'models:hardware'
   },
   pushToTalk: {
     getStatus: 'push-to-talk:get-status'
