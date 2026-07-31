@@ -206,7 +206,14 @@ app.whenReady().then(async () => {
 
   pushToTalkController = new PushToTalkController(settingsStore.get().pushToTalk.key)
   pushToTalkController.applySettings(settingsStore.get().pushToTalk)
-  new OverlayController(pushToTalkController, () => overlayWindow, settingsStore, ipcMain)
+  new OverlayController(
+    pushToTalkController,
+    () => overlayWindow,
+    settingsStore,
+    historyStore,
+    () => mainWindow?.webContents.send(IPC.history.changed),
+    ipcMain
+  )
   registerPushToTalkIpc(pushToTalkController)
 
   registerBackendIpc(controller, () => [mainWindow, overlayWindow])

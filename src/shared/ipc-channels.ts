@@ -23,7 +23,9 @@ export const IPC = {
     search: 'history:search',
     save: 'history:save',
     remove: 'history:remove',
-    get: 'history:get'
+    get: 'history:get',
+    /** main -> renderer: history was written from outside the Dictate screen (a push-to-talk overlay dictation), so an open History screen should re-read it. */
+    changed: 'history:changed'
   },
   settings: {
     get: 'settings:get',

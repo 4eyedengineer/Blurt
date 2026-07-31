@@ -1,21 +1,7 @@
-export function countWords(text: string): number {
-  const trimmed = text.trim()
-  if (!trimmed) return 0
-  return trimmed.split(/\s+/).length
-}
-
-export interface SessionStats {
-  wordCount: number
-  durationMs: number
-  wpm: number
-}
-
-export function computeStats(text: string, durationMs: number): SessionStats {
-  const wordCount = countWords(text)
-  const minutes = Math.max(durationMs / 60000, 1 / 60) // floor at 1s to avoid divide-by-near-zero spikes
-  const wpm = Math.round(wordCount / minutes)
-  return { wordCount, durationMs, wpm }
-}
+// Stats live in @shared/stats so the main process computes them identically
+// for overlay dictations - re-exported here since the renderer has always
+// imported them from this module.
+export { computeStats, countWords, type SessionStats } from '@shared/stats'
 
 export function formatDuration(durationMs: number): string {
   const totalSeconds = Math.round(durationMs / 1000)

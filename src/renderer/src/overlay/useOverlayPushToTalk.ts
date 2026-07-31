@@ -3,6 +3,7 @@ import type { AudioChunkPayload } from '@shared/backend'
 import { useAudioCapture } from '../hooks/useAudioCapture'
 import { initialOverlayState, overlayReducer, type OverlayPhase } from './overlayState'
 import type { DiffToken } from '../lib/wordDiff'
+import { playReadyTone } from '../lib/readyTone'
 
 /** How long the compact inline diff-reveal stays up in the pill before settling to the plain final text. */
 const REVEAL_SETTLE_MS = 1500
@@ -32,6 +33,14 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
   const sessionIdRef = useRef<string | null>(null)
   const unsubscribePartialRef = useRef<() => void>(() => {})
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * When the first PCM chunk of this hold arrived, i.e. when capture was
+   * genuinely live - null until then. Used both to fire the ready tone
+   * exactly once and as the start of the dictation's duration: the ~1s
+   * device-open window before this is dead air the user wasn't speaking
+   * into, so timing from the keypress would understate their real WPM.
+   */
+  const captureLiveAtRef = useRef<number | null>(null)
 
   const clearSettleTimer = useCallback(() => {
     if (settleTimerRef.current) {
@@ -41,15 +50,22 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
   }, [])
 
   const handleChunk = useCallback((payload: AudioChunkPayload) => {
-    if (sessionIdRef.current) {
-      window.api.dictation.pushAudio(sessionIdRef.current, payload)
+    if (!sessionIdRef.current) return
+    // The first chunk is the only honest "you can talk now" signal - it
+    // means the mic is open and PCM is flowing, which is up to a second or
+    // two after the key went down (see readyTone.ts).
+    if (captureLiveAtRef.current === null) {
+      captureLiveAtRef.current = Date.now()
+      playReadyTone()
     }
+    window.api.dictation.pushAudio(sessionIdRef.current, payload)
   }, [])
 
   const audio = useAudioCapture(handleChunk)
 
   const start = useCallback(async () => {
     clearSettleTimer()
+    captureLiveAtRef.current = null
     dispatch({ type: 'start' })
     const sessionId = await window.api.dictation.startSession({ sampleRate: 16000 })
     sessionIdRef.current = sessionId
@@ -84,23 +100,30 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
     sessionIdRef.current = null
     unsubscribePartialRef.current()
     audio.stop()
+    const liveAt = captureLiveAtRef.current
+    captureLiveAtRef.current = null
     if (!sessionId) {
       window.api.overlay.sendResult({
         rawTranscript: '',
         cleanedText: '',
+        durationMs: 0,
         error: 'No dictation session was running when the key was released.'
       })
       return
     }
 
     dispatch({ type: 'stop' })
+    // 0 if capture never went live - that's a dictation with no audio, and
+    // an invented duration would only produce a nonsense WPM in history.
+    const durationMs = liveAt === null ? 0 : Date.now() - liveAt
     try {
       const raw = await window.api.dictation.endSession(sessionId)
       const cleaned = await window.api.dictation.cleanup(raw)
       dispatch({ type: 'cleaned', raw, text: cleaned })
-      // Clipboard copy/paste fire immediately on cleanup completion - only the
-      // visual diff-reveal (settled via the timer below) lingers.
-      window.api.overlay.sendResult({ rawTranscript: raw, cleanedText: cleaned })
+      // Clipboard copy/paste and the history write both fire immediately on
+      // cleanup completion - only the visual diff-reveal (settled via the
+      // timer below) lingers.
+      window.api.overlay.sendResult({ rawTranscript: raw, cleanedText: cleaned, durationMs })
 
       clearSettleTimer()
       settleTimerRef.current = setTimeout(() => {
@@ -111,13 +134,19 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
       const reason = err instanceof Error ? err.message : String(err)
       window.api.log.rendererError(`overlay dictation failed: ${reason}`)
       dispatch({ type: 'failed', message: reason })
-      window.api.overlay.sendResult({ rawTranscript: '', cleanedText: '', error: reason })
+      window.api.overlay.sendResult({
+        rawTranscript: '',
+        cleanedText: '',
+        durationMs,
+        error: reason
+      })
     }
   }, [audio, clearSettleTimer])
 
   const cancel = useCallback(() => {
     const sessionId = sessionIdRef.current
     sessionIdRef.current = null
+    captureLiveAtRef.current = null
     unsubscribePartialRef.current()
     audio.stop()
     clearSettleTimer()

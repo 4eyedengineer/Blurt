@@ -26,6 +26,13 @@ export function HistoryScreen({ onOpenEntry }: HistoryScreenProps): React.JSX.El
     return () => clearTimeout(handle)
   }, [query, refresh])
 
+  // Push-to-talk dictations are written by the main process, not this
+  // window - without this, a dictation made while the History screen is
+  // open wouldn't appear until the user navigated away and back.
+  useEffect(() => {
+    return window.api.history.onChanged(() => void refresh(query))
+  }, [query, refresh])
+
   const remove = useCallback(async (id: string, event: React.MouseEvent) => {
     event.stopPropagation()
     await window.api.history.remove(id)

@@ -6,6 +6,8 @@ import type { PushToTalkController } from './pushToTalk/pushToTalkController'
 import { showOverlayWindow } from './overlay'
 import { copyAndPaste } from './paste'
 import { log } from './log'
+import { computeStats } from '../shared/stats'
+import type { HistoryStore } from './store/historyStore'
 
 const AUTO_HIDE_MS = 2500
 /** Accidental taps get a much shorter grace period since there's nothing for the user to read. */
@@ -24,6 +26,8 @@ const STUCK_HIDE_MS = 30_000
 interface OverlayResultPayload {
   rawTranscript: string
   cleanedText: string
+  /** Measured from the first captured PCM chunk, not the keypress - see useOverlayPushToTalk. */
+  durationMs: number
   /** Set instead of the text fields when the overlay's own dictation session failed - see useOverlayPushToTalk.stop. */
   error?: string
 }
@@ -46,6 +50,10 @@ export class OverlayController {
     private readonly pushToTalk: PushToTalkController,
     private readonly getOverlayWindow: () => BrowserWindow | null,
     private readonly settingsStore: SettingsStore,
+    /** Overlay dictations land in the same history as the Dictate screen's - see `recordHistory`. */
+    private readonly historyStore: HistoryStore,
+    /** Notifies the main window that history changed, so an open History screen re-reads it. */
+    private readonly notifyHistoryChanged: () => void,
     ipcMain: IpcMain
   ) {
     this.pushToTalk.on('hold-start', () => this.handleHoldStart())
@@ -95,7 +103,39 @@ export class OverlayController {
     const { autoPaste } = this.settingsStore.get().pushToTalk
     const outcome = await copyAndPaste(clipboard, payload.cleanedText, autoPaste)
     this.send(IPC.overlay.pasteStatus, outcome)
+    this.recordHistory(payload)
     this.scheduleHide(AUTO_HIDE_MS)
+  }
+
+  /**
+   * Files an overlay dictation into the same history the Dictate screen
+   * writes to - a dictation is a dictation regardless of which surface
+   * captured it. Empty results are skipped (nothing was said; a blank row
+   * is noise, not history). Never throws: a history-write failure must not
+   * cost the user the clipboard/paste that already succeeded above.
+   */
+  private recordHistory(payload: OverlayResultPayload): void {
+    if (!payload.cleanedText.trim()) return
+    try {
+      const stats = computeStats(payload.cleanedText, payload.durationMs)
+      this.historyStore.save({
+        rawTranscript: payload.rawTranscript,
+        cleanedText: payload.cleanedText,
+        displayText: payload.cleanedText,
+        displayMode: 'none',
+        wordCount: stats.wordCount,
+        durationMs: stats.durationMs,
+        wpm: stats.wpm
+      })
+      // The History screen may already be open and listing stale rows -
+      // tell it to re-read rather than making the user navigate away and
+      // back to see what they just dictated.
+      this.notifyHistoryChanged()
+    } catch (err) {
+      log.error(
+        `overlay: failed to save dictation to history: ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
   }
 
   private scheduleHide(ms: number): void {

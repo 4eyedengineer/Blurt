@@ -81,7 +81,12 @@ const historyApi = {
   search: (query: string) => ipcRenderer.invoke(IPC.history.search, query),
   save: (entry: NewDictationEntry & { id?: string }) => ipcRenderer.invoke(IPC.history.save, entry),
   remove: (id: string) => ipcRenderer.invoke(IPC.history.remove, id),
-  get: (id: string) => ipcRenderer.invoke(IPC.history.get, id)
+  get: (id: string) => ipcRenderer.invoke(IPC.history.get, id),
+  onChanged: (listener: () => void): (() => void) => {
+    const handler = (): void => listener()
+    ipcRenderer.on(IPC.history.changed, handler)
+    return () => ipcRenderer.removeListener(IPC.history.changed, handler)
+  }
 }
 
 const settingsApi = {
@@ -164,7 +169,12 @@ const overlayApi = {
     ipcRenderer.on(IPC.overlay.pasteStatus, handler)
     return () => ipcRenderer.removeListener(IPC.overlay.pasteStatus, handler)
   },
-  sendResult: (payload: { rawTranscript: string; cleanedText: string; error?: string }): void => {
+  sendResult: (payload: {
+    rawTranscript: string
+    cleanedText: string
+    durationMs: number
+    error?: string
+  }): void => {
     ipcRenderer.send(IPC.overlay.result, payload)
   }
 }
