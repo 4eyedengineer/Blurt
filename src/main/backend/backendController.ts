@@ -73,7 +73,7 @@ export class BackendController extends EventEmitter {
     private readonly settingsStore: SettingsStore,
     private readonly modelManager: ModelManager,
     userDataDir: string,
-    /** Passed straight through to LitertBackend as `debugAudioDir` - see its doc comment / ELOQUENT_DEBUG_AUDIO. Optional so tests/mocks don't need to care. */
+    /** Passed straight through to LitertBackend as `debugAudioDir` - see its doc comment / BLURT_DEBUG_AUDIO. Optional so tests/mocks don't need to care. */
     private readonly debugAudioDir?: string,
     /**
      * The self-managed runtime venv's resolved absolute paths (see
@@ -175,7 +175,7 @@ export class BackendController extends EventEmitter {
           // backend is known (and truthfully reported) before the sidecar
           // ever looks ready. Harmless/unused for a plain `litert-lm serve`
           // managed command (e.g. a hand-edited external one).
-          ELOQUENT_EAGER_MODEL_ID: getCatalogEntry(settings.modelId).alias
+          BLURT_EAGER_MODEL_ID: getCatalogEntry(settings.modelId).alias
         }
       })
 

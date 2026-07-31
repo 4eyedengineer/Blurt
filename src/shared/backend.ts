@@ -74,7 +74,7 @@ export interface BackendStatus {
   message?: string
   /**
    * The accelerator a managed sidecar's engine actually ended up running
-   * on, once known - parsed from `serve_gpu.py`'s `ELOQUENT_EFFECTIVE_BACKEND`
+   * on, once known - parsed from `serve_gpu.py`'s `BLURT_EFFECTIVE_BACKEND`
    * stdout marker (see that file and `Sidecar`/`BackendController`).
    * Undefined until observed, or when there's nothing to observe (mock
    * backend, 'external' sidecar mode). Never assume this matches the

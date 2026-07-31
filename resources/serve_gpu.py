@@ -78,8 +78,8 @@ has to observe the truth from here. So as soon as an engine is actually
 created (or reused) - success or post-fallback - this script prints an
 unambiguous, machine-readable line to stdout:
 
-    ELOQUENT_EFFECTIVE_BACKEND=gpu
-    ELOQUENT_EFFECTIVE_BACKEND=cpu
+    BLURT_EFFECTIVE_BACKEND=gpu
+    BLURT_EFFECTIVE_BACKEND=cpu
 
 `sidecar.ts` parses this off the child process's stdout and surfaces it as
 `BackendStatus.effectiveAccelerator`, all the way to the Settings screen -
@@ -105,7 +105,7 @@ the effective-backend report) has finished, without any changes needed on
 the Electron side's readiness polling.
 
 This needs to know which model to load ahead of any real request - set
-`ELOQUENT_EAGER_MODEL_ID` to the exact alias the model was `litert-lm
+`BLURT_EAGER_MODEL_ID` to the exact alias the model was `litert-lm
 import`-ed as (see `ModelCatalogEntry.alias` in shared/models.ts; the
 Electron app always sets this for a managed GPU sidecar - see
 `backendController.ts`). If unset (e.g. running this script by hand),
@@ -128,8 +128,8 @@ entirely (falls back to this script being a transparent passthrough to the
 normal `serve` command) - useful for A/B-testing GPU vs CPU without editing
 the managed command template.
 
-Set ELOQUENT_EAGER_MODEL_ID=<alias> to have engine creation (and therefore
-the ELOQUENT_EFFECTIVE_BACKEND report) happen eagerly at startup instead of
+Set BLURT_EAGER_MODEL_ID=<alias> to have engine creation (and therefore
+the BLURT_EFFECTIVE_BACKEND report) happen eagerly at startup instead of
 lazily on the first request - see "Eager engine creation" above.
 
 ## Parent watchdog (crash-safe cleanup)
@@ -142,7 +142,7 @@ the *next* launch's pid-file hygiene notices and kills it (see
 `portGuard.ts`). That's cleanup on next launch, not cleanup at crash time -
 this watchdog closes that gap.
 
-If `ELOQUENT_PARENT_PID` is set in the environment (the Electron main
+If `BLURT_PARENT_PID` is set in the environment (the Electron main
 process's own `process.pid` - see `sidecar.ts`'s `spawnManaged`), a daemon
 thread started at import time blocks until that pid exits, then logs one
 line to stderr and calls `os._exit(0)` - immediate process death, which is
@@ -162,7 +162,7 @@ Two platform-specific waits, chosen so neither one polls needlessly:
     2 seconds - cheap enough that "at crash time" effectively still means
     "within ~2s", not truly instant.
 
-If `ELOQUENT_PARENT_PID` is unset (e.g. running this script by hand for
+If `BLURT_PARENT_PID` is unset (e.g. running this script by hand for
 local testing), the watchdog logs that it's disabled and does nothing else
 - this script must remain usable standalone, e.g. from the "re-verify GPU"
 commands in WINDOWS.md, without requiring a fake parent pid.
@@ -183,7 +183,7 @@ _orig_parse_backend = _model.parse_backend
 # creation, without needing to re-import/re-patch anything.
 _state = {
     "backend": os.environ.get("LITERT_LM_SERVE_BACKEND", "gpu").strip().lower() or "gpu",
-    # Whether the ELOQUENT_EFFECTIVE_BACKEND marker has already been printed
+    # Whether the BLURT_EFFECTIVE_BACKEND marker has already been printed
     # - see `_report_effective_backend`.
     "reported": False,
 }
@@ -227,7 +227,7 @@ _orig_get_or_initialize_server_engine = serve_util.get_or_initialize_server_engi
 
 
 def _report_effective_backend() -> None:
-  """Prints the ELOQUENT_EFFECTIVE_BACKEND marker line - see this module's
+  """Prints the BLURT_EFFECTIVE_BACKEND marker line - see this module's
   "Effective-backend reporting" doc comment. Reflects `_state["backend"]`,
   which is only ever "gpu" if that's genuinely what the just-created (or
   reused) engine is running on - the fallback below always flips it to
@@ -241,7 +241,7 @@ def _report_effective_backend() -> None:
   if _state["reported"]:
     return
   _state["reported"] = True
-  sys.stdout.write(f"ELOQUENT_EFFECTIVE_BACKEND={_state['backend']}\n")
+  sys.stdout.write(f"BLURT_EFFECTIVE_BACKEND={_state['backend']}\n")
   sys.stdout.flush()
 
 
@@ -265,7 +265,7 @@ def _get_or_initialize_server_engine_with_fallback(server, *, model_id):
 
 serve_util.get_or_initialize_server_engine = _get_or_initialize_server_engine_with_fallback
 
-_EAGER_MODEL_ID_ENV = "ELOQUENT_EAGER_MODEL_ID"
+_EAGER_MODEL_ID_ENV = "BLURT_EAGER_MODEL_ID"
 _orig_server_init = serve_util.LiteRTLMServer.__init__
 
 
@@ -273,7 +273,7 @@ def _server_init_with_eager_engine(self, *args, **kwargs):
   """Wraps `LiteRTLMServer.__init__` to create the main-model engine
   synchronously, before this constructor (and therefore `run_server`'s
   `with LiteRTLMServer(...) as server:` block) returns - see "Eager engine
-  creation" above for why. Best-effort: if `ELOQUENT_EAGER_MODEL_ID` isn't
+  creation" above for why. Best-effort: if `BLURT_EAGER_MODEL_ID` isn't
   set, or engine creation fails for any reason, logs to stderr and leaves
   engine creation to the normal lazy first-request path rather than
   crashing the server.
@@ -294,7 +294,7 @@ def _server_init_with_eager_engine(self, *args, **kwargs):
 
 serve_util.LiteRTLMServer.__init__ = _server_init_with_eager_engine
 
-_PARENT_PID_ENV = "ELOQUENT_PARENT_PID"
+_PARENT_PID_ENV = "BLURT_PARENT_PID"
 
 
 def _wait_for_parent_exit_windows(pid: int) -> None:
@@ -345,7 +345,7 @@ def _run_parent_watchdog(pid: int) -> None:
 
 def _start_parent_watchdog() -> None:
   """Starts the parent watchdog daemon thread - see this module's "Parent
-  watchdog" doc comment. No-op (logged) if `ELOQUENT_PARENT_PID` isn't set
+  watchdog" doc comment. No-op (logged) if `BLURT_PARENT_PID` isn't set
   or isn't a valid integer, so this script stays usable standalone.
   """
   raw = os.environ.get(_PARENT_PID_ENV, "").strip()

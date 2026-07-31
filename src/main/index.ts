@@ -269,7 +269,7 @@ app.on('window-all-closed', () => {
 // only the *graceful* path, though: a killed/crashed main process (Task
 // Manager, `taskkill /f`, a Windows shutdown that doesn't wait) skips this
 // entirely - that gap is why `resources/serve_gpu.py` also runs its own
-// parent-watchdog (`ELOQUENT_PARENT_PID`, set in `sidecar.ts`'s
+// parent-watchdog (`BLURT_PARENT_PID`, set in `sidecar.ts`'s
 // `spawnManaged`), which notices the main process dying and shuts the
 // sidecar down itself within seconds even when this handler never runs.
 // BackendController/Sidecar additionally has a pid-file-based reclaim step

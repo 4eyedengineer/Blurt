@@ -1,155 +1,15 @@
-# Running Windows Eloquent on Windows (RTX 3060)
+# Running Blurt from source on Windows
 
-This is the practical setup guide for running the real LiteRT-LM backend on a Windows host, as
-opposed to the Linux/WSL2 dev/test loop. It assumes you've already read the
-"[The real backend: LiteRT-LM](README.md#the-real-backend-litert-lm)" section of the README - this
-doc is the Windows-specific how-to; the README has the wire-protocol/architecture background.
+This is the practical guide for building and running Blurt from source on a Windows host, plus a
+deep dive into how its GPU acceleration works. If you just want to *use* Blurt, you don't need any
+of this - see the main [README.md](README.md) for the installer/portable download.
 
-Everything below was verified empirically against a real `litert-lm` 0.14.0 pip install (see
-`scripts/integration-live.mjs` and `scratchpad/sidecar-verification.md` for the raw evidence) - not
-guessed from documentation. GPU execution specifically was verified against a real RTX 3060 Laptop
-GPU (via WSL interop into the actual Windows host this app targets, not just theorized about) - see
-"GPU acceleration" below for the exact commands/log lines and measured tokens/s.
+This assumes you've read [CONTRIBUTING.md](CONTRIBUTING.md)'s "The real backend: LiteRT-LM"
+section for the wire-protocol/architecture background; this doc is the Windows-specific how-to.
 
-## Standalone app (no scripts)
-
-If you just want to run Windows Eloquent like a normal Windows app - not develop it - grab one of
-the built artifacts instead of cloning the repo:
-
-- **`windows-eloquent-<version>-setup.exe`** - a normal per-user NSIS installer: Start Menu +
-  desktop shortcuts, an entry in "Installed apps" with a proper uninstaller. Uninstalling deletes
-  your settings/history/models automatically, and separately asks (it's sized in the hundreds of
-  MB, so it's a prompt, not silent) whether to also remove the shared Python runtime under
-  `%LOCALAPPDATA%\WindowsEloquent`.
-- **`windows-eloquent-<version>-portable.exe`** - a single self-contained exe, no install step; run
-  it from anywhere (a USB stick, Downloads, wherever).
-
-Either way, the exe is fully self-sufficient on first launch - no `run-windows.bat`, no
-PowerShell, no manual `pip install`:
-
-- it looks for a healthy Python venv at `%LOCALAPPDATA%\WindowsEloquent\venv` (the same location
-  `Start-Eloquent.ps1` uses below - if you've already run that on this machine, the packaged app
-  just reuses it, no extra setup at all)
-- if none is found, it shows a small first-run **setup screen** (step list + live log) that finds a
-  Python 3.10+ interpreter (`py -3.12` / `py -3` / `python`, in that order), creates the venv, and
-  `pip install`s the pinned `litert-lm` version into it. If no Python 3.10+ install can be found, it
-  shows a plain error - **"Install Python 3.10+ from python.org, then relaunch"** - and does not try
-  to install anything on its own (no silent winget calls, unlike the ps1 launcher below)
-- the model itself is handled by the in-app Settings screen either way (download + import from
-  HuggingFace) - see "Model downloads" below; nothing here downloads the ~2.4 GiB model file, only
-  the ~46 MB `litert-lm` pip package
-
-This is the recommended path for actually *using* the app day-to-day. The rest of this document
-(`run-windows.bat`/`Start-Eloquent.ps1`, building from source) is the **developer** path - useful
-for working on the app itself, not required to just run it.
-
-## Quick start: one-click launcher
-
-Steps 1-4 below (Python, the `litert-lm` CLI, importing a model, configuring the app) are
-automated by **`run-windows.bat`** at the repo root - double-click it (it just runs
-`Start-Eloquent.ps1` with `-ExecutionPolicy Bypass`, so it works even if PowerShell script
-execution is locked down on your machine) and it will:
-
-- **if your source checkout lives on a UNC/WSL path** (e.g. you opened this repo via
-  `\\wsl.localhost\<distro>\...` in Explorer, which is the common case when developing inside WSL) -
-  mirror it with `robocopy /MIR` to a Windows-local working copy under
-  `%LOCALAPPDATA%\WindowsEloquent\app`, and do everything below _there_ instead of on the network
-  path. **Source of truth stays in WSL** - this is a one-way, repeatable sync (not a copy-once): the
-  mirror is excluded from the copy for `node_modules`, `.runtime`, `out`, `dist`, and `.git`, so
-  re-running the launcher after you change code re-syncs your changes into the same working copy,
-  without ever re-downloading the model or rebuilding the venv (those live under
-  `%LOCALAPPDATA%\WindowsEloquent`, a sibling of `app`, untouched by the sync). If instead your
-  checkout is already on a real Windows drive (e.g. you `git clone`d directly onto `C:\...` rather
-  than developing through WSL), it skips the mirror step entirely and bootstraps in place.
-- install Python 3.12 via `winget` if missing
-- install/upgrade Node.js via `winget` to satisfy the **Node >= 20.19 (or >= 22.12) requirement**
-  below - see "Node.js version requirement" for why this specific floor and what the script does
-  about it, both on a fresh machine and on a machine that already has a too-old Node
-- create a `litert-lm` venv under `%LOCALAPPDATA%\WindowsEloquent\venv` and `pip install litert-lm`
-  into it (skips this if already done)
-- `npm install` if `node_modules` is missing, or if it was last installed with a different Node
-  version than the one this run resolved (in the working copy above; see "Node.js version
-  requirement" below)
-- download + import the Gemma E2B model into the app's own model store if it isn't there yet
-  (reusing an existing local copy instead of re-downloading ~2.4 GiB, if one is found)
-- seed an initial `settings.json` with the real LiteRT-LM backend already enabled - **only** on the
-  very first run, so it never clobbers a config you've since changed
-- run `npm run dev` (in the working copy above)
-
-Re-running it is safe: every step checks what's already done and skips it - including the
-robocopy sync, which just re-mirrors whatever changed.
-
-### Node.js version requirement
-
-This project needs **Node.js >= 20.19.0, or >= 22.12.0** - not just "any recent Node." That's
-Vite's own `engines` requirement (`node_modules/vite/package.json` once installed), and it's a hard
-requirement, not a soft recommendation: Vite's config loader calls the Node built-in
-`crypto.hash()`, which was added in Node 21.7.0 and backported to 20.12.0. Anything in the
-20.12-20.18 or 21.0-21.6 ranges either lacks `crypto.hash()` entirely or fails Vite's own engines
-check, and `npm run dev` dies immediately on startup with:
-
-```
-TypeError: crypto.hash is not a function
-    at getHash (.../node_modules/vite/dist/node/chunks/config.js:...)
-```
-
-`Start-Eloquent.ps1` checks the resolved Node's version **on every run** (not just the first) and,
-if it's missing or too old, runs `winget install -e --id OpenJS.NodeJS.LTS` to install/upgrade it
-in place, then re-resolves `node.exe`/`npm.cmd` directly (refreshing this process's `PATH` from the
-machine+user registry, since a just-completed `winget install` doesn't update an already-running
-shell's `PATH`) rather than trusting a possibly-stale `PATH` lookup. If that still can't find a
-new-enough Node afterward (e.g. an older install shadowing the new one earlier on `PATH`), it prints
-an error and asks you to close the window and re-run in a fresh terminal.
-
-Because a stale-Node `npm install` can leave `node_modules` resolved/built against the wrong
-engines/ABI, the script also stamps the Node major.minor version used for the last successful `npm
-install` in a `.node-version-stamp` file next to `node_modules`, and re-runs `npm install`
-automatically whenever the detected Node version no longer matches that stamp (including the first
-time this check runs against a pre-existing `node_modules` with no stamp yet at all) - not just when
-`node_modules` is missing outright.
-
-Set `$env:ELOQUENT_DRYRUN` (see below) to check what Node the script would use/install without
-actually installing/upgrading anything.
-
-Why the mirroring step exists at all: a Windows-native `npm`/`node`/Electron cannot run against a
-`node_modules` tree that was `npm install`ed on Linux (native addons, the Electron binary itself -
-all built for Linux), and npm's lots-of-small-files I/O pattern is slow and occasionally flaky
-against a `\\wsl.localhost\` (or any UNC) share. Mirroring to a real local Windows drive first
-avoids both problems. If you'd rather not have a second copy of the source at all, see "Alternative:
-clone natively on Windows" below.
-
-**Testing note**: `run-windows.bat`/`Start-Eloquent.ps1` were exercised from a WSL2 sandbox using
-`cmd.exe`/`powershell.exe` interop against a real Windows host (no GUI/mouse available there) - the
-UNC-path detection, the `pushd`-based cwd fix, the robocopy plan (via `ELOQUENT_DRYRUN=1`, see
-below), and the "bootstrap in place on a local drive" branch were all confirmed to resolve paths
-correctly and run cleanly. What could **not** be verified from WSL: an actual Explorer double-click
-(mouse-driven GUI interaction - the interop testing used `cmd.exe /c <fully-qualified path>`, which
-is what the "open" file-association verb Explorer uses for `.bat` files resolves to), a `winget`
-install of a missing Python/Node (deliberately not exercised to avoid mutating the test machine),
-`net use`-mapping a drive letter onto a `\\wsl.localhost\...` path specifically (Windows' `net use`
-doesn't support that provider - it's a `pushd`/Explorer/DrvFs thing, not classic SMB - so that one
-sub-case of the "mapped drive" detection is unverified, though the same WMI-based check was
-confirmed to correctly say "not remote" for an ordinary local drive), and a real end-to-end model
-download + `npm run dev` launch on Windows. Skim the script before your first real run, and please
-report back anything that doesn't match your machine so it can be corrected.
-
-Set `$env:ELOQUENT_DRYRUN` to any value other than `""`/`0` before running `run-windows.bat` (or
-`Start-Eloquent.ps1` directly) to print the resolved source/working-copy paths and the robocopy plan
-and then stop, with no side effects at all - useful for sanity-checking the path/UNC-handling logic
-on a new machine before doing anything real.
-
-### Alternative: clone natively on Windows
-
-If you'd rather avoid the WSL-mirroring step entirely, clone the repo directly onto a Windows drive
-instead of developing through a `\\wsl.localhost\...` checkout:
-
-```powershell
-git clone <repo-url> C:\src\windows-eloquent
-```
-
-Then run `run-windows.bat` from there. `Start-Eloquent.ps1` detects it's already on a local drive
-and bootstraps in place - no mirroring, no `%LOCALAPPDATA%\WindowsEloquent\app` working copy, just
-your checkout.
+Everything below was verified against a real `litert-lm` 0.14.0 pip install. GPU execution
+specifically was verified against a real RTX 3060 Laptop GPU - see "GPU acceleration" below for the
+exact commands/log lines and measured tokens/s.
 
 ## 1. Install Python 3.10+
 
@@ -165,16 +25,34 @@ Open a **new** terminal afterwards so `PATH` picks up the install. Confirm with:
 python --version
 ```
 
-## 2. Install the `litert-lm` CLI
+## 2. Install Node.js
+
+Blurt needs **Node.js >= 20.19.0, or >= 22.12.0** - that's Vite's own `engines` requirement
+(`node_modules/vite/package.json` once installed), and it's a hard requirement, not a soft
+recommendation: Vite's config loader calls the Node built-in `crypto.hash()`, which was added in
+Node 21.7.0 and backported to 20.12.0. Anything in the 20.12-20.18 or 21.0-21.6 ranges either lacks
+`crypto.hash()` entirely or fails Vite's own engines check, and `npm run dev` dies immediately with:
+
+```
+TypeError: crypto.hash is not a function
+    at getHash (.../node_modules/vite/dist/node/chunks/config.js:...)
+```
+
+```powershell
+winget install -e --id OpenJS.NodeJS.LTS
+node --version
+```
+
+## 3. Install the `litert-lm` CLI
 
 ```powershell
 pip install litert-lm
 ```
 
 This pulls `litert-lm` + `litert-lm-api` (the compiled native engine and its Python bindings) +
-`litert-lm-builder` - no compiler, no Bazel, no Visual Studio needed. This is a **prebuilt binary
-wheel**, unlike the from-source Bazel recipe in the README/`scratchpad/litert-lm-report.md`, which
-you only need if you want to hand-modify the native engine itself.
+`litert-lm-builder` - no compiler, no Bazel, no Visual Studio needed. This is a prebuilt binary
+wheel, unlike the from-source Bazel recipe in "Building `litert-lm` from source" below, which you
+only need if you want to hand-modify the native engine itself.
 
 Confirm the CLI is on `PATH`:
 
@@ -182,15 +60,14 @@ Confirm the CLI is on `PATH`:
 litert-lm --version
 ```
 
-## 3. Import a model
+## 4. Import a model
 
-`litert-lm serve` (see step 5) only serves models that have been **registered** via
-`litert-lm import` - a plain download or `.litertlm` file sitting on disk isn't enough on its own.
-Import gives the model a short **alias**, and that alias (not the HuggingFace repo name, not any
-internal app ID) is what goes in the `"model"` field of every request. This app's `ModelManager`
-does this import step automatically after every in-app download (see
-`src/main/backend/modelManager.ts`), but if you're setting things up by hand or debugging, here's
-the equivalent manually:
+`litert-lm serve` only serves models that have been **registered** via `litert-lm import` - a
+plain download or `.litertlm` file sitting on disk isn't enough on its own. Import gives the model
+a short **alias**, and that alias (not the HuggingFace repo name, not any internal app ID) is what
+goes in the `"model"` field of every request. Blurt's `ModelManager` does this automatically after
+every in-app download (`src/main/backend/modelManager.ts`), but if you're setting things up by hand
+or debugging, here's the equivalent manually:
 
 ```powershell
 # E2B - smallest, ~2.4 GiB, fastest, least capable
@@ -199,16 +76,15 @@ litert-lm import --from-huggingface-repo litert-community/gemma-4-E2B-it-litert-
 # E4B - ~3.4 GiB
 litert-lm import --from-huggingface-repo litert-community/gemma-4-E4B-it-litert-lm gemma-4-E4B-it.litertlm e4b
 
-# 12B - ~6.1 GiB, most capable - recommended for an RTX 3060 class machine (16GB+ system RAM;
-# this all runs on CPU today regardless of the GPU - see the GPU section below - so it's system
-# RAM/CPU that gates feasibility, not VRAM)
+# 12B - ~6.1 GiB, most capable
 litert-lm import --from-huggingface-repo litert-community/gemma-4-12B-it-litert-lm gemma-4-12B-it.litertlm 12b
 ```
 
 All three repos are ungated (Apache-2.0, no HuggingFace account/token needed). Downloads land in
 `%USERPROFILE%\.litert-lm\models\<alias>\model.litertlm` by default (overridable via the
 `LITERT_LM_DIR` environment variable - the app sets this itself to a sandboxed folder under its own
-`userData` directory so it never touches your real `~/.litert-lm`; see `ModelManager.getLitertLmDir()`).
+`userData` directory so it never touches your real `~/.litert-lm`; see
+`ModelManager.getLitertLmDir()`).
 
 Verify with:
 
@@ -218,68 +94,15 @@ litert-lm list
 
 which should show your imported alias(es) with their size and import timestamp.
 
-**Recommendation for a 3060 desktop**: start with **12B** if you have 16+ GiB of system RAM to
-spare (everything runs on CPU today - see below - so more capable model = more RAM/CPU time, not
-more VRAM). Fall back to E4B or E2B if generation feels sluggish; E2B is the one this whole
-integration was verified against and is a safe baseline if you just want to confirm everything
-works before committing disk/RAM to a bigger model.
-
-## 4. Configure the app (Settings screen)
-
-Open the app's **Settings** tab and set:
-
-- **Backend**: `LiteRT-LM`
-- **Model**: pick the one you imported (Gemma 4 E2B / E4B / 12B) and hit Download if it isn't
-  already showing "Installed" - the in-app downloader does the same HuggingFace download +
-  `litert-lm import` as step 3, so if you already imported by hand, the button will just say
-  "Installed" once the app also has its own copy of the `.litertlm` file under its own
-  `userData/models/` directory (the app manages its own model file store; it doesn't currently
-  read models you imported entirely outside it - use the in-app Download button as the primary
-  path, and treat manual `litert-lm import` as a way to sanity-check the CLI itself, not as an
-  alternate install method for the app).
-- **Sidecar mode**: two options -
-  - **Managed** (recommended default): the app spawns a sidecar process itself, using the command
-    template field. `serve` takes **no model-selection flag at all** - it's the same command
-    regardless of which model you picked in Settings; model selection happens per-request via the
-    alias (`ModelCatalogEntry.alias` in `src/shared/models.ts`), which the app already sends
-    correctly (see `BackendController.rebuild()`). Only change this field if your `litert-lm`
-    binary/Python venv isn't on `PATH` (put an absolute path instead) or you need non-default flags
-    like `--cors-origin`.
-  - **GPU acceleration**: there is no setting to choose. The one default command template is
-    `python "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose`, i.e. the same
-    `litert-lm serve` launched through `resources/serve_gpu.py`, a small wrapper that puts the
-    model on the GPU (the real `serve` CLI has no flag to do this itself - see below for why) and
-    drops to CPU by itself on a machine without a usable one. Settings and the status pill show
-    only what the running engine reported - "Running on GPU" / "Running on CPU", and nothing at
-    all while it isn't running (see `BackendStatus.effectiveAccelerator`).
-
-    **Important**: that bare `python` in the template above is only safe if this venv's `Scripts`
-    directory is genuinely first on `PATH` when the app runs. `Start-Eloquent.ps1` seeds a fresh
-    `settings.json` with this venv's **absolute** `python.exe` path instead of bare `python`
-    specifically to avoid that assumption (a real bug: PATH order picked a system-wide Python
-    install instead of this venv, and the model-import step failed against it). If you flip this
-    toggle by hand (or hand-edit the command field) back to bare `python`, the sidecar itself may
-    still start fine via PATH, but the app's import-CLI resolver
-    (`resolveImportCli` in `src/main/backend/sidecar.ts`) will refuse to guess and hard-errors
-    with a clear message the next time it needs to `litert-lm import` a model - point the command
-    at this venv's absolute `python.exe` (`%LOCALAPPDATA%\WindowsEloquent\venv\Scripts\python.exe`)
-    to fix it.
-
-  - **External**: point at a `litert-lm serve` instance you started yourself (e.g. in its own
-    terminal window with `--verbose` for visible logs while debugging). Useful if you want the
-    server logs visible separately from the Electron app, or you're running the server on a
-    different machine (see the networking note in step 5).
-- **Port**: `9379` is `litert-lm serve`'s real default (this app's defaults were corrected to match
-  - an earlier draft used `8765`, which is not a `litert-lm` default and would only have worked by
-    coincidence if you also passed `--port 8765` yourself).
+**Recommendation**: start with **E2B** to confirm everything works before committing disk/RAM to a
+bigger model. E4B and 12B are more capable but slower, and everything runs through the same GPU/CPU
+path described below regardless of which one you pick.
 
 ## 5. Run in dev (`npm run dev`)
 
-Requires **Node.js >= 20.19.0, or >= 22.12.0** - see "Node.js version requirement" above for why;
-`run-windows.bat`/`Start-Eloquent.ps1` check and auto-upgrade this for you, but if you're running
-these commands by hand, confirm with `node --version` first.
-
 ```powershell
+git clone <repo-url> C:\src\blurt
+cd C:\src\blurt
 npm install
 npm run dev
 ```
@@ -289,57 +112,58 @@ npm run dev
 1. **Microphone access.** The renderer's audio capture (`useAudioCapture.ts`, real
    `getUserMedia`/`AudioWorklet`) needs a real audio input device with OS permission, which WSL2
    doesn't expose the way a native Windows Electron process does.
-2. **GPU access for the model.** See step 6 - GPU acceleration (WebGPU/Direct3D 12) is real and on
-   by default, but it needs a native Windows process with a direct path to the RTX 3060's driver
-   stack. A WSL2 process sits behind WSLg/virtualized GPU passthrough (no real Vulkan ICD in that
-   sandbox as of this writing - confirmed empirically, see step 6), so running the sidecar there
-   falls back to CPU via the wrapper's own fallback logic instead of actually using the GPU - and,
-   unlike before, the app now knows and shows this truthfully (Settings reads "Running on CPU",
-   status pill reads "Ready · CPU") rather than displaying anything it hasn't observed.
+2. **GPU access for the model.** See "GPU acceleration" below - it needs a native Windows process
+   with a direct path to your GPU's driver stack. A WSL2 process sits behind virtualized GPU
+   passthrough with no real Vulkan ICD in the common case, so the sidecar falls back to CPU via its
+   own fallback logic instead of actually using the GPU - and the app knows and shows this
+   truthfully (Settings reads "Running on CPU", status pill reads "Ready · CPU") rather than
+   displaying anything it hasn't observed.
 
-Both the Electron app and the `litert-lm serve` sidecar should run as native Windows processes on
-the same machine. There's no need to split them across hosts for this hardware profile.
+Both the Electron app and the `litert-lm serve` sidecar run as native Windows processes on the same
+machine - there's no need to split them across hosts.
+
+Once the window opens, open **Settings**, pick a model, and hit Download if it isn't already
+"Installed" (the in-app downloader does the same HuggingFace download + `litert-lm import` as
+step 4 - if you already imported by hand, use the in-app Download button anyway, since the app
+manages its own model file store under its own `userData/models/` directory and doesn't currently
+read models imported entirely outside it).
+
+The default sidecar command runs `resources/serve_gpu.py` through the venv Python that
+`npm run dev` bootstraps for a packaged build (see "GPU acceleration" below) - port `9379`, matching
+`litert-lm serve`'s own default. There's nothing to configure for GPU vs. CPU; it's decided
+automatically per machine.
 
 ## 6. GPU acceleration - how it works and what was measured
 
-**Short version: GPU acceleration is on by default for a fresh install - and was verified end-to-end
-against a real RTX 3060 Laptop GPU
-(6 GB VRAM) - decode throughput is ~3.4x faster than CPU once warm.** Getting there needed a small
-wrapper script, because the pip `serve` CLI itself has no way to select a backend - the two findings
-below explain why, and are still accurate as of `litert-lm` 0.14.0.
+**Short version: GPU acceleration is automatic - and was verified end-to-end against a real RTX
+3060 Laptop GPU (6 GB VRAM) - decode throughput is ~3.4x faster than CPU once warm.** Getting there
+needed a small wrapper script, because the pip `serve` CLI itself has no way to select a backend -
+the two findings below explain why, and are still accurate as of `litert-lm` 0.14.0.
 
 ### Supported hardware (this is not NVIDIA/RTX-specific)
 
 GPU acceleration goes through **Dawn (WebGPU)**, whose Windows backend is **Direct3D 12** - any
 DX12-capable GPU is a supported adapter (NVIDIA, AMD, or Intel; discrete or integrated). Nothing in
-this app or `resources/serve_gpu.py` filters, checks, or branches on a vendor/adapter name - the
+Blurt or `resources/serve_gpu.py` filters, checks, or branches on a vendor/adapter name - the
 RTX 3060 numbers throughout this doc are one _measured example_, not a requirement. Dawn logs
 whichever adapter it actually picked: `Selected adapter: <name>, vendor=<vendor>, backend=Direct3D
 12, adapterType=<Discrete|Integrated> GPU` - `<name>`/`<vendor>` come from your driver, never from
 this codebase.
 
 **Multi-GPU (hybrid graphics) laptops**: adapter selection is entirely delegated to Dawn/D3D12 -
-neither `litert-lm`'s Python API (`litert_lm.interfaces.GPU` takes zero parameters - no device
-index, no adapter-selection field) nor `serve_gpu.py` expose a way to force a specific physical
-GPU, and there's no environment variable for it in the installed `litert-lm` 0.14.0 pip package
-either. Confirmed empirically on the actual target laptop, which has **both** an NVIDIA dGPU and an
-Intel iGPU (`Get-CimInstance Win32_VideoController` lists "NVIDIA GeForce RTX 3060 Laptop GPU" and
-"Intel(R) UHD Graphics"): Dawn's default picked the discrete GPU with zero configuration from this
-app. If a different machine's default enumeration ever prefers the integrated GPU instead, there is
-currently no supported knob to override that - it would require patching LiteRT-LM's native engine,
-out of scope for this wrapper.
+neither `litert-lm`'s Python API nor `serve_gpu.py` expose a way to force a specific physical GPU.
+Confirmed on a machine with both an NVIDIA dGPU and an Intel iGPU: Dawn's default picked the
+discrete GPU with zero configuration. If a different machine's default enumeration ever prefers the
+integrated GPU instead, there is currently no supported knob to override that.
 
 **Minimum VRAM**: budget **at least 4 GB of VRAM for E2B/E4B on GPU** - derived from this model's
-measured GPU-resident footprint (~3.9 GB warm; a fresh nvidia-smi before/after delta measured this
-session for a from-cold load came in lower, ~1.3 GB, since WDDM/Dawn's shader-cache and staging
-allocations aren't fully accounted by that single snapshot - budget toward the higher, warm-steady-
-state figure). A 6 GB card (the RTX 3060 Laptop GPU example throughout this doc) has comfortable
-headroom. The 12B model was only ever verified on CPU (step 3) - don't expect it to fit on a 6
-GB-class GPU.
+measured GPU-resident footprint (~3.9 GB warm). A 6 GB card (the RTX 3060 Laptop GPU example
+throughout this doc) has comfortable headroom. The 12B model was only ever verified on CPU - don't
+expect it to fit on a 6 GB-class GPU.
 
 **Unsupported hardware**: no compatible DX12 adapter (or a GPU below Dawn's required feature level)
 means the wrapper's own fallback (see "Fallback if GPU init fails" below) catches the failed engine
-creation and retries on CPU for the rest of that process's lifetime - truthfully reported as "CPU
+creation and retries on CPU for the rest of that process's lifetime - reported truthfully as "CPU
 (GPU unavailable)", never a silent/wrong "GPU" claim.
 
 **Verify what's actually running, vendor-neutral**: NVIDIA - `nvidia-smi` (see "Verifying GPU"
@@ -372,9 +196,8 @@ I0000 ... litert_lm_loader.cc:244] section_backend_constraint: cpu   (repeated p
 
 **But that constraint does not actually block GPU execution of the main model** - it turns out only
 to matter for the audio/vision adapters, which genuinely are CPU-only. Forcing `--backend gpu` on
-`litert-lm benchmark` against the _same_ `cpu`-constrained E2B file, on the real RTX 3060 Laptop GPU
-(via WSL interop into the actual Windows host, not simulated), the engine happily initializes GPU
-and runs real inference:
+`litert-lm benchmark` against the _same_ `cpu`-constrained E2B file, on a real RTX 3060 Laptop GPU,
+the engine happily initializes GPU and runs real inference:
 
 ```
 I0000 ... environment.cc:522] Selected adapter: NVIDIA GeForce RTX 3060 Laptop GPU,
@@ -384,19 +207,14 @@ I0000 ... engine_settings.cc:98] The Audio backend constraint is matched: CPU
   MainExecutorSettings: backend: GPU
 ```
 
-(In WSL2 itself - no Vulkan ICD available at all - the identical command fails with `Failed to
-initialize WebGPU environment: INTERNAL: No adapters found`; that's an environment limitation, not
-evidence the backend is unsupported. On the actual Windows host it selects the real GPU via
-Direct3D 12, as shown above.)
-
 **Measured tokens/s** (`litert-lm benchmark`, Gemma 4 E2B, RTX 3060 Laptop GPU, 128 prefill / 64
 decode tokens, `--cache disk` default):
 
 | Backend                         | Prefill tok/s | Decode tok/s | Init time                         |
-| ------------------------------- | ------------- | ------------ | --------------------------------- |
-| CPU                             | ~327          | ~16          | ~8s                               |
-| GPU (cold, first run)           | ~49           | ~46          | ~15.5s (compiling WebGPU shaders) |
-| GPU (warm, disk-cached shaders) | ~85           | ~54          | ~7.8s                             |
+| -------------------------------- | ------------- | ------------ | --------------------------------- |
+| CPU                              | ~327          | ~16          | ~8s                               |
+| GPU (cold, first run)            | ~49           | ~46          | ~15.5s (compiling WebGPU shaders) |
+| GPU (warm, disk-cached shaders)  | ~85           | ~54          | ~7.8s                              |
 
 Decode throughput - what dominates perceived latency for anything longer than a couple words - is
 **~3.4x faster on GPU once warm** (~54 vs ~16 tok/s). Prefill is actually _slower_ on GPU in this
@@ -405,32 +223,26 @@ terms and decode length is what you feel. The first run after enabling GPU pays 
 shader-compile cost (`--cache disk`, the default, persists the compiled shaders next to the model
 file so every run after the first is warm).
 
-**How this app gets GPU without a `litert-lm serve --backend` flag:** `resources/serve_gpu.py` is
-a thin wrapper (see its own doc comment for the full mechanism) that monkeypatches
-`litert_lm_cli.commands.serve_util`'s backend-resolution function so the _main_ model is forced
-onto GPU while the audio/vision adapters are left on their own (correctly CPU-constrained) default
+**How Blurt gets GPU without a `litert-lm serve --backend` flag:** `resources/serve_gpu.py` is a
+thin wrapper (see its own doc comment for the full mechanism) that monkeypatches
+`litert_lm_cli.commands.serve_util`'s backend-resolution function so the _main_ model is forced onto
+GPU while the audio/vision adapters are left on their own (correctly CPU-constrained) default -
+verified end-to-end against a real `litert-lm serve` process spawned this way, hitting
+`/v1/chat/completions` and getting back a real completion with `MainExecutorSettings: backend: GPU`
+and the `Selected adapter: ... Direct3D 12` line in the log. The managed sidecar always points at
+this wrapper - there is no separate CPU-only command to opt into.
 
-- verified end-to-end against a real `litert-lm serve` process spawned this way, hitting
-  `/v1/chat/completions` and getting back a real completion with `MainExecutorSettings: backend: GPU`
-  and the `Selected adapter: ... Direct3D 12` line in the log. The Settings screen's accelerator
-  toggle (see step 4 above) points the managed sidecar command at this wrapper instead of the bare
-  `litert-lm serve`; both `Start-Eloquent.ps1` and `DEFAULT_SETTINGS` (see `src/shared/types.ts`)
-  enable it by default for any fresh install. There's no settings migration for pre-existing installs
-- run `uninstall.sh` / `uninstall-windows.bat` for a clean slate if you set one up before this was
-  the default.
-
-**Fallback if GPU init fails**: the wrapper catches a failed GPU engine-creation (verified in WSL2,
-which has no Vulkan adapter - see the log excerpt above) and retries the same request on CPU,
-logging a `[serve_gpu] GPU engine initialization failed (...); falling back to CPU backend` line,
-then stays on CPU for the rest of that sidecar process's lifetime. So enabling GPU is safe even on
-a machine that turns out not to support it - worst case, the very first request after startup pays
-both the failed-GPU-attempt cost and a CPU cold-start, and everything after that behaves exactly
-like CPU mode. Crucially, this fallback is never silent to the user: the wrapper eagerly creates the
-engine at process startup (before the sidecar looks "ready" to the Electron app) and prints an
-unambiguous `ELOQUENT_EFFECTIVE_BACKEND=gpu`/`=cpu` marker line to stdout as soon as it knows which
-backend it actually got - `sidecar.ts` parses that marker and the Settings readout / status pill
-reflect the real backend, not just the requested one (see `BackendStatus.effectiveAccelerator`
-and `resources/serve_gpu.py`'s "Effective-backend reporting"/"Eager engine creation" doc comments).
+**Fallback if GPU init fails**: the wrapper catches a failed GPU engine-creation and retries the
+same request on CPU, logging a `[serve_gpu] GPU engine initialization failed (...); falling back to
+CPU backend` line, then stays on CPU for the rest of that sidecar process's lifetime. If the
+sidecar process dies before ever reporting ready at all (a harder failure than a single request
+falling back), the app's own `Sidecar` retries the whole process once more with CPU forced via
+`LITERT_LM_SERVE_BACKEND=cpu`, so a machine without a working GPU still ends up running rather than
+stuck in an error state. Crucially, none of this fallback is silent to the user: the wrapper eagerly
+creates the engine at process startup (before the sidecar looks "ready" to the Electron app) and
+prints an unambiguous `BLURT_EFFECTIVE_BACKEND=gpu`/`=cpu` marker line to stdout as soon as it
+knows which backend it actually got - the app parses that marker and the Settings readout / status
+pill reflect the real backend, not just the one it hoped for.
 
 **If you want to re-verify any of this yourself** once you've imported a model:
 
@@ -443,29 +255,26 @@ Look for `Selected adapter: ... backend=Direct3D 12` in the GPU run's log and co
 `----- Results -----` blocks' decode tok/s.
 
 **For full control** (custom accelerator flags, a patched engine, bundling a Python-free sidecar),
-the Bazel from-source Windows build recipe is documented in the README
-(`README.md#building-installing-litert-lm-on-windows`) and in more depth in
-`scratchpad/litert-lm-report.md` - not needed for GPU acceleration itself (the wrapper above covers
-that), only for going beyond what the pip wheel + wrapper combination exposes.
+see "Building `litert-lm` from source" below - not needed for GPU acceleration itself (the wrapper
+above covers that), only for going beyond what the pip wheel + wrapper combination exposes.
 
 ### Verifying GPU: "is it actually on?"
 
-The Settings readout and status pill (see step 4) tell the truth, but here's how to double-check for
-yourself in under a minute:
+The Settings readout and status pill tell the truth, but here's how to double-check yourself in
+under a minute:
 
 - **Status pill** (top of the app window): `Ready · GPU` once the sidecar's engine has actually
   confirmed it - not just "Ready" alone, and not `Ready · CPU` (that means it fell back).
-- **main.log** (`%APPDATA%\windows-eloquent\logs\main.log`): grep for `effective-backend=gpu` - the
-  line looks like `sidecar: effective-backend=gpu`. If you instead see `sidecar-hygiene: Port 9379
-is already in use by another process (PID ...)`, some other process (commonly a stale sidecar left
-  running from a previous app session that didn't shut down cleanly - see `src/main/backend/
-portGuard.ts`) is squatting on the port; the message names its PID so you can `taskkill /PID
-<pid> /F` it, then relaunch.
-- **Task Manager** → Performance → GPU (or the GPU column on the Processes tab): a `python.exe`
+- **main.log** (Settings > "Open logs folder"): grep for `effective-backend=gpu` - the line looks
+  like `sidecar: effective-backend=gpu`. If you instead see `Port 9379 is already in use by another
+  process (PID ...)`, some other process (commonly a stale sidecar left running from a previous app
+  session that didn't shut down cleanly - see `src/main/backend/portGuard.ts`) is squatting on the
+  port; the message names its PID so you can `taskkill /PID <pid> /F` it, then relaunch.
+- **Task Manager** -> Performance -> GPU (or the GPU column on the Processes tab): a `python.exe`
   process should be visible with non-trivial VRAM usage (roughly 2-3 GiB for the E2B model) and its
-  GPU-Util spikes while you're actively dictating/generating - not before, since the engine only runs
-  inference on request.
-- **One-liner from an elevated/normal PowerShell**:
+  GPU-Util spikes while you're actively dictating/generating - not before, since the engine only
+  runs inference on request.
+- **One-liner from PowerShell**:
 
   ```powershell
   nvidia-smi
@@ -477,15 +286,12 @@ portGuard.ts`) is squatting on the port; the message names its PID so you can `t
 
 ### Crash-safe cleanup
 
-A normal app quit already kills the sidecar (verified: `child.kill()`/Windows `TerminateProcess`
-does terminate a `python.exe` child spawned this way, releasing its VRAM immediately). A **hard
-crash or kill** of the Electron process (Task Manager, `taskkill /f`, power loss) is also covered:
-`serve_gpu.py` runs a parent-watchdog thread (`ELOQUENT_PARENT_PID`, set automatically by
-`sidecar.ts`) that notices the moment the Electron process dies and exits itself immediately,
-releasing the GPU/CPU engine's memory - no orphaned model process left running until your next
-launch. Verified empirically on this Windows host: killing a throwaway parent process while the
-GPU engine held ~1.3 GB+ of VRAM (nvidia-smi) resulted in the sidecar exiting and that VRAM being
-released within about a second, logged as `[serve_gpu] parent <pid> gone - shutting down`.
+A normal app quit already kills the sidecar (`child.kill()`/Windows `TerminateProcess` terminates a
+`python.exe` child spawned this way, releasing its VRAM immediately). A **hard crash or kill** of
+the Electron process (Task Manager, `taskkill /f`, power loss) is also covered: `serve_gpu.py` runs
+a parent-watchdog thread (`BLURT_PARENT_PID`, set automatically by `sidecar.ts`) that notices the
+moment the Electron process dies and exits itself immediately, releasing the GPU/CPU engine's
+memory - no orphaned model process left running until your next launch.
 
 ## 7. Building a distributable (`npm run build:win`)
 
@@ -498,31 +304,49 @@ npm run build:win
 `npm run build:win` additionally runs `electron-builder --win`, producing an NSIS installer and a
 portable `.exe` per `electron-builder.yml`.
 
-Must be run on a real Windows machine (or a Windows CI runner) - electron-builder needs the
-Windows toolchain to produce these. Note that `electron-builder install-app-deps` will fail to
-rebuild `uiohook-napi` (the push-to-talk key hook) unless Visual Studio Build Tools are
-installed; that failure is safe to ignore, because the package ships a prebuilt N-API binary
-which loads correctly at runtime - confirmed by `push-to-talk: uiohook-napi loaded` in the
-packaged app's own log.
+Must be run on a real Windows machine (or a Windows CI runner) - electron-builder needs the Windows
+toolchain to produce these. `electron-builder install-app-deps` will fail to rebuild `uiohook-napi`
+(the push-to-talk key hook) unless Visual Studio Build Tools are installed; that failure is safe to
+ignore, because the package ships a prebuilt N-API binary which loads correctly at runtime. Neither
+build is code-signed, so a fresh install triggers a Windows SmartScreen warning - see the README's
+Troubleshooting section for what to click through.
+
+This has been run on a real Windows host and the resulting installer + portable exe were verified
+end to end: boot to a ready backend on GPU, a second launch refused by the single-instance lock,
+and a clean shutdown with no orphaned sidecar process.
 
 Note that `litert-lm` itself is **not bundled** by `electron-builder` - it's a separate install the
-end user (or your own installer script, if you extend `electron-builder.yml`'s `extraResources`)
-needs to provide, exactly as described in steps 1-3 above.
+end user's copy of Blurt sets up for itself on first launch (see
+`src/main/runtime/firstRunSetup.ts`), or that you provide yourself when developing, exactly as
+described in steps 1-4 above.
+
+## Building `litert-lm` from source
+
+Not needed for GPU acceleration itself (the pip wheel + `serve_gpu.py` wrapper above covers that) -
+only useful if you need custom accelerator flags or a patched engine. A documented from-source
+Windows build recipe exists upstream (see
+[google-ai-edge/LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM),
+`docs/getting-started/build-and-run.md`): Visual Studio 2022 ("Desktop development with C++"),
+Bazel via Bazelisk, Git for Windows (its bundled `bash.exe` is required - some build steps shell out
+to it), Python 3.13, a JDK, and enabling NTFS long paths (`LongPathsEnabled` registry key, since
+Bazel's output tree nests deep). CPU builds are
+`bazelisk build //runtime/engine:litert_lm_main --config=windows`; GPU (WebGPU/Dawn/D3D12) builds
+additionally need `--define=litert_runtime_link_mode=dynamic
+--define=resolve_symbols_in_exec=false` and require copying the prebuilt accelerator DLLs
+(`prebuilt/windows_x86_64/*.dll`) plus Dawn's `dxcompiler.dll`/`dxil.dll` (fetched hermetically by
+Bazel from Microsoft's DirectXShaderCompiler releases) into the same directory as the built binary -
+a hand-built binary doesn't get these copied automatically the way the upstream Python-wheel build
+target does.
 
 ## Summary checklist
 
-- [ ] Easiest: double-click `run-windows.bat` and skip straight to the last two items (see
-      "Quick start: one-click launcher" above - it mirrors a UNC/WSL checkout to a local working
-      copy automatically; skim it before your first run)
 - [ ] `winget install -e --id Python.Python.3.12` (or any 3.10+)
-- [ ] `winget install -e --id OpenJS.NodeJS.LTS` and confirm `node --version` is >= 20.19.0 (or >= 22.12.0) - see "Node.js version requirement" above; `run-windows.bat` does this for you
-      automatically, including upgrading an existing too-old Node in place
+- [ ] `winget install -e --id OpenJS.NodeJS.LTS` and confirm `node --version` is >= 20.19.0 (or >= 22.12.0)
 - [ ] `pip install litert-lm`
-- [ ] `litert-lm import --from-huggingface-repo litert-community/gemma-4-12B-it-litert-lm gemma-4-12B-it.litertlm 12b` (or e2b/e4b)
-- [ ] App Settings: Backend = LiteRT-LM, Model = the one you imported, Sidecar mode = Managed, Port = 9379
-- [ ] `npm run dev` on the Windows host (not WSL2) for real mic access and real GPU acceleration
-- [ ] GPU acceleration is always on (~3.4x faster decode, measured on an RTX 3060 Laptop GPU -
-      see section 6); drops to CPU on its own if GPU init fails, and Settings/the status pill say
-      so truthfully if it does
+- [ ] `litert-lm import --from-huggingface-repo litert-community/gemma-4-E2B-it-litert-lm gemma-4-E2B-it.litertlm e2b` (or e4b/12b)
+- [ ] `npm install && npm run dev`, then in Settings pick a model and hit Download
+- [ ] GPU acceleration is automatic (~3.4x faster decode, measured on an RTX 3060 Laptop GPU - see
+      section 6); drops to CPU on its own if GPU init fails, and Settings/the status pill say so
+      truthfully if it does
 - [ ] Model/VRAM is cleaned up on quit _and_ on a hard crash - see "Crash-safe cleanup" above
 - [ ] `npm run build && npm run build:win` on a real Windows machine to produce an installer

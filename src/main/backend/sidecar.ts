@@ -7,11 +7,11 @@ import { reclaimPortForSpawn, removePidFile, writePidFile } from './portGuard'
 export type SidecarState = 'stopped' | 'starting' | 'ready' | 'restarting' | 'error'
 
 /**
- * Matches `serve_gpu.py`'s `ELOQUENT_EFFECTIVE_BACKEND=gpu`/`=cpu` stdout
+ * Matches `serve_gpu.py`'s `BLURT_EFFECTIVE_BACKEND=gpu`/`=cpu` stdout
  * marker line (see that file's "Effective-backend reporting" doc comment).
  * Exported so it can be unit-tested without spawning a real process.
  */
-const EFFECTIVE_BACKEND_LINE = /^ELOQUENT_EFFECTIVE_BACKEND=(cpu|gpu)\s*$/
+const EFFECTIVE_BACKEND_LINE = /^BLURT_EFFECTIVE_BACKEND=(cpu|gpu)\s*$/
 
 /** Returns the accelerator reported by one line of a managed sidecar's stdout, or null if the line isn't the marker. */
 export function parseEffectiveBackendLine(line: string): Accelerator | null {
@@ -37,7 +37,7 @@ export type GpuCorroborationEvidence = 'selected-adapter' | 'main-executor-setti
  *   - "MainExecutorSettings: backend: GPU" - the engine's own log of which
  *     backend the *main* model executor was actually configured with.
  * Neither is the same kind of evidence as `serve_gpu.py`'s
- * `ELOQUENT_EFFECTIVE_BACKEND=gpu` marker, which only means "engine creation
+ * `BLURT_EFFECTIVE_BACKEND=gpu` marker, which only means "engine creation
  * didn't raise" (see that file's "Effective-backend reporting" doc comment)
  * - these are independent confirmation, from the native library itself, that
  * a real GPU backend was engaged. Matched case-sensitively against exactly
@@ -110,7 +110,7 @@ function looksWindowsStyle(path: string): boolean {
 /**
  * Whether a *rendered* managed command's argv references the
  * `serve_gpu.py` wrapper - the deterministic rule (see `waitUntilReady`)
- * for whether the `ELOQUENT_EFFECTIVE_BACKEND` marker is required before
+ * for whether the `BLURT_EFFECTIVE_BACKEND` marker is required before
  * reporting ready. A plain `litert-lm serve` never prints
  * that marker, so requiring it there would mean *never* becoming ready -
  * checked against the actual argv the child is about to be spawned with, so
@@ -247,7 +247,7 @@ const DEFAULT_READY_POLL_INTERVAL_MS = 500
 const MAX_RESTARTS = 3
 
 /**
- * How long to wait for the `ELOQUENT_EFFECTIVE_BACKEND` marker specifically,
+ * How long to wait for the `BLURT_EFFECTIVE_BACKEND` marker specifically,
  * once a managed command is known to reference `serve_gpu.py` (see
  * `commandReferencesServeGpuWrapper`) - separate from (and longer than) the
  * plain HTTP-readiness timeout, since a cold GPU shader compile can take up
@@ -310,7 +310,7 @@ export function renderManagedCommand(
  * (`portGuard.ts`) notices and kills it. That hygiene step is next-launch
  * cleanup; this env var is what makes crash-time cleanup possible at all.
  */
-export const PARENT_PID_ENV_VAR = 'ELOQUENT_PARENT_PID'
+export const PARENT_PID_ENV_VAR = 'BLURT_PARENT_PID'
 
 /**
  * Builds the full env for a managed spawn: `baseEnv` overridden by any
@@ -395,7 +395,7 @@ export class Sidecar extends EventEmitter {
 
   /**
    * The accelerator the managed sidecar's engine actually ended up on, once
-   * `serve_gpu.py`'s `ELOQUENT_EFFECTIVE_BACKEND` marker has been observed
+   * `serve_gpu.py`'s `BLURT_EFFECTIVE_BACKEND` marker has been observed
    * on its stdout - null until then, or always (mode === 'external', or a
    * managed command that isn't the GPU wrapper - e.g. plain `litert-lm
    * serve`, which never prints the marker). Also emitted as an
@@ -681,7 +681,7 @@ export class Sidecar extends EventEmitter {
 
     if (this.markerRequired && lastHttpOk && this.effectiveAccelerator === null) {
       throw new Error(
-        `Sidecar answered HTTP at ${this.baseUrl} but never printed the ELOQUENT_EFFECTIVE_BACKEND marker within ${MARKER_TIMEOUT_MS}ms - refusing to report ready without confirming which backend it's actually running on.`
+        `Sidecar answered HTTP at ${this.baseUrl} but never printed the BLURT_EFFECTIVE_BACKEND marker within ${MARKER_TIMEOUT_MS}ms - refusing to report ready without confirming which backend it's actually running on.`
       )
     }
     throw new Error(`Timed out waiting for the sidecar to respond at ${this.baseUrl}`)
@@ -711,7 +711,7 @@ export class Sidecar extends EventEmitter {
    * Forwards raw stdout as a 'log' event (unchanged behavior), logs each
    * complete line into main.log (see `logChildLine` - this used to be a
    * blind spot: --verbose sidecar output never reached main.log at all),
-   * and scans complete lines for `serve_gpu.py`'s `ELOQUENT_EFFECTIVE_BACKEND`
+   * and scans complete lines for `serve_gpu.py`'s `BLURT_EFFECTIVE_BACKEND`
    * marker - buffered across chunk boundaries since a pipe read can split a
    * line arbitrarily.
    */
@@ -772,7 +772,7 @@ export class Sidecar extends EventEmitter {
    * Logs a WARNING - diagnostic only, never changes `effectiveAccelerator`
    * or any reported state, the marker stays the source of truth for the UI -
    * if the marker claimed GPU but nothing in the child's stdout/stderr
-   * corroborated it. serve_gpu.py's `ELOQUENT_EFFECTIVE_BACKEND=gpu` only
+   * corroborated it. serve_gpu.py's `BLURT_EFFECTIVE_BACKEND=gpu` only
    * means engine creation didn't raise (see that file's "Effective-backend
    * reporting" doc comment), not confirmed GPU execution. This is what turns
    * that gap into something visible in a real user's main.log, instead of a
@@ -781,7 +781,7 @@ export class Sidecar extends EventEmitter {
   private warnIfGpuUnconfirmed(): void {
     if (this.effectiveAccelerator !== 'gpu' || this.sawGpuCorroboration) return
     log.warn(
-      'sidecar: ELOQUENT_EFFECTIVE_BACKEND=gpu reported but unconfirmed - looked for a ' +
+      'sidecar: BLURT_EFFECTIVE_BACKEND=gpu reported but unconfirmed - looked for a ' +
         '"Selected adapter: ... GPU" or "MainExecutorSettings: backend: GPU" line in the ' +
         "child's stdout/stderr and found neither; the marker only reflects that engine " +
         'creation did not raise, not confirmed GPU execution.'

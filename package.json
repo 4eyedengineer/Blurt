@@ -14,7 +14,7 @@
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
-    "postinstall": "electron-builder install-app-deps || echo '[postinstall] electron-builder install-app-deps failed (likely no native build toolchain for uiohook-napi in this environment) - continuing; push-to-talk will be runtime-disabled with a status note in Settings. See README Known limitations.'",
+    "postinstall": "electron-builder install-app-deps || echo '[postinstall] electron-builder install-app-deps failed (likely no native build toolchain for uiohook-napi in this environment) - continuing; push-to-talk will be runtime-disabled with a status note in Settings. See CONTRIBUTING.md.'",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
     "build:linux": "electron-vite build && electron-builder --linux"

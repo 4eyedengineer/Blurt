@@ -93,7 +93,7 @@ const DEFAULT_SAMPLE_RATE = 16000
  */
 const SILENCE_RMS_THRESHOLD = 40
 /** Env var gate for LitertBackend.maybeDumpDebugWav - see README/task notes. */
-const DEBUG_AUDIO_ENV_VAR = 'ELOQUENT_DEBUG_AUDIO'
+const DEBUG_AUDIO_ENV_VAR = 'BLURT_DEBUG_AUDIO'
 
 interface LitertSession {
   id: string
@@ -198,7 +198,7 @@ export interface LitertBackendOptions {
   now?: () => number
   /**
    * Directory each session's final accumulated WAV is written to, as
-   * `session-<n>.wav`, when the ELOQUENT_DEBUG_AUDIO=1 env var is set.
+   * `session-<n>.wav`, when the BLURT_DEBUG_AUDIO=1 env var is set.
    * No-op (and no directory created) if unset or if the env var isn't '1'.
    */
   debugAudioDir?: string
@@ -235,7 +235,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
    * server-side.
    */
   private requestQueue: Promise<void> = Promise.resolve()
-  /** Incremented per session that gets debug-dumped, to name session-<n>.wav files. Only touched when ELOQUENT_DEBUG_AUDIO=1. */
+  /** Incremented per session that gets debug-dumped, to name session-<n>.wav files. Only touched when BLURT_DEBUG_AUDIO=1. */
   private debugSessionCounter = 0
 
   constructor(private readonly options: LitertBackendOptions) {
@@ -488,7 +488,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
 
   /**
    * Best-effort: writes the session's fully accumulated PCM as a WAV file
-   * to `debugAudioDir`, gated on ELOQUENT_DEBUG_AUDIO=1. Lets a human check
+   * to `debugAudioDir`, gated on BLURT_DEBUG_AUDIO=1. Lets a human check
    * exactly what audio the model was (or wasn't) asked to transcribe -
    * cheap enough to always compile in, and a no-op unless explicitly
    * enabled.

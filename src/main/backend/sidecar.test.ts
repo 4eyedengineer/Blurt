@@ -31,7 +31,7 @@ import {
  *     `except RuntimeError` fallback.
  *   - `TEST_CORROBORATE=1`: prints a fake-but-real-shaped native
  *     "Selected adapter: ... GPU" log line before the marker.
- *   - `TEST_MARKER=gpu|cpu`: which ELOQUENT_EFFECTIVE_BACKEND value to
+ *   - `TEST_MARKER=gpu|cpu`: which BLURT_EFFECTIVE_BACKEND value to
  *     print (defaults to "cpu" when TEST_EXIT_UNLESS_CPU governed the
  *     backend, else "gpu").
  * Always binds the given `--port` and answers 200 to any request, so
@@ -57,7 +57,7 @@ if (process.env.TEST_CORROBORATE === '1') {
   )
 }
 const marker = process.env.TEST_MARKER || (forcedCpu ? 'cpu' : 'gpu')
-console.log('ELOQUENT_EFFECTIVE_BACKEND=' + marker)
+console.log('BLURT_EFFECTIVE_BACKEND=' + marker)
 http.createServer((_req, res) => { res.writeHead(200); res.end('{}') }).listen(port, '127.0.0.1')
 `
   )
@@ -277,8 +277,8 @@ describe('parseGpuCorroborationLine', () => {
     ).toBeNull()
   })
 
-  it('does not match unrelated log lines, including the ELOQUENT_EFFECTIVE_BACKEND marker itself', () => {
-    expect(parseGpuCorroborationLine('ELOQUENT_EFFECTIVE_BACKEND=gpu')).toBeNull()
+  it('does not match unrelated log lines, including the BLURT_EFFECTIVE_BACKEND marker itself', () => {
+    expect(parseGpuCorroborationLine('BLURT_EFFECTIVE_BACKEND=gpu')).toBeNull()
     expect(parseGpuCorroborationLine('The Audio backend constraint is matched: CPU')).toBeNull()
     expect(parseGpuCorroborationLine('')).toBeNull()
   })
@@ -291,15 +291,15 @@ describe('parseGpuCorroborationLine', () => {
 
 describe('parseEffectiveBackendLine', () => {
   it('parses the gpu marker', () => {
-    expect(parseEffectiveBackendLine('ELOQUENT_EFFECTIVE_BACKEND=gpu')).toBe('gpu')
+    expect(parseEffectiveBackendLine('BLURT_EFFECTIVE_BACKEND=gpu')).toBe('gpu')
   })
 
   it('parses the cpu marker', () => {
-    expect(parseEffectiveBackendLine('ELOQUENT_EFFECTIVE_BACKEND=cpu')).toBe('cpu')
+    expect(parseEffectiveBackendLine('BLURT_EFFECTIVE_BACKEND=cpu')).toBe('cpu')
   })
 
   it('tolerates trailing whitespace/carriage returns', () => {
-    expect(parseEffectiveBackendLine('ELOQUENT_EFFECTIVE_BACKEND=gpu\r')).toBe('gpu')
+    expect(parseEffectiveBackendLine('BLURT_EFFECTIVE_BACKEND=gpu\r')).toBe('gpu')
   })
 
   it('returns null for unrelated log lines', () => {
@@ -307,7 +307,7 @@ describe('parseEffectiveBackendLine', () => {
       parseEffectiveBackendLine('Starting OpenAI-compatible API server on 127.0.0.1:9379...')
     ).toBeNull()
     expect(parseEffectiveBackendLine('')).toBeNull()
-    expect(parseEffectiveBackendLine('ELOQUENT_EFFECTIVE_BACKEND=npu')).toBeNull()
+    expect(parseEffectiveBackendLine('BLURT_EFFECTIVE_BACKEND=npu')).toBeNull()
   })
 })
 
