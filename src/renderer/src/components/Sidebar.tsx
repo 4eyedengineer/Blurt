@@ -23,7 +23,7 @@ export function Sidebar({ active, onSelect }: SidebarProps): React.JSX.Element {
     <nav className="sidebar">
       <div className="sidebar__brand">
         <span className="sidebar__brand-dot" />
-        Eloquent
+        Blurt
       </div>
       <ul className="sidebar__list">
         {TABS.map(({ id, label, Icon }) => (

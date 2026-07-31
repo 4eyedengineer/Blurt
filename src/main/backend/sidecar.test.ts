@@ -38,7 +38,7 @@ import {
  * `Sidecar`'s `GET /v1/models` readiness check succeeds.
  */
 function writeFakeServeGpuScript(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'eloquent-sidecar-test-'))
+  const dir = mkdtempSync(join(tmpdir(), 'blurt-sidecar-test-'))
   const scriptPath = join(dir, 'serve_gpu.py')
   writeFileSync(
     scriptPath,
@@ -72,7 +72,7 @@ describe('Sidecar auto-restart', () => {
       externalUrl: '',
       // A binary that cannot exist - spawn fails immediately, which is the
       // "never became ready" case.
-      managedCommand: 'eloquent-no-such-binary-8f3a serve --port {port}',
+      managedCommand: 'blurt-no-such-binary-8f3a serve --port {port}',
       modelPath: '',
       port: 65535,
       readyTimeoutMs: 400,
@@ -142,7 +142,7 @@ describe('Sidecar auto-restart', () => {
       // path is eligible, but the binary itself doesn't exist - both the
       // initial attempt and the CPU retry fail identically to immediate
       // spawn error, exercising the "give up after one retry" bound.
-      managedCommand: 'eloquent-no-such-binary-8f3a "{wrapperPath}" serve --port {port}',
+      managedCommand: 'blurt-no-such-binary-8f3a "{wrapperPath}" serve --port {port}',
       modelPath: '',
       port: 65533,
       wrapperPath: '/fake/resources/serve_gpu.py',
@@ -406,12 +406,12 @@ describe('renderManagedCommand', () => {
     const gpuArgs = renderManagedCommand('"{venvPython}" "{wrapperPath}" serve --port {port}', {
       modelPath: '',
       port: 9379,
-      wrapperPath: 'C:\\WindowsEloquent\\app\\resources\\serve_gpu.py',
-      venvPython: 'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe'
+      wrapperPath: 'C:\\Blurt\\app\\resources\\serve_gpu.py',
+      venvPython: 'C:\\Users\\testuser\\AppData\\Local\\Blurt\\venv\\Scripts\\python.exe'
     })
     expect(gpuArgs).toEqual([
-      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe',
-      'C:\\WindowsEloquent\\app\\resources\\serve_gpu.py',
+      'C:\\Users\\testuser\\AppData\\Local\\Blurt\\venv\\Scripts\\python.exe',
+      'C:\\Blurt\\app\\resources\\serve_gpu.py',
       'serve',
       '--port',
       '9379'
@@ -420,11 +420,10 @@ describe('renderManagedCommand', () => {
     const cpuArgs = renderManagedCommand('"{litertLmCli}" serve --port {port}', {
       modelPath: '',
       port: 9379,
-      litertLmCli:
-        'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+      litertLmCli: 'C:\\Users\\testuser\\AppData\\Local\\Blurt\\venv\\Scripts\\litert-lm.exe'
     })
     expect(cpuArgs).toEqual([
-      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe',
+      'C:\\Users\\testuser\\AppData\\Local\\Blurt\\venv\\Scripts\\litert-lm.exe',
       'serve',
       '--port',
       '9379'
@@ -452,7 +451,7 @@ describe('commandReferencesServeGpuWrapper', () => {
     const args = renderManagedCommand('python "{wrapperPath}" serve --port {port}', {
       modelPath: '',
       port: 9379,
-      wrapperPath: 'C:\\WindowsEloquent\\app\\resources\\serve_gpu.py'
+      wrapperPath: 'C:\\Blurt\\app\\resources\\serve_gpu.py'
     })
     expect(commandReferencesServeGpuWrapper(args)).toBe(true)
   })
@@ -492,38 +491,38 @@ describe('resolveImportCli', () => {
   })
 
   it('resolves an absolute litert-lm CLI path (with .exe) as-is', () => {
-    expect(
-      resolveImportCli('C:\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe serve --port {port}')
-    ).toEqual({ ok: true, cli: 'C:\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe' })
+    expect(resolveImportCli('C:\\Blurt\\venv\\Scripts\\litert-lm.exe serve --port {port}')).toEqual(
+      { ok: true, cli: 'C:\\Blurt\\venv\\Scripts\\litert-lm.exe' }
+    )
   })
 
   it('resolves the sibling litert-lm.exe from an absolute win32 venv python path', () => {
     const result = resolveImportCli(
-      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
+      'C:\\Users\\testuser\\AppData\\Local\\Blurt\\venv\\Scripts\\python.exe "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
     )
     expect(result).toEqual({
       ok: true,
-      cli: 'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+      cli: 'C:\\Users\\testuser\\AppData\\Local\\Blurt\\venv\\Scripts\\litert-lm.exe'
     })
   })
 
   it('resolves the sibling bin/litert-lm from an absolute posix venv python path', () => {
     const result = resolveImportCli(
-      '/home/user/.cache/windows-eloquent/venv/bin/python3.11 "{wrapperPath}" serve --port {port}'
+      '/home/user/.cache/blurt/venv/bin/python3.11 "{wrapperPath}" serve --port {port}'
     )
     expect(result).toEqual({
       ok: true,
-      cli: '/home/user/.cache/windows-eloquent/venv/bin/litert-lm'
+      cli: '/home/user/.cache/blurt/venv/bin/litert-lm'
     })
   })
 
   it('resolves correctly from a full wrapper-style managed command template, ignoring the extra args', () => {
     const result = resolveImportCli(
-      '"C:\\WindowsEloquent\\venv\\Scripts\\python.exe" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
+      '"C:\\Blurt\\venv\\Scripts\\python.exe" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
     )
     expect(result).toEqual({
       ok: true,
-      cli: 'C:\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+      cli: 'C:\\Blurt\\venv\\Scripts\\litert-lm.exe'
     })
   })
 
@@ -562,8 +561,7 @@ describe('resolveImportCli', () => {
 
 describe('resolveManagedCliForImport', () => {
   const venvPaths = {
-    litertLmExe:
-      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+    litertLmExe: 'C:\\Users\\testuser\\AppData\\Local\\Blurt\\venv\\Scripts\\litert-lm.exe'
   }
 
   it('resolves the DEFAULT gpu template ({venvPython}/{wrapperPath}) directly from venvPaths', () => {
@@ -593,9 +591,9 @@ describe('resolveManagedCliForImport', () => {
 
   it('falls through to resolveImportCli for a custom (non-placeholder) command', () => {
     const result = resolveManagedCliForImport(
-      'C:\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe serve --port {port}',
+      'C:\\Blurt\\venv\\Scripts\\litert-lm.exe serve --port {port}',
       undefined
     )
-    expect(result).toEqual({ ok: true, cli: 'C:\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe' })
+    expect(result).toEqual({ ok: true, cli: 'C:\\Blurt\\venv\\Scripts\\litert-lm.exe' })
   })
 })

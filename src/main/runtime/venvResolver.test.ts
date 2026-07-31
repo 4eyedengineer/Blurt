@@ -3,15 +3,12 @@ import { getRuntimeBaseDir, isVenvHealthy, venvPathsFor } from './venvResolver'
 
 describe('venvPathsFor', () => {
   it('uses Scripts\\*.exe on win32', () => {
-    const paths = venvPathsFor(
-      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv',
-      'win32'
-    )
+    const paths = venvPathsFor('C:\\Users\\testuser\\AppData\\Local\\Blurt\\venv', 'win32')
     expect(paths.pythonExe).toBe(
-      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe'
+      'C:\\Users\\testuser\\AppData\\Local\\Blurt\\venv\\Scripts\\python.exe'
     )
     expect(paths.litertLmExe).toBe(
-      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+      'C:\\Users\\testuser\\AppData\\Local\\Blurt\\venv\\Scripts\\litert-lm.exe'
     )
   })
 
@@ -23,9 +20,9 @@ describe('venvPathsFor', () => {
 })
 
 describe('getRuntimeBaseDir', () => {
-  it('joins LOCALAPPDATA with WindowsEloquent', () => {
+  it('joins LOCALAPPDATA with Blurt', () => {
     expect(getRuntimeBaseDir({ LOCALAPPDATA: 'C:\\Users\\testuser\\AppData\\Local' })).toContain(
-      'WindowsEloquent'
+      'Blurt'
     )
   })
 

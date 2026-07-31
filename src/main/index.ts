@@ -52,12 +52,13 @@ const modelManager = new ModelManager(app.getPath('userData'))
 
 /**
  * Establishes the self-managed runtime venv the packaged app's managed
- * sidecar depends on, with no launcher (ps1/run.sh) involved - see
+ * sidecar depends on, with no launcher involved - see
  * `runtime/venvResolver.ts` / `runtime/firstRunSetup.ts`'s doc comments.
  * Only meaningful on win32 (the packaged app's only real target - see
  * WINDOWS.md); a no-op elsewhere so WSL/Linux/mac dev builds (which don't
- * have `%LOCALAPPDATA%` at all) are unaffected and keep relying on their own
- * dev launcher's settings.json seeding, unchanged.
+ * have `%LOCALAPPDATA%` at all) are unaffected, and instead rely on the
+ * sidecar command being configured by hand in Settings (see
+ * `DEFAULT_MANAGED_COMMAND`'s doc comment in shared/types.ts).
  *
  * Returns the resolved venv paths on success (already-healthy or freshly
  * set up), or `undefined` if setup failed - in which case a hard-error
@@ -148,7 +149,7 @@ app.whenReady().then(async () => {
   // (or a second sidecar) on the way out.
   if (!isPrimaryInstance) return
 
-  electronApp.setAppUserModelId('com.windowseloquent.app')
+  electronApp.setAppUserModelId('com.blurt.app')
 
   app.on('second-instance', () => {
     if (!mainWindow) return

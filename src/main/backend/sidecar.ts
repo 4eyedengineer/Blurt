@@ -219,8 +219,7 @@ export function resolveImportCli(managedCommand: string): ImportCliResolution {
  * `venvPaths.litertLmExe` directly - the same source of truth
  * `BackendController` renders `{litertLmCli}` from at spawn time. Any other
  * (custom, hand-edited) command template falls through to `resolveImportCli`
- * unchanged, so a literal absolute path (what `Start-Eloquent.ps1`/`run.sh`
- * still seed) keeps working exactly as before.
+ * unchanged, so a literal absolute path keeps working exactly as before.
  */
 export function resolveManagedCliForImport(
   managedCommand: string,
@@ -689,9 +688,8 @@ export class Sidecar extends EventEmitter {
   }
 
   /**
-   * `GET /v1/models` - confirmed against a real `litert-lm serve` (verified
-   * empirically, see scratchpad/sidecar-verification.md §3/§5 gotcha 5): it
-   * responds 200 within ~1-2s of process start, well before the actual
+   * `GET /v1/models` - confirmed empirically against a real `litert-lm
+   * serve`: it responds 200 within ~1-2s of process start, well before the actual
    * model is loaded into memory (loading is lazy, on the first
    * `/v1/chat/completions` request referencing it - so this is a "the HTTP
    * server is up" check, not a "first inference will be fast" guarantee).

@@ -38,7 +38,7 @@ function renderHtml(steps: SetupStepDef[]): string {
 <html>
 <head>
 <meta charset="utf-8">
-<title>Windows Eloquent - First-run setup</title>
+<title>Blurt - First-run setup</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -79,7 +79,7 @@ function renderHtml(steps: SetupStepDef[]): string {
 </style>
 </head>
 <body>
-  <h1>Setting up Windows Eloquent</h1>
+  <h1>Setting up Blurt</h1>
   <p class="sub">One-time setup - creating a local Python environment for offline speech recognition.</p>
   <ul id="steps">${stepItems}</ul>
   <div id="log"></div>
@@ -117,7 +117,7 @@ export class SetupWindow {
       resizable: false,
       autoHideMenuBar: true,
       backgroundColor: '#111318',
-      title: 'Windows Eloquent - First-run setup',
+      title: 'Blurt - First-run setup',
       webPreferences: { sandbox: false }
     })
     const html = renderHtml(steps)

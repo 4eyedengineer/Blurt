@@ -1,9 +1,9 @@
-appId: com.windowseloquent.app
-productName: windows-eloquent
+appId: com.blurt.app
+productName: Blurt
 # Electron-builder's default "asarIntegrity" feature embeds a SHA256 hash of
 # app.asar's header into the exe (via a resedit-injected INTEGRITY
 # resource), which Electron validates at startup - found the hard way: with
-# it enabled, the packaged windows-eloquent.exe exited instantly (exit code
+# it enabled, the packaged blurt.exe exited instantly (exit code
 # 1, zero stdout/stderr, no Windows Error Reporting entry - a deliberate,
 # silent tamper-response exit, not a crash) on every launch, while the exact
 # same app.asar loaded fine via a plain `electron.exe <path-to-asar>`
@@ -40,7 +40,7 @@ extraResources:
   - from: resources
     to: .
 win:
-  executableName: windows-eloquent
+  executableName: blurt
   target:
     - target: nsis
       arch:
@@ -53,30 +53,21 @@ nsis:
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
-  # Deletes %APPDATA%\windows-eloquent (settings.json, history, downloaded
-  # model, logs - app.getPath('userData'), which defaults to package.json's
-  # "name"/this file's productName - both are "windows-eloquent") on
-  # uninstall, no prompt.
-  deleteAppDataOnUninstall: true
-  # Prompts separately (see build/installer.nsh) to also remove
-  # %LOCALAPPDATA%\WindowsEloquent (the shared Python venv + litert-lm -
-  # several hundred MB, not something to delete silently since it's also
-  # reused by the dev launchers) - electron-builder's own
-  # deleteAppDataOnUninstall only knows about the one %APPDATA% userData
-  # path above, not this separate %LOCALAPPDATA% runtime directory.
+  # %APPDATA%\blurt (settings.json, history, downloaded model - up to ~6 GB)
+  # is deliberately NOT deleted automatically on uninstall.
+  # deleteAppDataOnUninstall would do that silently with no prompt, which is
+  # backwards for a multi-GB model download - so instead both this directory
+  # and the separate %LOCALAPPDATA%\Blurt runtime dir (see below) are
+  # prompted for together in build/installer.nsh, the same way.
+  deleteAppDataOnUninstall: false
+  # Prompts (see build/installer.nsh) before removing %APPDATA%\blurt (see
+  # above) and, separately, %LOCALAPPDATA%\Blurt (the shared Python venv +
+  # litert-lm - several hundred MB, not something to delete silently since
+  # it's also reused by dev builds) - electron-builder itself has no
+  # knowledge of this second, non-userData runtime directory.
   include: build/installer.nsh
 portable:
   artifactName: ${name}-${version}-portable.${ext}
-mac:
-  entitlementsInherit: build/entitlements.mac.plist
-  extendInfo:
-    - NSCameraUsageDescription: Application requests access to the device's camera.
-    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
-    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
-  notarize: false
-dmg:
-  artifactName: ${name}-${version}.${ext}
 linux:
   target:
     - AppImage
@@ -87,6 +78,3 @@ linux:
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
-publish:
-  provider: generic
-  url: https://example.com/auto-updates

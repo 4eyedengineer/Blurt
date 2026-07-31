@@ -1,9 +1,9 @@
 {
-  "name": "windows-eloquent",
+  "name": "blurt",
   "version": "1.0.0",
   "description": "Offline-first AI dictation for Windows (Electron + React + TypeScript) - speech to cleaned-up text, running Gemma 4 locally on your own GPU via LiteRT-LM. Nothing leaves your machine.",
   "main": "./out/main/index.js",
-  "author": "Windows Eloquent contributors",
+  "author": "Blurt contributors",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
@@ -17,7 +17,6 @@
     "postinstall": "electron-builder install-app-deps || echo '[postinstall] electron-builder install-app-deps failed (likely no native build toolchain for uiohook-napi in this environment) - continuing; push-to-talk will be runtime-disabled with a status note in Settings. See README Known limitations.'",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
-    "build:mac": "electron-vite build && electron-builder --mac",
     "build:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {

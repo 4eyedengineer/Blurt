@@ -3,15 +3,13 @@ import type { VenvPaths } from './venvResolver'
 
 /**
  * Orchestrates the packaged app's first-run bootstrap when no healthy venv
- * is found under `%LOCALAPPDATA%\WindowsEloquent\venv` (see
- * `venvResolver.ts`): find a Python 3.10+ interpreter, create the venv, pip
- * install the pinned `litert-lm` version into it. Mirrors
- * `Start-Eloquent.ps1`'s "Python 3.10+" / "Persistent venv + litert-lm"
- * steps, but deliberately does NOT auto-install Python via winget (or
- * anything else) the way the ps1 launcher does - the packaged app is meant
- * to be a normal, unsurprising Windows app; silently shelling out to winget
- * on first launch is not that. If no interpreter is found, this throws
- * `NoPythonFoundError` and the caller shows a hard error screen instead.
+ * is found under `%LOCALAPPDATA%\Blurt\venv` (see `venvResolver.ts`): find a
+ * Python 3.10+ interpreter, create the venv, pip install the pinned
+ * `litert-lm` version into it. Deliberately does NOT auto-install Python via
+ * winget (or anything else) - the packaged app is meant to be a normal,
+ * unsurprising Windows app; silently shelling out to winget on first launch
+ * is not that. If no interpreter is found, this throws `NoPythonFoundError`
+ * and the caller shows a hard error screen instead.
  */
 
 /**
@@ -32,8 +30,7 @@ export interface PythonCandidate {
  * Windows: the `py` launcher (ships with every python.org installer) is
  * tried before bare `python` specifically because a bare `python` on
  * Windows PATH is the least reliable of the three (can be the Microsoft
- * Store app-execution-alias stub, or absent entirely, even when `py` isn't)
- * - mirrors `Start-Eloquent.ps1`'s own preference order.
+ * Store app-execution-alias stub, or absent entirely, even when `py` isn't).
  */
 export function pythonCandidatesFor(platform: NodeJS.Platform): PythonCandidate[] {
   if (platform === 'win32') {
@@ -104,7 +101,7 @@ export function findPython(platform: NodeJS.Platform = process.platform): FoundP
 export class NoPythonFoundError extends Error {
   constructor() {
     super(
-      'No Python 3.10+ installation was found. Install Python 3.10+ from python.org (check "Add python.exe to PATH"), then relaunch Windows Eloquent.'
+      'No Python 3.10+ installation was found. Install Python 3.10+ from python.org (check "Add python.exe to PATH"), then relaunch Blurt.'
     )
     this.name = 'NoPythonFoundError'
   }
@@ -159,9 +156,8 @@ export interface FirstRunSetupCallbacks {
  * Runs the full first-run bootstrap in order: find Python, create the venv,
  * pip-install the pinned litert-lm. Only called when `isVenvHealthy(venv)`
  * is already false (see main/index.ts) - always runs every step, no
- * per-step "already done" skip logic like `Start-Eloquent.ps1` has, since a
- * partially-set-up venv on a fresh packaged install would be unusual enough
- * to just start clean.
+ * per-step "already done" skip logic, since a partially-set-up venv on a
+ * fresh packaged install would be unusual enough to just start clean.
  */
 export async function runFirstRunSetup(
   venv: VenvPaths,

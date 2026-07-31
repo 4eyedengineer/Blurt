@@ -5,19 +5,19 @@ describe('computeServeGpuScriptPath', () => {
   it('resolves under the repo root in dev mode, ignoring resourcesPath', () => {
     const path = computeServeGpuScriptPath({
       isDev: true,
-      appPath: '/home/user/dev/windows-eloquent',
+      appPath: '/home/user/dev/blurt',
       resourcesPath: '/some/unrelated/resources'
     })
-    expect(path).toBe('/home/user/dev/windows-eloquent/resources/serve_gpu.py')
+    expect(path).toBe('/home/user/dev/blurt/resources/serve_gpu.py')
   })
 
   it('resolves directly under process.resourcesPath when packaged', () => {
     const path = computeServeGpuScriptPath({
       isDev: false,
-      appPath: 'C:\\Program Files\\WindowsEloquent\\resources\\app.asar',
-      resourcesPath: 'C:\\Program Files\\WindowsEloquent\\resources'
+      appPath: 'C:\\Program Files\\Blurt\\resources\\app.asar',
+      resourcesPath: 'C:\\Program Files\\Blurt\\resources'
     })
-    expect(path).toBe('C:\\Program Files\\WindowsEloquent\\resources\\serve_gpu.py')
+    expect(path).toBe('C:\\Program Files\\Blurt\\resources\\serve_gpu.py')
   })
 
   it('packaged resolution does not depend on appPath ending in .asar', () => {
@@ -27,8 +27,8 @@ describe('computeServeGpuScriptPath', () => {
     const path = computeServeGpuScriptPath({
       isDev: false,
       appPath: '/whatever/app.asar',
-      resourcesPath: '/opt/WindowsEloquent/resources'
+      resourcesPath: '/opt/Blurt/resources'
     })
-    expect(path).toBe('/opt/WindowsEloquent/resources/serve_gpu.py')
+    expect(path).toBe('/opt/Blurt/resources/serve_gpu.py')
   })
 })

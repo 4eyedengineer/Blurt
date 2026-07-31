@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  check:
+    name: typecheck / lint / test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # electron-vite needs a Node with crypto.hash (>= 20.19 / >= 22.12);
+          # an older Node fails at "crypto.hash is not a function", which is
+          # not an obvious error message to debug from.
+          node-version: '22'
+          cache: npm
+
+      # `npm ci` (not `npm install`) so the lockfile is what's actually
+      # tested. The postinstall step tries to rebuild uiohook-napi's native
+      # addon for Electron and fails on a runner with no build toolchain -
+      # that's expected and non-fatal (the package ships a prebuilt N-API
+      # binary), which is why postinstall swallows it.
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run lint
+
+      - run: npm test
+
+  # Deliberately not built here: the Windows installer. electron-builder
+  # needs a real Windows host, and the packaging step is verified by hand
+  # against actual hardware (a GPU, a microphone, and a keyboard hook are
+  # all things a headless runner cannot check). See CONTRIBUTING.md.

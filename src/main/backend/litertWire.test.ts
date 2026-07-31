@@ -34,12 +34,12 @@ describe('request builders', () => {
     const req = buildTranscriptionRequest({
       model: 'gemma-4-e2b',
       wavBase64: 'QUJD',
-      vocabulary: ['Kubernetes', 'Eloquent']
+      vocabulary: ['Kubernetes', 'Serendipity']
     })
     const parts = req.messages[0].content as Array<{ type: string; text?: string }>
     const textPart = parts.find((p) => p.type === 'text')
     expect(textPart?.text).toContain('Kubernetes')
-    expect(textPart?.text).toContain('Eloquent')
+    expect(textPart?.text).toContain('Serendipity')
   })
 
   it('omits the vocabulary hint when there is no custom vocabulary', () => {

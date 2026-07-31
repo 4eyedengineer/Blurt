@@ -48,7 +48,7 @@ describe('matchesSidecarSignature', () => {
   it('matches the GPU wrapper', () => {
     expect(
       matchesSidecarSignature(
-        'C:\\WindowsEloquent\\venv\\Scripts\\python.exe C:\\WindowsEloquent\\app\\resources\\serve_gpu.py serve --port 9379'
+        'C:\\Blurt\\venv\\Scripts\\python.exe C:\\Blurt\\app\\resources\\serve_gpu.py serve --port 9379'
       )
     ).toBe(true)
   })

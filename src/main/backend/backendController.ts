@@ -81,8 +81,9 @@ export class BackendController extends EventEmitter {
      * and reused for the app's lifetime - undefined only on non-Windows dev
      * builds, where `DEFAULT_MANAGED_COMMAND`'s `{venvPython}`/
      * `{litertLmCli}` placeholders are never actually reached in practice
-     * (dev launchers seed their own settings.json with a literal command
-     * instead - see that constant's doc comment).
+     * (there's no `%LOCALAPPDATA%` venv to point at, so a contributor must
+     * hand-edit the managed command or use 'external' mode instead - see
+     * that constant's doc comment).
      */
     private readonly venvPaths?: VenvPaths
   ) {
@@ -131,7 +132,7 @@ export class BackendController extends EventEmitter {
       // The downloaded .litertlm file alone isn't enough for a managed
       // sidecar to serve it - `litert-lm serve` only recognizes models that
       // have gone through `litert-lm import <file> <alias>` (see
-      // ModelManager's class doc / scratchpad/sidecar-verification.md §2-3).
+      // ModelManager's class doc).
       // Normally `ModelManager.download()` does this as its last step, but
       // guard here too in case the import step failed previously, or the
       // sandboxed LITERT_LM_DIR was cleared independently of the download.
@@ -214,8 +215,8 @@ export class BackendController extends EventEmitter {
       const startedSidecar = sidecar
       // The server has no idea what our internal ModelId ("gemma-4-e2b")
       // means - every request's `model` field must be the alias it was
-      // `litert-lm import`-ed as (e.g. "e2b"). See ModelCatalogEntry.alias
-      // and scratchpad/sidecar-verification.md §2/§4a.
+      // `litert-lm import`-ed as (e.g. "e2b") - verified empirically
+      // against a running server. See ModelCatalogEntry.alias.
       const backend = new LitertBackend({
         getBaseUrl: () => startedSidecar.getBaseUrl(),
         modelId: getCatalogEntry(settings.modelId).alias,

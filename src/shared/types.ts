@@ -80,10 +80,8 @@ export interface SidecarSettings {
  * `resolveImportCli` in `main/backend/sidecar.ts`, which still hard-errors
  * on a bare, un-placeholder'd interpreter name for any *custom* command that
  * doesn't use these placeholders). A user who hand-edits this field to a
- * literal absolute path (as `Start-Eloquent.ps1`/`run.sh` still do when they
- * seed a fresh settings.json of their own, for the dev path) continues to
- * work exactly as before - `{venvPython}`/`{litertLmCli}` are additive, not
- * a requirement.
+ * literal absolute path continues to work exactly as before -
+ * `{venvPython}`/`{litertLmCli}` are additive, not a requirement.
  */
 export const DEFAULT_MANAGED_COMMAND =
   '"{venvPython}" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'

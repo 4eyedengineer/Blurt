@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!--
+    Blurt's mark: a speech bubble, nothing else. The app turns speech into
+    text, so the bubble is the whole idea; anything added to it (dots,
+    sound waves, a microphone) turns to mush at the 16px favicon/taskbar
+    size, which is where an app icon actually has to work.
+
+    The background is #111318 - the same colour as the app window itself
+    (see createWindow in src/main/index.ts), so the icon and the app read
+    as one thing.
+  -->
+  <rect width="512" height="512" rx="114" fill="#111318"/>
+  <!-- Bubble body and tail are two overlapping shapes, same fill - keep in
+       sync with the geometry in the icon-rendering script if this changes. -->
+  <rect x="96" y="126" width="320" height="220" rx="54" fill="#ffffff"/>
+  <polygon points="158,300 268,300 152,430" fill="#ffffff"/>
+</svg>
