@@ -2,8 +2,6 @@ import type { TransformMode } from './backend'
 
 export type ModelId = 'gemma-4-e2b' | 'gemma-4-e4b' | 'gemma-4-12b'
 
-export type BackendMode = 'offline' | 'cloud'
-
 /**
  * How the LiteRT-LM sidecar HTTP server is obtained:
  * - 'managed': the app spawns it itself, using `managedCommand` as a
@@ -152,7 +150,6 @@ export interface PasteOutcome {
 
 export interface Settings {
   modelId: ModelId
-  mode: BackendMode
   sidecar: SidecarSettings
   autoCopyOnCleanup: boolean
   customVocabulary: string[]
@@ -163,7 +160,6 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   modelId: 'gemma-4-e2b',
-  mode: 'offline',
   sidecar: DEFAULT_SIDECAR_SETTINGS,
   autoCopyOnCleanup: false,
   customVocabulary: [],

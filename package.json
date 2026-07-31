@@ -1,7 +1,7 @@
 {
   "name": "windows-eloquent",
   "version": "1.0.0",
-  "description": "Windows-targeted offline-first AI dictation app (Electron + React + TypeScript), cloning the Google AI Edge Eloquent UX against a mocked InferenceBackend.",
+  "description": "Offline-first AI dictation for Windows (Electron + React + TypeScript) - speech to cleaned-up text, running Gemma 4 locally on your own GPU via LiteRT-LM. Nothing leaves your machine.",
   "main": "./out/main/index.js",
   "author": "Windows Eloquent contributors",
   "scripts": {

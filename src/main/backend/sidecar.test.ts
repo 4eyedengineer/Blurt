@@ -154,10 +154,10 @@ describe('renderManagedCommand', () => {
       modelPath: '',
       port: 9379,
       wrapperPath: 'C:\\WindowsEloquent\\app\\resources\\serve_gpu.py',
-      venvPython: 'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe'
+      venvPython: 'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe'
     })
     expect(gpuArgs).toEqual([
-      'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe',
+      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe',
       'C:\\WindowsEloquent\\app\\resources\\serve_gpu.py',
       'serve',
       '--port',
@@ -167,10 +167,11 @@ describe('renderManagedCommand', () => {
     const cpuArgs = renderManagedCommand('"{litertLmCli}" serve --port {port}', {
       modelPath: '',
       port: 9379,
-      litertLmCli: 'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+      litertLmCli:
+        'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
     })
     expect(cpuArgs).toEqual([
-      'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe',
+      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe',
       'serve',
       '--port',
       '9379'
@@ -245,11 +246,11 @@ describe('resolveImportCli', () => {
 
   it('resolves the sibling litert-lm.exe from an absolute win32 venv python path', () => {
     const result = resolveImportCli(
-      'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
+      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
     )
     expect(result).toEqual({
       ok: true,
-      cli: 'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+      cli: 'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
     })
   })
 
@@ -308,7 +309,8 @@ describe('resolveImportCli', () => {
 
 describe('resolveManagedCliForImport', () => {
   const venvPaths = {
-    litertLmExe: 'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
+    litertLmExe:
+      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\litert-lm.exe'
   }
 
   it('resolves the DEFAULT gpu template ({venvPython}/{wrapperPath}) directly from venvPaths', () => {

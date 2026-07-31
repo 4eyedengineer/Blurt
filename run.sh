@@ -143,8 +143,6 @@ else
   cat > "$SETTINGS_FILE" <<JSON
 {
   "modelId": "$MODEL_ID",
-  "mode": "offline",
-  "backend": "litert",
   "sidecar": {
     "mode": "managed",
     "managedCommand": "$VENV_DIR/bin/python $REPO_ROOT/resources/serve_gpu.py serve --host 127.0.0.1 --port {port} --verbose",

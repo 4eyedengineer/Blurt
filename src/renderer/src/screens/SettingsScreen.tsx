@@ -283,16 +283,6 @@ export function SettingsScreen(): React.JSX.Element {
         <h2>Processing</h2>
         <label className="settings-screen__toggle-row">
           <span>
-            <strong>Cloud mode</strong>
-          </span>
-          <Toggle
-            checked={settings.mode === 'cloud'}
-            onChange={(checked) => void update({ mode: checked ? 'cloud' : 'offline' })}
-            label="Cloud mode"
-          />
-        </label>
-        <label className="settings-screen__toggle-row">
-          <span>
             <strong>Auto-copy on cleanup</strong>
           </span>
           <Toggle
