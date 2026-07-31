@@ -529,8 +529,7 @@ tokens/s numbers.
    cleaned, and last-transformed text plus its original stats into the Dictate screen).
 3. **Settings** - model choice (Gemma 4 E2B / E4B / 12B) with per-model download/install state and
    a progress bar, a read-only GPU/CPU readout of what the engine actually reported, sidecar
-   mode/command/URL/port fields, offline/cloud
-   toggle placeholder, custom vocabulary list (add/remove, persisted in `settings.json`), auto-copy
+   mode/command/URL/port fields, custom vocabulary list (add/remove, persisted in `settings.json`), auto-copy
    toggle, and a global hotkey field that calls `globalShortcut.register` in the main process for
    real (default `Ctrl+Shift+Space`) - triggering it brings the window to front and toggles
    recording from anywhere in Windows.
@@ -660,9 +659,8 @@ Under Electron's `app.getPath('userData')` (on Windows, typically `%APPDATA%/win
 
 - `history.json` - array of `DictationEntry` (raw transcript, cleaned text, current display text,
   which transform (if any) produced it, word count, duration, WPM, timestamp)
-- `settings.json` - the `Settings` object (backend selection, model id, sidecar config,
-  offline/cloud mode, auto-copy, custom vocabulary, hotkey accelerator, push-to-talk
-  enable/key/auto-paste)
+- `settings.json` - the `Settings` object (model id, sidecar config, auto-copy, custom
+  vocabulary, hotkey accelerator, push-to-talk enable/key/auto-paste)
 - `models/<modelId>.litertlm` - downloaded model files (see [Model downloads](#model-downloads));
   `models/<modelId>.litertlm.part` for an in-progress or interrupted download
 
@@ -721,5 +719,4 @@ remove it if you don't hit that issue.
   against the _old_ backend when settings change mid-call - it only stops accepting new work on
   the old instance and stops the old sidecar process once the new one is ready. A dictation
   session started just before a backend switch should still be allowed to finish naturally.
-- Packaging (`npm run build:win`) was intentionally **not** run - only the `electron-builder.yml`
-  config (NSIS + portable, x64) was written and validated as parseable YAML.
+- Auto-update is not implemented. New versions have to be downloaded and installed manually.

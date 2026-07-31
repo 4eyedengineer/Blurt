@@ -496,10 +496,14 @@ npm run build:win
 
 `npm run build` runs `typecheck` then `electron-vite build` (main + preload + renderer);
 `npm run build:win` additionally runs `electron-builder --win`, producing an NSIS installer and a
-portable `.exe` per `electron-builder.yml`. This step was not run against a real Windows/electron-
-builder toolchain as part of this integration (the dev/verification sandbox is Linux) - the config
-file itself was written and validated as parseable YAML only. Run it on an actual Windows machine
-(or a Windows CI runner) before distributing.
+portable `.exe` per `electron-builder.yml`.
+
+Must be run on a real Windows machine (or a Windows CI runner) - electron-builder needs the
+Windows toolchain to produce these. Note that `electron-builder install-app-deps` will fail to
+rebuild `uiohook-napi` (the push-to-talk key hook) unless Visual Studio Build Tools are
+installed; that failure is safe to ignore, because the package ships a prebuilt N-API binary
+which loads correctly at runtime - confirmed by `push-to-talk: uiohook-napi loaded` in the
+packaged app's own log.
 
 Note that `litert-lm` itself is **not bundled** by `electron-builder` - it's a separate install the
 end user (or your own installer script, if you extend `electron-builder.yml`'s `extraResources`)
