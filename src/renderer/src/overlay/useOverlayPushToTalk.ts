@@ -41,6 +41,8 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
    * into, so timing from the keypress would understate their real WPM.
    */
   const captureLiveAtRef = useRef<number | null>(null)
+  /** Last backend session error for the current hold, if any - see the subscription in `start`. */
+  const sessionErrorRef = useRef<string | null>(null)
 
   const clearSettleTimer = useCallback(() => {
     if (settleTimerRef.current) {
@@ -66,12 +68,26 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
   const start = useCallback(async () => {
     clearSettleTimer()
     captureLiveAtRef.current = null
+    sessionErrorRef.current = null
     dispatch({ type: 'start' })
     const sessionId = await window.api.dictation.startSession({ sampleRate: 16000 })
     sessionIdRef.current = sessionId
-    unsubscribePartialRef.current = window.api.dictation.onPartialTranscript((sid, text) => {
+    const offPartial = window.api.dictation.onPartialTranscript((sid, text) => {
       if (sid === sessionId) dispatch({ type: 'partial', text })
     })
+    // The backend reports "the microphone signal was silent for the entire
+    // recording" as a session error, not as a transcript. Without this the
+    // overlay never heard about it and rendered the same nothing it renders
+    // for "you didn't speak", so a genuinely dead or muted input device was
+    // indistinguishable from staying quiet on purpose. The Dictate screen
+    // has always subscribed to this; the overlay simply never did.
+    const offError = window.api.dictation.onSessionError((sid, error) => {
+      if (sid === sessionId) sessionErrorRef.current = error.message
+    })
+    unsubscribePartialRef.current = () => {
+      offPartial()
+      offError()
+    }
     try {
       await audio.start()
     } catch (err) {
@@ -156,6 +172,21 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
       // and is what keeps the clipboard and history untouched) - it just
       // has nothing in it.
       if (!raw.trim()) {
+        // Unless the backend told us WHY it was empty. "Nobody spoke" stays
+        // silent; "the signal was silent for the entire recording" is a
+        // broken input device and has to be said, or the user is left
+        // guessing whether the app even heard the key.
+        const reason = sessionErrorRef.current
+        if (reason) {
+          dispatch({ type: 'failed', message: reason })
+          window.api.overlay.sendResult({
+            rawTranscript: '',
+            cleanedText: '',
+            durationMs,
+            error: reason
+          })
+          return
+        }
         dispatch({ type: 'reset' })
         window.api.overlay.sendResult({ rawTranscript: '', cleanedText: '', durationMs })
         return

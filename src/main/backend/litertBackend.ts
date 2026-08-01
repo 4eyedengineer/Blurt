@@ -547,7 +547,14 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     session.ended = true
     this.sessions.delete(sessionId)
 
-    if (!session.hasAudio) return session.lastTranscript
+    // The two ways a session can end without the model ever being called
+    // look identical from outside (an empty transcript) but mean completely
+    // different things, so they are logged apart. This one: not a single
+    // PCM chunk was ever pushed, so capture never delivered anything.
+    if (!session.hasAudio) {
+      log.warn(`litertBackend: session ${sessionId} ended with no audio at all (no chunks pushed)`)
+      return session.lastTranscript
+    }
 
     // If a mid-recording partial tick is still in flight *and* no new audio
     // arrived after it took its buffer snapshot, its result covers exactly
@@ -610,7 +617,17 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     const samples = concatInt16(session.chunks)
     void this.maybeDumpDebugWav(samples, session.sampleRate)
 
+    // ...and this one: audio arrived, but every sample of it was at or near
+    // digital silence. Logging the measured RMS alongside the threshold is
+    // what makes a "nothing happened" report diagnosable at all: an rms of
+    // ~0 means the capture device is delivering silence (muted, or the
+    // wrong input selected), while an rms comfortably above the threshold
+    // would mean this guard is the thing that is wrong.
     if (this.isSilentBuffer(samples)) {
+      log.warn(
+        `litertBackend: session ${sessionId} buffer judged silent - skipping the model call ` +
+          `(samples=${samples.length}, rms=${computeRms(samples).toFixed(1)}, threshold=${SILENCE_RMS_THRESHOLD})`
+      )
       this.emitError(
         sessionId,
         new NoAudioError(

@@ -53,11 +53,22 @@ function getContext(): AudioContext {
  * any audio-output problem is swallowed (the user simply doesn't hear it).
  */
 export function playReadyTone(): void {
+  void playToneAsync()
+}
+
+async function playToneAsync(): Promise<void> {
   try {
     const ctx = getContext()
-    // An AudioContext can start suspended (autoplay policy); resuming is
-    // async, so this beep may be skipped and the next one will work.
-    if (ctx.state === 'suspended') void ctx.resume()
+    // Resume BEFORE scheduling, and wait for it. An AudioContext can come
+    // up suspended, and a suspended context's clock does not advance, so
+    // notes scheduled against `currentTime` and stopped a tenth of a second
+    // later can be over before it ever starts running. Firing resume() and
+    // scheduling immediately anyway used to drop this beep every single
+    // time in the push-to-talk overlay, which never receives a user gesture
+    // that would resume the context implicitly (it is `focusable: false`
+    // and driven by a global key hook). A cue that never plays is the same
+    // as no cue, and worse, it reads as "the app did not hear me".
+    if (ctx.state === 'suspended') await ctx.resume()
 
     const now = ctx.currentTime
     const oscillator = ctx.createOscillator()
