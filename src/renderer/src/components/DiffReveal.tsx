@@ -16,11 +16,13 @@ const SETTLE_START_DELAY_MS = 60
  * text" once a cleanup (or voice-edit) pass finishes - see
  * useDictationSession/DictateScreen and useOverlayPushToTalk/OverlayApp for
  * how long each keeps this mounted before swapping to the plain settled
- * text. Purely presentational and self-contained: removed words fade to
- * transparent (with a strikethrough) and inserted/changed words' highlight
- * fades away, both via a CSS transition kicked off shortly after mount -
- * the parent is responsible for unmounting this once the fade has had time
- * to finish.
+ * text. Purely presentational and self-contained: removed words strike
+ * through and fade to transparent, inserted/changed words' highlight fades
+ * away, and then the gaps the removed words leave behind close up so the
+ * text ends the reveal reading exactly like the final cleaned text. All of
+ * it is CSS (see DiffReveal.css for the timings), kicked off by the one
+ * class toggle below shortly after mount - the parent is responsible for
+ * unmounting this once the whole sequence has had time to finish.
  */
 export function DiffReveal({ tokens, compact = false }: DiffRevealProps): React.JSX.Element {
   const [settling, setSettling] = useState(false)
@@ -59,7 +61,10 @@ export function DiffReveal({ tokens, compact = false }: DiffRevealProps): React.
           case 'replace':
             return (
               <span key={index}>
-                <span className="diff-reveal__delete">{token.before}</span>{' '}
+                {/* The separator lives inside the deleted span, not between
+                    the two, so it collapses along with the word it belongs
+                    to - see DiffReveal.css. */}
+                <span className="diff-reveal__delete">{token.before} </span>
                 <span className="diff-reveal__insert">{token.after}</span>{' '}
               </span>
             )

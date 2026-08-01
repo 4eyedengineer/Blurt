@@ -1,35 +1,73 @@
 /* See DiffReveal.tsx - `.diff-reveal--settling` is added shortly after
    mount so the browser paints the initial (fully visible) diff before the
-   fade-out transition below starts. */
+   transitions below start.
+
+   The reveal runs in two beats: the removed words strike through and fade
+   out, and only once they are gone does the gap they were holding close
+   up. Without that second beat the text sits full of holes for the rest of
+   the reveal and then snaps shut when the parent swaps in the plain final
+   text; with it, the paragraph settles into exactly the text that gets
+   pasted.
+
+   Sequencing the beats (rather than shrinking while fading) is what keeps
+   the removed words readable on the way out, and it means nothing has to
+   be clipped: each box is already fully transparent by the time its width
+   animates, so `overflow` stays visible and the strikethrough keeps a
+   normal inline-block baseline on the text line.
+
+   Total run time has to stay inside the shortest window a parent keeps
+   this mounted - VOICE_EDIT_REVEAL_MS in useDictationSession.ts. */
+.diff-reveal {
+  --diff-fade-delay: 300ms;
+  --diff-fade-duration: 500ms;
+  --diff-collapse-duration: 340ms;
+  --diff-collapse-delay: calc(var(--diff-fade-delay) + var(--diff-fade-duration));
+  /* Lets `width: auto` interpolate to `width: 0`. Without it the collapse
+     below jumps straight to zero instead of easing. Chromium 129+; Electron
+     39 ships 142. */
+  interpolate-size: allow-keywords;
+}
 
 .diff-reveal__delete {
+  /* inline-block so there is a width to animate at all. `pre` keeps the
+     trailing space, so a removed word takes its separator with it and the
+     words either side are left correctly spaced rather than two spaces
+     apart - the space cannot live outside this box, because an atomic
+     inline between two spaces stops them collapsing into one even at zero
+     width. Tokens are single words (see wordDiff.ts), so nothing needs to
+     wrap inside one. */
+  display: inline-block;
+  white-space: pre;
+  width: auto;
   color: var(--color-danger);
   text-decoration: line-through;
   opacity: 1;
-  transition: opacity 1.4s ease;
+  transition:
+    opacity var(--diff-fade-duration) ease var(--diff-fade-delay),
+    width var(--diff-collapse-duration) ease var(--diff-collapse-delay);
+}
+
+.diff-reveal--settling .diff-reveal__delete {
+  opacity: 0;
+  width: 0;
 }
 
 .diff-reveal__insert {
   background: rgba(129, 201, 149, 0.28);
   border-radius: 3px;
   padding: 0 2px;
-  transition: background-color 1.4s ease;
-}
-
-.diff-reveal--settling .diff-reveal__delete {
-  opacity: 0;
+  transition: background-color var(--diff-fade-duration) ease var(--diff-fade-delay);
 }
 
 .diff-reveal--settling .diff-reveal__insert {
   background-color: transparent;
 }
 
-/* Compact (overlay pill) variant: single line, shorter fade to match the overlay's shorter reveal window. */
+/* Compact (overlay pill) variant: single line, and quicker throughout to
+   match the overlay's shorter reveal window. */
 .diff-reveal--compact {
   white-space: nowrap;
-}
-
-.diff-reveal--compact .diff-reveal__delete,
-.diff-reveal--compact .diff-reveal__insert {
-  transition-duration: 1s;
+  --diff-fade-delay: 200ms;
+  --diff-fade-duration: 360ms;
+  --diff-collapse-duration: 280ms;
 }

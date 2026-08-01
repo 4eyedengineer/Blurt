@@ -18,8 +18,13 @@ export type DictationPhase =
 
 /** How long the inline word-diff view stays up after a cleanup pass before settling to the plain cleaned text. */
 const CLEANUP_REVEAL_MS = 2000
-/** Same idea for voice-edit, which is a much smaller/cheaper change - a shorter beat is enough. */
-const VOICE_EDIT_REVEAL_MS = 1200
+/**
+ * Same idea for voice-edit, which is a much smaller/cheaper change - a
+ * shorter beat is enough. Still has to outlast the full reveal sequence
+ * (fade, then collapse - see DiffReveal.css), or the last of the collapse
+ * gets cut off by the unmount and the text snaps the rest of the way.
+ */
+const VOICE_EDIT_REVEAL_MS = 1500
 
 export interface UseDictationSession {
   phase: DictationPhase
