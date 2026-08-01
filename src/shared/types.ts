@@ -197,6 +197,19 @@ export interface Settings {
    * close-to-tray ever, and never again.
    */
   hasSeenTrayHint: boolean
+  /**
+   * Which microphone to record from, as a `MediaDeviceInfo.deviceId`.
+   * Empty means "whatever Windows currently calls the default input".
+   *
+   * Worth pinning: when the real microphone goes away - a Bluetooth
+   * headset disconnecting, an audio codec dropping off its bus - Windows
+   * promotes whatever endpoint is left without saying so, and that can be
+   * a virtual device (Steam's streaming mic, an NVIDIA endpoint) which
+   * opens cleanly, reports no error, and records digital silence. A pinned
+   * device fails loudly instead of quietly recording nothing: see the
+   * `exact` constraint in useAudioCapture.
+   */
+  inputDeviceId: string
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -207,7 +220,8 @@ export const DEFAULT_SETTINGS: Settings = {
   hotkey: 'Ctrl+Shift+Space',
   pushToTalk: DEFAULT_PUSH_TO_TALK_SETTINGS,
   runInBackground: true,
-  hasSeenTrayHint: false
+  hasSeenTrayHint: false,
+  inputDeviceId: ''
 }
 
 export type DictationDisplayMode = TransformMode | 'none'

@@ -33,10 +33,6 @@ export interface UseDictationSession {
   sessionError: string | null
   /** Normalized 0-1 live mic input level - see useAudioCapture. */
   micLevel: number
-  /** True once the mic level has read ~zero for >2s while recording - see useAudioCapture. */
-  noAudioDetected: boolean
-  /** Name of the input device actually opened - see useAudioCapture. */
-  deviceLabel: string | null
   /** Growing preview text for an in-flight cleanup/transform streamed rewrite - see `phase` ('cleaning' | 'transforming'). Empty once settled. */
   streamPreview: string
   /** Non-null while the brief inline diff-reveal (raw -> cleaned, or pre- -> post-voice-edit) is showing; render this instead of `displayText` when set. */
@@ -168,7 +164,7 @@ export function useDictationSession(): UseDictationSession {
     }
 
     try {
-      await audio.start()
+      await audio.start({ deviceId: settings.inputDeviceId })
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       unsubscribePartialRef.current()
@@ -177,7 +173,7 @@ export function useDictationSession(): UseDictationSession {
       setSessionError(`Microphone capture failed: ${reason}`)
       void window.api.dictation.endSession(sessionId)
     }
-  }, [audio, settings.customVocabulary, startNew])
+  }, [audio, settings.customVocabulary, settings.inputDeviceId, startNew])
 
   const stopRecording = useCallback(async () => {
     const sessionId = sessionIdRef.current
@@ -342,8 +338,6 @@ export function useDictationSession(): UseDictationSession {
     copyFlash,
     sessionError,
     micLevel: audio.level,
-    noAudioDetected: audio.noAudioDetected,
-    deviceLabel: audio.deviceLabel,
     streamPreview,
     reveal,
     toggleRecording,

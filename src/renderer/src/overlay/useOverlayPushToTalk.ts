@@ -41,8 +41,6 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
    * into, so timing from the keypress would understate their real WPM.
    */
   const captureLiveAtRef = useRef<number | null>(null)
-  /** Last backend session error for the current hold, if any - see the subscription in `start`. */
-  const sessionErrorRef = useRef<string | null>(null)
 
   const clearSettleTimer = useCallback(() => {
     if (settleTimerRef.current) {
@@ -68,28 +66,19 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
   const start = useCallback(async () => {
     clearSettleTimer()
     captureLiveAtRef.current = null
-    sessionErrorRef.current = null
     dispatch({ type: 'start' })
+    // Read fresh every hold rather than caching: the overlay window has no
+    // SettingsProvider, and this is a main-process memory read, so keeping
+    // it current costs nothing and can never act on a stale device.
+    const { inputDeviceId } = await window.api.settings.get()
     const sessionId = await window.api.dictation.startSession({ sampleRate: 16000 })
     sessionIdRef.current = sessionId
     const offPartial = window.api.dictation.onPartialTranscript((sid, text) => {
       if (sid === sessionId) dispatch({ type: 'partial', text })
     })
-    // The backend reports "the microphone signal was silent for the entire
-    // recording" as a session error, not as a transcript. Without this the
-    // overlay never heard about it and rendered the same nothing it renders
-    // for "you didn't speak", so a genuinely dead or muted input device was
-    // indistinguishable from staying quiet on purpose. The Dictate screen
-    // has always subscribed to this; the overlay simply never did.
-    const offError = window.api.dictation.onSessionError((sid, error) => {
-      if (sid === sessionId) sessionErrorRef.current = error.message
-    })
-    unsubscribePartialRef.current = () => {
-      offPartial()
-      offError()
-    }
+    unsubscribePartialRef.current = offPartial
     try {
-      await audio.start()
+      await audio.start({ deviceId: inputDeviceId })
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       window.api.log.rendererError(`overlay mic capture failed: ${reason}`)
@@ -134,17 +123,10 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
     // finished opening, so not a single PCM chunk was produced and the
     // backend has literally nothing (see LitertBackend.endSession's
     // `hasAudio` check, which returns without calling the model at all).
-    //
-    // This has to be said out loud. It is NOT the same as "you held the key
-    // and said nothing", which is deliberately silent, and treating the two
-    // alike is what made a too-short hold look like a broken app: the pill
-    // appeared, vanished, and nothing was pasted, with no way to tell
-    // whether Blurt was ignoring the key, the mic was dead, or the hold was
-    // simply too quick. Opening the audio device takes a second or two on
-    // Windows, which is exactly what the ready tone exists to signal.
+    // Nothing to show for it, so show nothing - the ready tone is what
+    // signals when the device is actually open. Logged, not displayed.
     if (liveAt === null) {
-      const message = 'Microphone was not ready yet. Hold the key until you hear the tone.'
-      dispatch({ type: 'failed', message })
+      dispatch({ type: 'reset' })
       window.api.overlay.sendResult({
         rawTranscript: '',
         cleanedText: '',
@@ -172,27 +154,6 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
       // and is what keeps the clipboard and history untouched) - it just
       // has nothing in it.
       if (!raw.trim()) {
-        // Unless the backend told us WHY it was empty. "Nobody spoke" stays
-        // silent; "the signal was silent for the entire recording" is a
-        // broken input device and has to be said, or the user is left
-        // guessing whether the app even heard the key.
-        const reason = sessionErrorRef.current
-        if (reason) {
-          // Naming the device is the whole value of this message. "No audio
-          // detected" invites the reader to suspect the app; "No audio from
-          // Steam Streaming Microphone" tells them their real microphone
-          // went away and Windows promoted a virtual one behind their back.
-          const device = audio.deviceLabel
-          const message = device ? `${reason} Input: ${device}.` : reason
-          dispatch({ type: 'failed', message })
-          window.api.overlay.sendResult({
-            rawTranscript: '',
-            cleanedText: '',
-            durationMs,
-            error: message
-          })
-          return
-        }
         dispatch({ type: 'reset' })
         window.api.overlay.sendResult({ rawTranscript: '', cleanedText: '', durationMs })
         return

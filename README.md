@@ -92,9 +92,12 @@ Blurt is ready after that. Open **Dictate** and press record, or use push-to-tal
   You can turn this off in Settings if you would rather the close button quit outright.
 - **History** keeps every completed dictation from both the Dictate tab and push-to-talk. It is
   searchable by text, and clicking an entry reopens it.
-- **Settings** is where you choose and download a model, see whether the engine is running on GPU
-  or CPU, manage custom vocabulary, set the global hotkey, and configure push-to-talk. The
-  GPU or CPU line reports what actually happened rather than offering a choice.
+- **Settings** is where you choose and download a model, pick a microphone, see whether the engine
+  is running on GPU or CPU, manage custom vocabulary, set the global hotkey, and configure
+  push-to-talk. The GPU or CPU line reports what actually happened rather than offering a choice.
+- **Microphone** defaults to whatever Windows calls the default input. Picking a specific one is
+  worth doing if you have several, because when a microphone disconnects Windows promotes another
+  without asking, and some virtual devices record silence.
 
 ## Troubleshooting
 

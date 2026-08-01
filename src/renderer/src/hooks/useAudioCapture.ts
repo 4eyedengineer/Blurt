@@ -5,10 +5,6 @@ import type { AudioChunkPayload } from '@shared/backend'
 // why this can't just be a normal bundled module.
 const WORKLET_URL = `${import.meta.env.BASE_URL}pcm-worklet-processor.js`
 
-/** Normalized (0-1) RMS level below which incoming PCM is treated as silence for the "no audio detected" warning. */
-const SILENCE_LEVEL_THRESHOLD = 0.01
-/** How long the level has to stay under the threshold before we warn the user. */
-const SILENCE_WARNING_MS = 2000
 /**
  * How long to wait for the first PCM chunk before logging why it never
  * came. Generous: opening the audio device on Windows can take a second or
@@ -16,33 +12,17 @@ const SILENCE_WARNING_MS = 2000
  */
 const NO_CHUNK_TIMEOUT_MS = 3000
 
+export interface StartCaptureOptions {
+  /** `MediaDeviceInfo.deviceId` to record from; empty/omitted means the system default input. */
+  deviceId?: string | null
+}
+
 export interface UseAudioCapture {
   /** Rejects (with a clear message) if mic access or the AudioWorklet pipeline fails - no fallback path, caller must handle this as a hard stop. */
-  start: () => Promise<void>
+  start: (options?: StartCaptureOptions) => Promise<void>
   stop: () => void
   /** Current normalized (0-1) mic input level, computed from the RMS of live PCM16 chunks. */
   level: number
-  /**
-   * True once `level` has stayed at/near zero for more than ~2s while a
-   * capture session is active - a strong signal the mic is delivering
-   * silence (e.g. a getUserMedia/WSLg binding issue) even though capture
-   * itself is "working".
-   */
-  noAudioDetected: boolean
-  /**
-   * Name of the input device actually opened, as reported by the browser
-   * (e.g. "Microphone (Blue Yeti)"). Null before the first capture.
-   *
-   * Blurt opens whatever Windows says is the default input, and when the
-   * real microphone goes away - a Bluetooth headset disconnecting, a USB
-   * mic unplugged - Windows silently promotes whatever is left. That can be
-   * a virtual device such as "Steam Streaming Microphone" or an NVIDIA
-   * audio endpoint, which opens successfully, reports no error, and
-   * delivers digital silence forever. Naming the device is the difference
-   * between "the app is broken" and "you are recording from the wrong
-   * input", and one of those the user can act on.
-   */
-  deviceLabel: string | null
 }
 
 /** Root-mean-square amplitude of a PCM16 sample buffer, normalized to 0-1. */
@@ -82,10 +62,6 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
   const sinkRef = useRef<GainNode | null>(null)
   const noChunkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [level, setLevel] = useState(0)
-  const [noAudioDetected, setNoAudioDetected] = useState(false)
-  const [deviceLabel, setDeviceLabel] = useState<string | null>(null)
-  const lastNonSilentAtRef = useRef(0)
-  const silenceCheckTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const stop = useCallback(() => {
     if (noChunkTimerRef.current !== null) {
@@ -108,12 +84,7 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
 
-    if (silenceCheckTimerRef.current !== null) {
-      clearInterval(silenceCheckTimerRef.current)
-      silenceCheckTimerRef.current = null
-    }
     setLevel(0)
-    setNoAudioDetected(false)
   }, [])
 
   const startWithWorklet = useCallback(async (stream: MediaStream) => {
@@ -134,17 +105,13 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
 
     const source = audioContext.createMediaStreamSource(stream)
     const workletNode = new AudioWorkletNode(audioContext, 'pcm-processor')
-    lastNonSilentAtRef.current = Date.now()
-    setNoAudioDetected(false)
     workletNode.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
       if (noChunkTimerRef.current !== null) {
         clearTimeout(noChunkTimerRef.current)
         noChunkTimerRef.current = null
       }
       const int16 = new Int16Array(event.data)
-      const normalized = computeNormalizedRms(int16)
-      setLevel(normalized)
-      if (normalized >= SILENCE_LEVEL_THRESHOLD) lastNonSilentAtRef.current = Date.now()
+      setLevel(computeNormalizedRms(int16))
       onChunkRef.current({ buffer: event.data, sampleRate: 16000 })
     }
     source.connect(workletNode)
@@ -175,55 +142,57 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
           `track=${track ? `${track.label || 'unnamed'} readyState=${track.readyState} muted=${track.muted} enabled=${track.enabled}` : 'none'}`
       )
     }, NO_CHUNK_TIMEOUT_MS)
-
-    silenceCheckTimerRef.current = setInterval(() => {
-      setNoAudioDetected(Date.now() - lastNonSilentAtRef.current > SILENCE_WARNING_MS)
-    }, 500)
   }, [])
 
-  const start = useCallback(async () => {
-    let stream: MediaStream
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true
-        }
-      })
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err)
-      logCaptureFailure(`getUserMedia: ${reason}`)
-      throw new Error(reason)
-    }
-    // Deliberately kept across stop(): a "no audio" message shown after the
-    // fact still needs to name the device it came from.
-    const label = stream.getAudioTracks()[0]?.label || null
-    setDeviceLabel(label)
-    window.api.log.rendererInfo(`mic: capturing from "${label ?? 'unknown device'}"`)
-    streamRef.current = stream
+  const start = useCallback(
+    async (options?: StartCaptureOptions) => {
+      const constraints: MediaTrackConstraints = {
+        channelCount: 1,
+        sampleRate: 16000,
+        echoCancellation: true,
+        noiseSuppression: true
+      }
+      // `exact`, so a pinned microphone that has gone away fails here
+      // rather than silently handing back whatever Windows promoted in its
+      // place - which is how a dead input ends up looking like a broken app
+      // instead of a disconnected headset.
+      if (options?.deviceId) constraints.deviceId = { exact: options.deviceId }
 
-    if (typeof AudioWorkletNode === 'undefined') {
-      stream.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
-      const reason = 'AudioWorklet is not supported in this environment'
-      logCaptureFailure(reason)
-      throw new Error(reason)
-    }
+      let stream: MediaStream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: constraints })
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        logCaptureFailure(`getUserMedia: ${reason}`)
+        throw new Error(reason)
+      }
+      window.api.log.rendererInfo(
+        `mic: capturing from "${stream.getAudioTracks()[0]?.label || 'unknown device'}"`
+      )
+      streamRef.current = stream
 
-    try {
-      await startWithWorklet(stream)
-    } catch (err) {
-      stream.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
-      const reason = err instanceof Error ? err.message : String(err)
-      logCaptureFailure(`AudioWorklet: ${reason}`)
-      throw new Error(reason)
-    }
-  }, [startWithWorklet])
+      if (typeof AudioWorkletNode === 'undefined') {
+        stream.getTracks().forEach((track) => track.stop())
+        streamRef.current = null
+        const reason = 'AudioWorklet is not supported in this environment'
+        logCaptureFailure(reason)
+        throw new Error(reason)
+      }
+
+      try {
+        await startWithWorklet(stream)
+      } catch (err) {
+        stream.getTracks().forEach((track) => track.stop())
+        streamRef.current = null
+        const reason = err instanceof Error ? err.message : String(err)
+        logCaptureFailure(`AudioWorklet: ${reason}`)
+        throw new Error(reason)
+      }
+    },
+    [startWithWorklet]
+  )
 
   useEffect(() => stop, [stop])
 
-  return { start, stop, level, noAudioDetected, deviceLabel }
+  return { start, stop, level }
 }

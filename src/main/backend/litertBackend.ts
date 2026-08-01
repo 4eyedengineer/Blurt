@@ -628,12 +628,6 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
         `litertBackend: session ${sessionId} buffer judged silent - skipping the model call ` +
           `(samples=${samples.length}, rms=${computeRms(samples).toFixed(1)}, threshold=${SILENCE_RMS_THRESHOLD})`
       )
-      this.emitError(
-        sessionId,
-        new NoAudioError(
-          'No audio detected - the microphone signal was silent for the entire recording.'
-        )
-      )
       return ''
     }
 

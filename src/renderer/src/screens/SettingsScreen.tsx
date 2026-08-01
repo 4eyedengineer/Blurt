@@ -9,6 +9,7 @@ import { useSettings } from '../context/SettingsContext'
 import { useModelManager } from '../hooks/useModelManager'
 import { useBackendStatus } from '../hooks/useBackendStatus'
 import { useHardwareInfo } from '../hooks/useHardwareInfo'
+import { useAudioInputDevices } from '../hooks/useAudioInputDevices'
 import { Toggle } from '../components/Toggle'
 import { formatBytes } from '../lib/format'
 import './SettingsScreen.css'
@@ -153,6 +154,7 @@ export function SettingsScreen(): React.JSX.Element {
   const models = useModelManager()
   const backendStatus = useBackendStatus()
   const hardware = useHardwareInfo()
+  const inputDevices = useAudioInputDevices()
   const [vocabInput, setVocabInput] = useState('')
   const [hotkeyInput, setHotkeyInput] = useState(settings.hotkey)
   const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus>('idle')
@@ -230,6 +232,30 @@ export function SettingsScreen(): React.JSX.Element {
           </label>
         </div>
       )}
+
+      <div className="settings-screen__group">
+        <h2>Microphone</h2>
+        <select
+          className="settings-screen__select"
+          value={settings.inputDeviceId}
+          onChange={(e) => void update({ inputDeviceId: e.target.value })}
+        >
+          <option value="">System default</option>
+          {inputDevices.map((device) => (
+            <option key={device.deviceId} value={device.deviceId}>
+              {device.label}
+            </option>
+          ))}
+          {/* A pinned microphone that is not plugged in right now has no
+              entry to match, and a select with no matching option renders
+              blank - which reads as "nothing chosen" rather than "your
+              choice is unavailable". */}
+          {settings.inputDeviceId &&
+            !inputDevices.some((d) => d.deviceId === settings.inputDeviceId) && (
+              <option value={settings.inputDeviceId}>Selected microphone (not connected)</option>
+            )}
+        </select>
+      </div>
 
       <details className="settings-screen__group settings-screen__advanced">
         <summary>Advanced</summary>
