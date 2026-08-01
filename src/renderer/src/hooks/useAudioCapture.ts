@@ -9,6 +9,12 @@ const WORKLET_URL = `${import.meta.env.BASE_URL}pcm-worklet-processor.js`
 const SILENCE_LEVEL_THRESHOLD = 0.01
 /** How long the level has to stay under the threshold before we warn the user. */
 const SILENCE_WARNING_MS = 2000
+/**
+ * How long to wait for the first PCM chunk before logging why it never
+ * came. Generous: opening the audio device on Windows can take a second or
+ * two on its own, and this must never fire on a slow-but-working start.
+ */
+const NO_CHUNK_TIMEOUT_MS = 3000
 
 export interface UseAudioCapture {
   /** Rejects (with a clear message) if mic access or the AudioWorklet pipeline fails - no fallback path, caller must handle this as a hard stop. */
@@ -58,15 +64,26 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
   const streamRef = useRef<MediaStream | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const workletNodeRef = useRef<AudioWorkletNode | null>(null)
+  /** The muted node that keeps the worklet reachable from the destination - see startWithWorklet. */
+  const sinkRef = useRef<GainNode | null>(null)
+  const noChunkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [level, setLevel] = useState(0)
   const [noAudioDetected, setNoAudioDetected] = useState(false)
   const lastNonSilentAtRef = useRef(0)
   const silenceCheckTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const stop = useCallback(() => {
+    if (noChunkTimerRef.current !== null) {
+      clearTimeout(noChunkTimerRef.current)
+      noChunkTimerRef.current = null
+    }
+
     workletNodeRef.current?.port.close()
     workletNodeRef.current?.disconnect()
     workletNodeRef.current = null
+
+    sinkRef.current?.disconnect()
+    sinkRef.current = null
 
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close().catch(() => {})
@@ -89,11 +106,26 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
     audioContextRef.current = audioContext
     await audioContext.audioWorklet.addModule(WORKLET_URL)
 
+    // A newly constructed AudioContext can come up 'suspended', and a
+    // suspended context renders nothing at all: no render quanta, so the
+    // worklet's process() is never called and not one chunk is produced.
+    // Nothing throws in that state, which is what makes it so unpleasant to
+    // diagnose - capture looks like it started and simply stays silent
+    // forever. The main window usually escapes this because pressing Record
+    // is a user gesture; the push-to-talk overlay never receives a gesture
+    // at all (it is `focusable: false` and driven entirely by a global key
+    // hook), so it has no way to be resumed implicitly.
+    if (audioContext.state === 'suspended') await audioContext.resume()
+
     const source = audioContext.createMediaStreamSource(stream)
     const workletNode = new AudioWorkletNode(audioContext, 'pcm-processor')
     lastNonSilentAtRef.current = Date.now()
     setNoAudioDetected(false)
     workletNode.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+      if (noChunkTimerRef.current !== null) {
+        clearTimeout(noChunkTimerRef.current)
+        noChunkTimerRef.current = null
+      }
       const int16 = new Int16Array(event.data)
       const normalized = computeNormalizedRms(int16)
       setLevel(normalized)
@@ -101,7 +133,33 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
       onChunkRef.current({ buffer: event.data, sampleRate: 16000 })
     }
     source.connect(workletNode)
+
+    // The worklet has to stay reachable from the context's destination.
+    // Chromium renders the graph by pulling from the destination, so a node
+    // with no path to it is not guaranteed to be pulled, and an unpulled
+    // worklet produces no chunks while reporting no error. Routing through
+    // a muted gain node keeps it in the rendered graph without putting the
+    // microphone through the speakers.
+    const sink = audioContext.createGain()
+    sink.gain.value = 0
+    workletNode.connect(sink)
+    sink.connect(audioContext.destination)
+    sinkRef.current = sink
+
     workletNodeRef.current = workletNode
+
+    // If the very first chunk never arrives, say why. Both failures above
+    // are silent by nature, and without this the only evidence is an empty
+    // transcript, which is indistinguishable from "nobody spoke".
+    noChunkTimerRef.current = setTimeout(() => {
+      noChunkTimerRef.current = null
+      const track = stream.getAudioTracks()[0]
+      logCaptureFailure(
+        `no PCM chunk ${NO_CHUNK_TIMEOUT_MS}ms after capture started. ` +
+          `context.state=${audioContext.state} context.sampleRate=${audioContext.sampleRate} ` +
+          `track=${track ? `${track.label || 'unnamed'} readyState=${track.readyState} muted=${track.muted} enabled=${track.enabled}` : 'none'}`
+      )
+    }, NO_CHUNK_TIMEOUT_MS)
 
     silenceCheckTimerRef.current = setInterval(() => {
       setNoAudioDetected(Date.now() - lastNonSilentAtRef.current > SILENCE_WARNING_MS)

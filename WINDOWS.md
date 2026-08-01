@@ -2,7 +2,7 @@
 
 This is the practical guide for building and running Blurt from source on a Windows host, plus a
 deep dive into how its GPU acceleration works. If you just want to _use_ Blurt, you don't need any
-of this. See the main [README.md](README.md) for the installer/portable download.
+of this. See the main [README.md](README.md) for the installer download.
 
 This assumes you've read [CONTRIBUTING.md](CONTRIBUTING.md)'s "The real backend: LiteRT-LM"
 section for the wire-protocol/architecture background; this doc is the Windows-specific how-to.
@@ -309,17 +309,16 @@ npm run build:win
 ```
 
 `npm run build` runs `typecheck` then `electron-vite build` (main + preload + renderer);
-`npm run build:win` additionally runs `electron-builder --win`, producing an NSIS installer and a
-portable `.exe` per `electron-builder.yml`.
+`npm run build:win` additionally runs `electron-builder --win`, producing an NSIS installer per `electron-builder.yml`.
 
 Must be run on a real Windows machine (or a Windows CI runner): electron-builder needs the Windows
 toolchain to produce these. `electron-builder install-app-deps` will fail to rebuild `uiohook-napi`
 (the push-to-talk key hook) unless Visual Studio Build Tools are installed; that failure is safe to
-ignore, because the package ships a prebuilt N-API binary which loads correctly at runtime. Neither
-build is code-signed, so a fresh install triggers a Windows SmartScreen warning. See the README's
-Troubleshooting section for what to click through.
+ignore, because the package ships a prebuilt N-API binary which loads correctly at runtime. The
+installer is not code-signed, so a fresh install triggers a Windows SmartScreen warning. See the
+README's Troubleshooting section for what to click through.
 
-This has been run on a real Windows host and the resulting installer + portable exe were verified
+This has been run on a real Windows host and the resulting installer was verified
 end to end: boot to a ready backend on GPU, a second launch refused by the single-instance lock,
 and a clean shutdown with no orphaned sidecar process.
 

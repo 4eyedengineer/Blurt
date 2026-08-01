@@ -55,9 +55,6 @@ win:
     - target: nsis
       arch:
         - x64
-    - target: portable
-      arch:
-        - x64
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
@@ -76,6 +73,4 @@ nsis:
   # it's also reused by dev builds) - electron-builder itself has no
   # knowledge of this second, non-userData runtime directory.
   include: build/installer.nsh
-portable:
-  artifactName: ${name}-${version}-portable.${ext}
 npmRebuild: false

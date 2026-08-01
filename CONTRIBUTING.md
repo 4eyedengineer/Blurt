@@ -24,7 +24,7 @@ npm run lint         # eslint (flat config, includes prettier + react-hooks rule
 npm run format       # prettier --write .
 npm test             # vitest - unit tests, see "Tests" below
 npm run build        # typecheck, then electron-vite build (main + preload + renderer)
-npm run build:win    # build, then electron-builder --win (NSIS installer + portable exe)
+npm run build:win    # build, then electron-builder --win (NSIS installer)
 npm run build:unpack # build, then electron-builder --dir (unpacked app dir, no installer/exe)
 ```
 
@@ -555,7 +555,7 @@ Under Electron's `app.getPath('userData')`:
 
 ```sh
 npm run build
-npm run build:win    # NSIS installer + portable exe, per electron-builder.yml
+npm run build:win    # NSIS installer, per electron-builder.yml
 ```
 
 See [WINDOWS.md](WINDOWS.md) for the full build how-to, including the Visual Studio Build Tools /

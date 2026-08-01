@@ -38,17 +38,14 @@ noticeably faster. If it does not, Blurt falls back to your CPU on its own.
 
 ## Install
 
-Download the latest build from the
-[Releases page](https://github.com/4eyedengineer/Blurt/releases). There are two options.
+Download `blurt-<version>-setup.exe` from the
+[Releases page](https://github.com/4eyedengineer/Blurt/releases) and run it. It is a per-user
+installer, so it needs no administrator rights. It creates Start Menu and desktop shortcuts and an
+entry in "Installed apps" with an uninstaller.
 
-- **Installer** (`blurt-<version>-setup.exe`) is a normal per-user installer. It creates Start
-  Menu and desktop shortcuts and an entry in "Installed apps" with an uninstaller.
-- **Portable** (`blurt-<version>-portable.exe`) is a single exe with no install step. You can run
-  it from anywhere, including a USB stick.
-
-Neither build is code-signed, so Windows SmartScreen will probably show a blue "Windows protected
-your PC" warning the first time you run it. This is normal for a small independently published
-app. Click **More info**, then **Run anyway**.
+The installer is not code-signed, so Windows SmartScreen will probably show a blue "Windows
+protected your PC" warning the first time you run it. This is normal for a small independently
+published app. Click **More info**, then **Run anyway**.
 
 First launch does some one-time setup.
 
@@ -111,12 +108,10 @@ Blurt is ready after that. Open **Dictate** and press record, or use push-to-tal
   cleanly. The error names the process ID so you can end it in Task Manager, or you can change the
   port in Settings under Advanced. Both a normal quit and a hard crash shut this process down on
   their own, so you should only see this after something unusual.
-- **Uninstalling.** If you used the installer, uninstall Blurt like any other Windows app through
-  Settings > Apps or the Start Menu shortcut. It asks separately whether to also remove your saved
-  data, which includes settings, history, and the downloaded model, and whether to remove the
-  shared Python runtime it set up. Keeping the runtime is safe if you plan to reinstall later. If
-  you used the portable exe, delete it. You can then remove its folders under `%APPDATA%\blurt`
-  and `%LOCALAPPDATA%\Blurt` yourself for a completely clean slate.
+- **Uninstalling.** Uninstall Blurt like any other Windows app through Settings > Apps or the
+  Start Menu shortcut. It asks separately whether to also remove your saved data, which includes
+  settings, history, and the downloaded model, and whether to remove the shared Python runtime it
+  set up. Keeping the runtime is safe if you plan to reinstall later.
 
 ## Contributing
 
