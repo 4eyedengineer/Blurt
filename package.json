@@ -4,6 +4,11 @@
   "description": "Offline-first AI dictation for Windows (Electron + React + TypeScript) - speech to cleaned-up text, running Gemma 4 locally on your own GPU via LiteRT-LM. Nothing leaves your machine.",
   "main": "./out/main/index.js",
   "author": "Blurt contributors",
+  "license": "GPL-3.0-only",
+  "private": true,
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",

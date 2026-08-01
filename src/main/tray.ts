@@ -3,10 +3,16 @@ import { log } from './log'
 
 /**
  * Windows draws tray icons at 16x16 (scaled up on high-DPI displays).
- * resources/icon.png is the 512x512 app icon, and handing that to Tray
+ * resources/icon.png is the 512x512 app mark, and handing that to Tray
  * unresized produces a visibly soft, badly-downscaled blob - so it is
  * resized explicitly here rather than left to whatever the platform does
  * with a 32x-oversized bitmap.
+ *
+ * A 512 -> 16 downscale is good enough to be indistinguishable from the
+ * .ico's purpose-rendered 16px layer (compared side by side at 8x
+ * magnification), because the mark is a plain speech bubble drawn to stay
+ * legible at exactly this size - see build/icon.svg's comment. So the tray
+ * needs no icon file of its own.
  */
 const TRAY_ICON_SIZE = 16
 

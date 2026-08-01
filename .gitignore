@@ -6,3 +6,5 @@ out
 *.log*
 .runtime/
 .node-version-stamp
+Thumbs.db
+*.tsbuildinfo

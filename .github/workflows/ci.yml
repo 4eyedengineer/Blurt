@@ -34,6 +34,16 @@ jobs:
 
       - run: npm test
 
+      # Bundling is a distinct failure mode from typecheck/lint/test: an
+      # import that only resolves on one machine, a `?asset` reference to a
+      # file that no longer exists, or a main/preload/renderer entry point
+      # that moved will all pass the checks above and still fail here. This
+      # is only the electron-vite bundle - it produces out/ and never runs
+      # Electron, so it works fine on a headless runner. Invoked directly
+      # rather than via `npm run build`, which would re-run the typecheck
+      # step above for no added coverage.
+      - run: npx electron-vite build
+
   # Deliberately not built here: the Windows installer. electron-builder
   # needs a real Windows host, and the packaging step is verified by hand
   # against actual hardware (a GPU, a microphone, and a keyboard hook are
