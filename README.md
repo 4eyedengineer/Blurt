@@ -88,6 +88,9 @@ After that, Blurt is ready: go to **Dictate** and press record, or use push-to-t
 - **If you don't say anything**, nothing happens - the pill just disappears. Blurt won't paste,
   won't touch your clipboard, and won't save a row to History. A hold that picked up no speech
   leaves your machine exactly as it found it.
+- **Closing the window** doesn't quit Blurt - it drops to the system tray so push-to-talk keeps
+  working with nothing on screen. Click the tray icon to bring the window back, or right-click it
+  to quit. Turn this off in Settings if you'd rather the close button quit outright.
 - **History** - every completed dictation (from either the Dictate tab or push-to-talk) is saved
   locally, searchable by text, and clickable to reopen.
 - **Settings** - choose which model to use and download/delete it, see whether the engine is

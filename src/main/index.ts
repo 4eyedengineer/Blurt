@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, globalShortcut, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, globalShortcut, ipcMain, type Tray } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -17,6 +17,7 @@ import { applyGlobalShortcut } from './hotkey'
 import { createOverlayWindow } from './overlay'
 import { OverlayController } from './overlayController'
 import { PushToTalkController } from './pushToTalk/pushToTalkController'
+import { createTray, shouldHideOnClose, showTrayHint } from './tray'
 import { initLog, log } from './log'
 import {
   getRuntimeBaseDir,
@@ -31,6 +32,13 @@ let mainWindow: BrowserWindow | null = null
 let overlayWindow: BrowserWindow | null = null
 let pushToTalkController: PushToTalkController | null = null
 let backendController: BackendController | null = null
+let tray: Tray | null = null
+/**
+ * Set once a real quit is under way, so the main window's close handler
+ * stops intercepting closes and hiding the window (see `shouldHideOnClose`).
+ * Without it, "Quit Blurt" would hide the window and cancel its own quit.
+ */
+let isQuitting = false
 
 /**
  * Exactly one instance may run at a time. Two instances is not a cosmetic
@@ -135,12 +143,23 @@ function createWindow(): BrowserWindow {
   return window
 }
 
-/** Brings the app to the front and asks the renderer to toggle recording. */
-function toggleRecordingFromHotkey(): void {
+/**
+ * Brings the main window back from wherever it is - minimized, hidden in
+ * the tray, or just behind something else. The single path used by the tray
+ * icon, the global hotkey and a second launch attempt, so "show the app"
+ * behaves identically however it was asked for.
+ */
+function showMainWindow(): void {
   if (!mainWindow) return
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.show()
   mainWindow.focus()
+}
+
+/** Brings the app to the front and asks the renderer to toggle recording. */
+function toggleRecordingFromHotkey(): void {
+  if (!mainWindow) return
+  showMainWindow()
   mainWindow.webContents.send(IPC.hotkey.toggleRecording)
 }
 
@@ -151,11 +170,13 @@ app.whenReady().then(async () => {
 
   electronApp.setAppUserModelId('com.blurt.app')
 
-  app.on('second-instance', () => {
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
+  // Also the way a user "reopens" Blurt while it's living in the tray:
+  // clicking the desktop/Start Menu shortcut launches a second instance,
+  // which loses the lock and lands here instead of starting a new app.
+  app.on('second-instance', showMainWindow)
+
+  app.on('before-quit', () => {
+    isQuitting = true
   })
 
   app.on('browser-window-created', (_, window) => {
@@ -192,14 +213,37 @@ app.whenReady().then(async () => {
   const controller = backendController
 
   mainWindow = createWindow()
-  // The push-to-talk overlay below is a real BrowserWindow that stays open
-  // (just hidden) for the app's whole lifetime, so 'window-all-closed' can
-  // never fire on its own - closing the main window used to leave the
-  // process running with the overlay pill still floating on screen. Closing
-  // the main window is the user closing the app, so quit explicitly.
+
+  // Closing the window normally means "get out of my way", not "stop
+  // working" - Blurt's whole point is push-to-talk from anywhere, and that
+  // needs the process alive. So by default the close button hides to the
+  // tray instead (see tray.ts and `Settings.runInBackground`).
+  mainWindow.on('close', (event) => {
+    if (!shouldHideOnClose({ runInBackground: settingsStore.get().runInBackground, isQuitting })) {
+      return
+    }
+    event.preventDefault()
+    mainWindow?.hide()
+    if (!settingsStore.get().hasSeenTrayHint) {
+      showTrayHint(tray)
+      settingsStore.update({ hasSeenTrayHint: true })
+    }
+  })
+
+  // Only reached when the close above was NOT intercepted - i.e.
+  // `runInBackground` is off, or a quit is already under way. The
+  // push-to-talk overlay is a real BrowserWindow that stays open (just
+  // hidden) for the app's whole lifetime, so 'window-all-closed' can never
+  // fire on its own - without this, closing the main window used to leave
+  // the process running with no way to reach it.
   mainWindow.on('closed', () => {
     mainWindow = null
     if (process.platform !== 'darwin') app.quit()
+  })
+
+  tray = createTray(icon, {
+    onOpen: showMainWindow,
+    onQuit: () => app.quit()
   })
 
   overlayWindow = createOverlayWindow()
@@ -277,6 +321,10 @@ app.on('window-all-closed', () => {
 // doc comment for the real incident that motivated it.
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
+  // Without this the icon can linger in the notification area until the
+  // user hovers over it (Windows only repaints the tray lazily).
+  tray?.destroy()
+  tray = null
   // Null only if the app quit before ensureRuntime() ever resolved (the
   // first-run setup hard-error path - see ensureRuntime()'s doc comment) -
   // nothing to dispose of in that case.

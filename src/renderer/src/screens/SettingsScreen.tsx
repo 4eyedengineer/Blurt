@@ -453,6 +453,24 @@ export function SettingsScreen(): React.JSX.Element {
       </div>
 
       <div className="settings-screen__group">
+        <h2>Background</h2>
+        <p className="settings-screen__hint">
+          Closing the window leaves Blurt in the system tray, so push to talk keeps working. Quit
+          from the tray icon.
+        </p>
+        <label className="settings-screen__toggle-row">
+          <span>
+            <strong>Keep running when closed</strong>
+          </span>
+          <Toggle
+            checked={settings.runInBackground}
+            onChange={(checked) => void update({ runInBackground: checked })}
+            label="Keep running when closed"
+          />
+        </label>
+      </div>
+
+      <div className="settings-screen__group">
         <h2>Global hotkey</h2>
         <div className="settings-screen__inline-input">
           <input

@@ -154,6 +154,23 @@ export interface Settings {
   /** Electron accelerator string, e.g. "Ctrl+Shift+Space". */
   hotkey: string
   pushToTalk: PushToTalkSettings
+  /**
+   * Whether closing the main window leaves Blurt running in the system
+   * tray instead of quitting. On by default: the whole point of the app is
+   * push-to-talk from anywhere, and that only works while the process is
+   * alive - so the useful state is "window gone, hotkey still armed", which
+   * quitting on close makes impossible. Turn it off and the close button
+   * quits outright. See src/main/tray.ts.
+   */
+  runInBackground: boolean
+  /**
+   * Whether the "still running in the tray" hint has been shown. Not
+   * user-facing - a window that vanishes with no explanation reads as a
+   * crash, and on Windows the tray icon is very often tucked away in the
+   * overflow flyout where it won't be noticed. Shown once, on the first
+   * close-to-tray ever, and never again.
+   */
+  hasSeenTrayHint: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -162,7 +179,9 @@ export const DEFAULT_SETTINGS: Settings = {
   autoCopyOnCleanup: false,
   customVocabulary: [],
   hotkey: 'Ctrl+Shift+Space',
-  pushToTalk: DEFAULT_PUSH_TO_TALK_SETTINGS
+  pushToTalk: DEFAULT_PUSH_TO_TALK_SETTINGS,
+  runInBackground: true,
+  hasSeenTrayHint: false
 }
 
 export type DictationDisplayMode = TransformMode | 'none'
