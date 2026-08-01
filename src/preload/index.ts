@@ -135,6 +135,10 @@ const logApi = {
   rendererError: (line: string): void => {
     ipcRenderer.send(IPC.log.rendererError, line)
   },
+  /** Notable-but-not-failing renderer facts (e.g. which capture device was opened) into main.log. */
+  rendererInfo: (line: string): void => {
+    ipcRenderer.send(IPC.log.rendererInfo, line)
+  },
   openFolder: (): Promise<void> => ipcRenderer.invoke(IPC.log.openFolder)
 }
 

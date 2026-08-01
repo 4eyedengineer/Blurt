@@ -52,6 +52,7 @@ export const IPC = {
   log: {
     /** renderer -> main: report a capture/other renderer-side failure to main.log. */
     rendererError: 'log:renderer-error',
+    rendererInfo: 'log:renderer-info',
     openFolder: 'log:open-folder'
   },
   /** Coordinates the push-to-talk overlay window - see src/main/overlayController.ts. */

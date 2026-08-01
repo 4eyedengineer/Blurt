@@ -178,12 +178,18 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
         // guessing whether the app even heard the key.
         const reason = sessionErrorRef.current
         if (reason) {
-          dispatch({ type: 'failed', message: reason })
+          // Naming the device is the whole value of this message. "No audio
+          // detected" invites the reader to suspect the app; "No audio from
+          // Steam Streaming Microphone" tells them their real microphone
+          // went away and Windows promoted a virtual one behind their back.
+          const device = audio.deviceLabel
+          const message = device ? `${reason} Input: ${device}.` : reason
+          dispatch({ type: 'failed', message })
           window.api.overlay.sendResult({
             rawTranscript: '',
             cleanedText: '',
             durationMs,
-            error: reason
+            error: message
           })
           return
         }

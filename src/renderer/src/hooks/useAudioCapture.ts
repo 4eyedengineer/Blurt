@@ -29,6 +29,20 @@ export interface UseAudioCapture {
    * itself is "working".
    */
   noAudioDetected: boolean
+  /**
+   * Name of the input device actually opened, as reported by the browser
+   * (e.g. "Microphone (Blue Yeti)"). Null before the first capture.
+   *
+   * Blurt opens whatever Windows says is the default input, and when the
+   * real microphone goes away - a Bluetooth headset disconnecting, a USB
+   * mic unplugged - Windows silently promotes whatever is left. That can be
+   * a virtual device such as "Steam Streaming Microphone" or an NVIDIA
+   * audio endpoint, which opens successfully, reports no error, and
+   * delivers digital silence forever. Naming the device is the difference
+   * between "the app is broken" and "you are recording from the wrong
+   * input", and one of those the user can act on.
+   */
+  deviceLabel: string | null
 }
 
 /** Root-mean-square amplitude of a PCM16 sample buffer, normalized to 0-1. */
@@ -69,6 +83,7 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
   const noChunkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [level, setLevel] = useState(0)
   const [noAudioDetected, setNoAudioDetected] = useState(false)
+  const [deviceLabel, setDeviceLabel] = useState<string | null>(null)
   const lastNonSilentAtRef = useRef(0)
   const silenceCheckTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -182,6 +197,11 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
       logCaptureFailure(`getUserMedia: ${reason}`)
       throw new Error(reason)
     }
+    // Deliberately kept across stop(): a "no audio" message shown after the
+    // fact still needs to name the device it came from.
+    const label = stream.getAudioTracks()[0]?.label || null
+    setDeviceLabel(label)
+    window.api.log.rendererInfo(`mic: capturing from "${label ?? 'unknown device'}"`)
     streamRef.current = stream
 
     if (typeof AudioWorkletNode === 'undefined') {
@@ -205,5 +225,5 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
 
   useEffect(() => stop, [stop])
 
-  return { start, stop, level, noAudioDetected }
+  return { start, stop, level, noAudioDetected, deviceLabel }
 }

@@ -8,6 +8,10 @@ export function registerLogIpc(userDataDir: string): void {
     log.error(`renderer: ${line}`)
   })
 
+  ipcMain.on(IPC.log.rendererInfo, (_event, line: string) => {
+    log.info(`renderer: ${line}`)
+  })
+
   ipcMain.handle(IPC.log.openFolder, () => {
     void shell.openPath(getLogsDir(userDataDir))
   })

@@ -35,6 +35,8 @@ export interface UseDictationSession {
   micLevel: number
   /** True once the mic level has read ~zero for >2s while recording - see useAudioCapture. */
   noAudioDetected: boolean
+  /** Name of the input device actually opened - see useAudioCapture. */
+  deviceLabel: string | null
   /** Growing preview text for an in-flight cleanup/transform streamed rewrite - see `phase` ('cleaning' | 'transforming'). Empty once settled. */
   streamPreview: string
   /** Non-null while the brief inline diff-reveal (raw -> cleaned, or pre- -> post-voice-edit) is showing; render this instead of `displayText` when set. */
@@ -341,6 +343,7 @@ export function useDictationSession(): UseDictationSession {
     sessionError,
     micLevel: audio.level,
     noAudioDetected: audio.noAudioDetected,
+    deviceLabel: audio.deviceLabel,
     streamPreview,
     reveal,
     toggleRecording,

@@ -29,6 +29,7 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
     sessionError,
     micLevel,
     noAudioDetected,
+    deviceLabel,
     streamPreview,
     reveal,
     toggleRecording,
@@ -79,8 +80,8 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
       {sessionError && <p className="dictate-screen__warning">{sessionError}</p>}
       {!sessionError && recording && noAudioDetected && (
         <p className="dictate-screen__warning">
-          No audio detected from microphone - check that the correct input device is selected and
-          unmuted.
+          No audio from {deviceLabel ? <strong>{deviceLabel}</strong> : 'the microphone'}. Check
+          that this is the input you meant to use, and that it is not muted.
         </p>
       )}
 
