@@ -21,6 +21,7 @@ import { createTray, shouldHideOnClose, showTrayHint } from './tray'
 import { initLog, log } from './log'
 import {
   getRuntimeBaseDir,
+  isRuntimeManagedPlatform,
   isVenvHealthy,
   venvPathsFor,
   type VenvPaths
@@ -62,10 +63,12 @@ const modelManager = new ModelManager(app.getPath('userData'))
  * Establishes the self-managed runtime venv the packaged app's managed
  * sidecar depends on, with no launcher involved - see
  * `runtime/venvResolver.ts` / `runtime/firstRunSetup.ts`'s doc comments.
- * Only meaningful on win32 (the packaged app's only real target - see
- * WINDOWS.md); a no-op elsewhere so WSL/Linux/mac dev builds (which don't
- * have `%LOCALAPPDATA%` at all) are unaffected, and instead rely on the
- * sidecar command being configured by hand in Settings (see
+ * Meaningful on win32 and darwin - both are runtime-managed platforms now
+ * (see `isRuntimeManagedPlatform`; win32 used to be the packaged app's only
+ * real target, see WINDOWS.md, before macOS support). A no-op elsewhere, so
+ * a Linux/WSL dev build (which has neither `%LOCALAPPDATA%` nor
+ * `~/Library/Application Support` managed by us) is unaffected and instead
+ * relies on the sidecar command being configured by hand in Settings (see
  * `DEFAULT_MANAGED_COMMAND`'s doc comment in shared/types.ts).
  *
  * Returns the resolved venv paths on success (already-healthy or freshly
@@ -74,9 +77,9 @@ const modelManager = new ModelManager(app.getPath('userData'))
  * create the rest of the app (the caller quits once the user closes it).
  */
 async function ensureRuntime(): Promise<VenvPaths | undefined> {
-  if (process.platform !== 'win32') return undefined
+  if (!isRuntimeManagedPlatform()) return undefined
 
-  const venv = venvPathsFor(join(getRuntimeBaseDir(), 'venv'), 'win32')
+  const venv = venvPathsFor(join(getRuntimeBaseDir(), 'venv'), process.platform)
   if (isVenvHealthy(venv)) {
     log.info(`runtime: venv healthy, reusing ${venv.venvDir}`)
     return venv
@@ -184,10 +187,11 @@ app.whenReady().then(async () => {
   })
 
   const venvPaths = await ensureRuntime()
-  if (process.platform === 'win32' && !venvPaths) {
+  if (isRuntimeManagedPlatform() && !venvPaths) {
     // ensureRuntime() already left a hard-error setup screen up and waited
     // for the user to close it (see its doc comment) - nothing left to do
-    // but quit; there is no usable app without a runtime venv on Windows.
+    // but quit; there is no usable app without a runtime venv on a
+    // runtime-managed platform (win32 or darwin).
     app.quit()
     return
   }
@@ -236,9 +240,29 @@ app.whenReady().then(async () => {
   // hidden) for the app's whole lifetime, so 'window-all-closed' can never
   // fire on its own - without this, closing the main window used to leave
   // the process running with no way to reach it.
+  //
+  // This deliberately keys off `runInBackground` rather than the platform.
+  // It used to be `process.platform !== 'darwin'` - inert boilerplate while
+  // Blurt was Windows-only, but actively wrong once macOS is a real target:
+  // reaching this handler at all means the user has `runInBackground` OFF
+  // (that is the only thing that lets a close through - see the `close`
+  // handler above), and a darwin guard here would keep the app alive anyway,
+  // silently ignoring the one setting whose entire job is deciding this.
+  // A setting that does nothing on a whole platform is worse than no setting.
+  //
+  // So the user's explicit choice wins on every platform. The macOS
+  // convention that closing a window does not quit is still what happens by
+  // default, because `runInBackground` defaults to on - it is just reached
+  // through the setting rather than around it. Behaviour on Windows/Linux is
+  // unchanged: `runInBackground` off already quit there, and the
+  // already-quitting case (`isQuitting`, where `runInBackground` may be on)
+  // simply skips a redundant second `app.quit()`.
+  //
+  // `app.on('activate', ...)` below still recreates the window if the user
+  // reopens Blurt from the Dock while it is running window-less.
   mainWindow.on('closed', () => {
     mainWindow = null
-    if (process.platform !== 'darwin') app.quit()
+    if (!settingsStore.get().runInBackground) app.quit()
   })
 
   tray = createTray(icon, {
@@ -299,6 +323,14 @@ app.whenReady().then(async () => {
   })
 })
 
+// Standard Electron boilerplate, and in this app almost never the thing
+// that actually fires - the push-to-talk overlay window is always open (see
+// the `closed` handler above), so the window count only ever reaches zero
+// via that same path. Kept as a defensive backstop regardless, and - like
+// that handler - the `!== 'darwin'` guard is now load-bearing rather than
+// incidental: it keeps Blurt (and its global push-to-talk hook) running on
+// macOS with no window open, matching the platform's own convention instead
+// of quitting the way a Windows/Linux app would.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()

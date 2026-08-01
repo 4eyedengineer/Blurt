@@ -127,7 +127,14 @@ const modelsApi = {
 }
 
 const pushToTalkApi = {
-  getStatus: (): Promise<PushToTalkStatus> => ipcRenderer.invoke(IPC.pushToTalk.getStatus)
+  getStatus: (): Promise<PushToTalkStatus> => ipcRenderer.invoke(IPC.pushToTalk.getStatus),
+  /**
+   * macOS only in effect: raises the Accessibility system prompt, re-checks,
+   * and returns the updated status - see src/main/ipc/pushToTalkIpc.ts. A
+   * no-op prompt (fresh status is still returned) on every other platform.
+   */
+  requestAccessibility: (): Promise<PushToTalkStatus> =>
+    ipcRenderer.invoke(IPC.pushToTalk.requestAccessibility)
 }
 
 const logApi = {

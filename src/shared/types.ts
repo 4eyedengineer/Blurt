@@ -163,6 +163,23 @@ export interface PushToTalkStatus {
   isWSL: boolean
   /** Only meaningful on linux; null elsewhere (paste injection there uses a different mechanism). */
   xdotoolAvailable: boolean | null
+  /**
+   * macOS Accessibility (TCC) permission state - `true`/`false` come from
+   * Electron's `systemPreferences.isTrustedAccessibilityClient(false)` (a
+   * non-prompting query). Without this permission, `uIOhook.start()` cannot
+   * install its CGEventTap, and PushToTalkController refuses to start the
+   * hook rather than call start() anyway - doing so on macOS without the
+   * permission is a known way to crash the whole Electron process instead
+   * of failing cleanly (SnosMe/uiohook-napi#24). See
+   * PushToTalkController.canStartGlobalHook and .recheckAccessibility.
+   *
+   * Tri-state rather than boolean because "not granted" and "this platform
+   * has no such concept" are different facts that Settings must show
+   * differently: collapsing them to `false` would tell a Windows/Linux user
+   * to go grant a macOS permission that was never asked of them and that
+   * their OS has no page for. `null` on every platform but darwin.
+   */
+  accessibilityGranted: boolean | null
 }
 
 /** Outcome of a clipboard-write + paste-injection attempt - see src/main/paste.ts. */

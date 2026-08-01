@@ -192,6 +192,18 @@ export function SettingsScreen(): React.JSX.Element {
     setTimeout(() => setHotkeyStatus('idle'), 2500)
   }
 
+  /**
+   * Raises the macOS Accessibility system prompt and re-arms push-to-talk
+   * if the user grants it - see window.api.pushToTalk.requestAccessibility
+   * and PushToTalkController.recheckAccessibility. Refreshes the whole
+   * status object (not just the one field) since granting the permission
+   * can also start the hook in the same round trip.
+   */
+  const requestAccessibility = async (): Promise<void> => {
+    const status = await window.api.pushToTalk.requestAccessibility()
+    setPttStatus(status)
+  }
+
   return (
     <section className="settings-screen">
       <h1>Settings</h1>
@@ -426,6 +438,14 @@ export function SettingsScreen(): React.JSX.Element {
             clipboard).
           </p>
         )}
+        {pttStatus?.platform === 'darwin' && pttStatus.accessibilityGranted === false && (
+          <p className="settings-screen__hint">
+            macOS blocks push-to-talk until Accessibility access is granted.{' '}
+            <button type="button" onClick={() => void requestAccessibility()}>
+              Open System Settings
+            </button>
+          </p>
+        )}
 
         <label className="settings-screen__toggle-row">
           <span>
@@ -454,7 +474,7 @@ export function SettingsScreen(): React.JSX.Element {
               />
               <div>
                 <span className="settings-screen__radio-title">{opt.label}</span>
-                {opt.id === 'AltRight' && (
+                {opt.id === 'AltRight' && pttStatus?.platform === 'win32' && (
                   <span className="settings-screen__radio-desc">
                     Windows moves focus to the menu bar when Alt is pressed and released on its own,
                     so the field you were typing in can lose focus. Also known as AltGr on some

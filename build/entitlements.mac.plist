@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the hardened runtime (see hardenedRuntime in
+  electron-builder.yml's mac: block). A hardened-runtime app is locked down
+  by default - no JIT, no unsigned executable memory, no unvalidated
+  libraries - and Electron plus this app's own features need several of
+  those defaults relaxed to even start. None of this has been verified on
+  an actual Mac yet; the reasoning below is Apple/Electron documentation
+  plus first-principles reasoning about what this app specifically does,
+  not firsthand confirmation.
+
+  App Sandbox (com.apple.security.app-sandbox) is deliberately NOT present
+  here. Blurt synthesizes keystrokes into whatever app the user is
+  dictating into (push-to-talk paste, via Accessibility - see
+  src/main/paste.ts and src/main/pushToTalk/) and spawns a user-installed
+  Python interpreter as an arbitrary local child process (see
+  src/main/backend/modelManager.ts, src/main/backend/sidecar.ts) - both are
+  exactly what the App Sandbox exists to prevent, and a sandboxed process
+  cannot use the Accessibility API at all regardless of TCC permission. Adding
+  the sandbox key would not harden this app, it would break it.
+-->
+<plist version="1.0">
+<dict>
+  <!-- Microphone capture - transcribing dictation is the entire app, and
+       hardened runtime blocks device access by default without this. This
+       is the entitlement; the OS-level consent prompt text is the separate
+       NSMicrophoneUsageDescription key in electron-builder.yml's
+       mac.extendInfo (Info.plist), not this file. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+
+  <!-- Electron's renderer/main processes run on V8, which needs to
+       JIT-compile JS at runtime. Electron's own docs call this out
+       explicitly for Apple Silicon: without allow-jit, hardened-runtime
+       builds on arm64 crash on launch, not on first script execution. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+
+  <!-- Paired with allow-jit above: V8's JIT allocates executable memory
+       pages that aren't backed by a signed file on disk, which hardened
+       runtime otherwise refuses to execute. This is the standard
+       Electron-on-hardened-runtime pairing, called out in Electron's own
+       code-signing documentation alongside allow-jit. -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!-- com.apple.security.cs.disable-library-validation: considered, left
+       OFF.
+
+       Library validation (on by default under hardened runtime) requires
+       every dylib/bundle/Mach-O the process loads to be signed with the
+       same Team ID as the main executable, or be an Apple system library.
+       Blurt loads native code in-process in exactly one place:
+       uiohook-napi (src/main/pushToTalk/uiohookLoader.ts), a prebuilt
+       native Node addon required in-process via `require()` for the
+       global push-to-talk key hook. Everything else - the Python
+       interpreter and litert-lm runtime (src/main/backend/modelManager.ts,
+       sidecar.ts) - runs as a completely separate OS process via
+       child_process.spawn, never dlopen'd into this process, so it is
+       never subject to THIS process's library validation at all.
+
+       For the one real in-process case (uiohook-napi), electron-builder's
+       signing step (@electron/osx-sign) re-signs every Mach-O binary
+       bundled inside the .app - including native node_modules addons -
+       under the SAME Developer ID identity used for the main executable.
+       Once re-signed that way, its Team ID matches the app's own, which is
+       exactly what library validation checks for, so it should pass
+       without needing this entitlement. That conclusion depends on a real
+       Developer ID signing identity being used (see build:mac in
+       package.json), not ad-hoc/no signing - an unsigned or ad-hoc-signed
+       build is a different situation electron-builder's own docs flag
+       separately (ad-hoc signing plus hardenedRuntime: true needs either
+       this entitlement or hardenedRuntime: false).
+
+       If a real macOS build turns up a library-validation rejection
+       anyway, this is the first thing to flip on:
+       <key>com.apple.security.cs.disable-library-validation</key>
+       <true/>
+  -->
+</dict>
+</plist>

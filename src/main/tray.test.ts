@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { shouldHideOnClose } from './tray'
+import {
+  shouldHideOnClose,
+  shouldRegisterClickHandler,
+  shouldUseTemplateImage,
+  trayIconSizeFor
+} from './tray'
 
 /**
  * This predicate is the entire close-to-tray feature, and both ways of
@@ -31,5 +36,45 @@ describe('shouldHideOnClose', () => {
 
   it('quits when the setting is off and a quit has started', () => {
     expect(shouldHideOnClose({ runInBackground: false, isQuitting: true })).toBe(false)
+  })
+})
+
+describe('trayIconSizeFor', () => {
+  it('uses the 22x22 NSStatusItem size on macOS', () => {
+    expect(trayIconSizeFor('darwin')).toBe(22)
+  })
+
+  it('uses the 16x16 Windows notification-area size everywhere else', () => {
+    expect(trayIconSizeFor('win32')).toBe(16)
+    expect(trayIconSizeFor('linux')).toBe(16)
+  })
+})
+
+describe('shouldUseTemplateImage', () => {
+  it('is true only on macOS', () => {
+    expect(shouldUseTemplateImage('darwin')).toBe(true)
+  })
+
+  it('is false on Windows and Linux', () => {
+    expect(shouldUseTemplateImage('win32')).toBe(false)
+    expect(shouldUseTemplateImage('linux')).toBe(false)
+  })
+})
+
+/**
+ * Both directions matter here, same as `shouldHideOnClose` above: registering
+ * the handler on macOS would be redundant at best against the context menu
+ * Electron already shows there, while failing to register it on Windows/Linux
+ * would leave a plain left-click doing nothing - silently removing the
+ * documented "click to open" affordance and leaving only the right-click menu.
+ */
+describe('shouldRegisterClickHandler', () => {
+  it('is false on macOS, where a context-menu click is not an "open" signal', () => {
+    expect(shouldRegisterClickHandler('darwin')).toBe(false)
+  })
+
+  it('is true on Windows and Linux', () => {
+    expect(shouldRegisterClickHandler('win32')).toBe(true)
+    expect(shouldRegisterClickHandler('linux')).toBe(true)
   })
 })

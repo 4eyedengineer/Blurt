@@ -11,6 +11,16 @@ productName: Blurt
 # specific mechanism rather than the app's own code. Disabling it trades
 # away that anti-tampering check (irrelevant for this app: no auto-update,
 # no untrusted redistribution) for an app that actually starts.
+#
+# NOTE for the mac: build added below - this is a top-level setting, not a
+# per-platform one, so it silently applies there too, not just to win:. The
+# incident above is entirely a Windows PE mechanism (a resedit-injected
+# INTEGRITY resource); nobody has run a macOS build yet, so whether
+# disabling asarIntegrity does anything at all on mac - or is simply inert
+# there because the mechanism it targets has no macOS equivalent - is
+# untested. Left applying to both rather than scoped to win: only, since
+# nothing about it is known to cause a problem on mac; revisit if a real
+# Mac build ever suggests otherwise.
 disableAsarIntegrity: true
 directories:
   buildResources: build
@@ -73,4 +83,40 @@ nsis:
   # it's also reused by dev builds) - electron-builder itself has no
   # knowledge of this second, non-userData runtime directory.
   include: build/installer.nsh
+mac:
+  # litert-lm-api (the LLM engine Blurt's Python sidecar depends on) has
+  # published only a macosx_12_0_arm64 wheel on PyPI, in every release from
+  # 0.12.0 through 0.14.0 - no x86_64, no universal2. A universal or x64
+  # build would install and launch just fine on an Intel Mac (Electron
+  # itself doesn't care about this), then fail later, during first-run
+  # Python setup, when pip has no matching wheel to install - a worse,
+  # later, more confusing failure than simply not shipping an Intel build
+  # at all. arm64-only until litert-lm-api publishes something an Intel Mac
+  # can actually use.
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  # Matches the floor of the arm64 wheel above - litert-lm-api has never
+  # published for anything earlier than 12.0, so there's no point letting
+  # the app install on an older macOS just to hit the same first-run pip
+  # failure the x86_64 case would hit.
+  minimumSystemVersion: '12.0'
+  # electron-builder's own default, stated here explicitly: the entitlements
+  # below (JIT, unsigned executable memory, microphone) only matter at all
+  # when hardened runtime is actually on, so this line makes that dependency
+  # visible instead of relying on a default that someone could change later
+  # without realizing it takes the entitlements file's usefulness with it.
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # NSMicrophoneUsageDescription is required, not optional: on macOS, code
+  # that touches the microphone without this Info.plist key present doesn't
+  # get a denial dialog, it gets killed by the OS the moment it tries.
+  # extendInfo is electron-builder's mechanism for injecting arbitrary extra
+  # Info.plist keys like this one.
+  extendInfo:
+    NSMicrophoneUsageDescription: 'Blurt needs microphone access to transcribe your dictation. Audio is processed entirely on this Mac and never leaves your device.'
 npmRebuild: false

@@ -47,7 +47,14 @@ export const IPC = {
     hardware: 'models:hardware'
   },
   pushToTalk: {
-    getStatus: 'push-to-talk:get-status'
+    getStatus: 'push-to-talk:get-status',
+    /**
+     * Raises the macOS Accessibility system prompt, then re-checks and (if
+     * now granted) starts the hook - see
+     * PushToTalkController.recheckAccessibility. A no-op prompt (but still
+     * a status reporter) on every other platform.
+     */
+    requestAccessibility: 'push-to-talk:request-accessibility'
   },
   log: {
     /** renderer -> main: report a capture/other renderer-side failure to main.log. */

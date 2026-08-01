@@ -12,9 +12,14 @@ npm run dev          # electron-vite dev server + Electron, with HMR
 ```
 
 `npm run dev` starts the app in dev mode against whatever backend settings are already saved (or
-the defaults, on a fresh checkout). It does not install Python or a `litert-lm` runtime for you.
-See [WINDOWS.md](WINDOWS.md) for the full from-source Windows setup (Python, `litert-lm`, model
-import) if you need a real backend running while developing.
+the defaults, on a fresh checkout). It does not install Python for you, but it is not otherwise
+hands-off: `ensureRuntime` in `src/main/index.ts` has no dev-mode exemption, so on Windows and
+macOS a fresh checkout runs the same first-run setup a packaged build does, creating the app's own
+virtualenv and installing the pinned `litert-lm` into it on first launch. On Linux and WSL that
+step is skipped entirely (see `isRuntimeManagedPlatform`) and the sidecar command has to be
+pointed at an interpreter by hand in Settings. See [WINDOWS.md](WINDOWS.md) or
+[MACOS.md](MACOS.md) for the full from-source setup (Python, `litert-lm`, model import) if you
+need a real backend running while developing.
 
 Other useful scripts:
 

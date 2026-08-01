@@ -5,6 +5,9 @@ clean text with filler words removed and punctuation and capitalization fixed, r
 anywhere. Everything runs on your own machine against a local Gemma model, so nothing you say
 leaves your computer.
 
+macOS support (Apple Silicon) is written and in the repository, but nothing has been run on a Mac
+yet and there is no macOS release. See [MACOS.md](MACOS.md) for the current state.
+
 ## Credit
 
 Blurt exists because of Google's [AI Edge Eloquent](https://github.com/google-ai-edge/eloquent).
@@ -21,11 +24,18 @@ endorsed by Google.
 Check these before downloading anything. The model download alone is a couple of gigabytes, so it
 is better to find a missing prerequisite first.
 
-- **Windows 10 or 11, 64-bit.**
-- **Python 3.10 or newer, already installed and on `PATH`.** Blurt does not bundle Python. On
-  first launch it looks for `py -3.12`, `py -3`, and then `python`. If none of those resolve to
-  Python 3.10 or newer, it shows an error instead of guessing. You can get Python from
-  [python.org](https://www.python.org/). Check "Add python.exe to PATH" during install.
+- **Windows 10 or 11, 64-bit, or macOS 12.0 (Monterey) or later on Apple Silicon.** Intel Macs are
+  not supported: the engine's Python dependency (`litert-lm-api`) only ships an Apple Silicon
+  build, so an Intel Mac cannot run the local model at all. **macOS support is implemented but has
+  not yet been run on real Apple Silicon hardware** - see [MACOS.md](MACOS.md) for exactly what
+  that means and what to watch for.
+- **Python 3.10 or newer, already installed and on `PATH`.** Blurt does not bundle Python.
+  - On Windows, first launch looks for `py -3.12`, `py -3`, and then `python`. Get Python from
+    [python.org](https://www.python.org/) and check "Add python.exe to PATH" during install.
+  - On macOS, first launch looks for a Homebrew or python.org install, then a bare `python3`.
+    Install one with `brew install python@3.12` or a python.org installer. macOS's built-in
+    `/usr/bin/python3` does not count - see [MACOS.md](MACOS.md) for why.
+  - If no Python 3.10+ is found, Blurt shows an error instead of guessing.
 - **About 6 GB of free disk space** for the smallest model, and more for the larger ones. A model
   costs roughly twice its download size on disk, because Blurt keeps both the file it downloaded
   and the copy the model server registers, plus about a gigabyte of compiled shader cache. E2B
@@ -33,8 +43,11 @@ is better to find a missing prerequisite first.
   downloading and tells you if there is not enough room.
 - **A microphone.**
 
-A GPU is optional. If your machine has a usable one, Blurt uses it automatically and dictation is
-noticeably faster. If it does not, Blurt falls back to your CPU on its own.
+A GPU is optional. On Windows, if your machine has a usable one, Blurt uses it automatically and
+dictation is noticeably faster; if not, Blurt falls back to your CPU on its own - this is verified
+behavior. On Apple Silicon, the same automatic GPU/CPU selection is implemented via Metal, and
+unified memory means there is no separate VRAM requirement - but this has not been run on real
+hardware yet, so treat it as expected behavior, not a confirmed one; see [MACOS.md](MACOS.md).
 
 ## Install
 
@@ -47,7 +60,14 @@ The installer is not code-signed, so Windows SmartScreen will probably show a bl
 protected your PC" warning the first time you run it. This is normal for a small independently
 published app. Click **More info**, then **Run anyway**.
 
-First launch does some one-time setup.
+**macOS** (Apple Silicon, macOS 12.0 or later) is implemented but there is no macOS release yet,
+and none of it has run on real hardware - see [MACOS.md](MACOS.md) for the honest current state,
+and for building and running Blurt from source on a Mac in the meantime. Once a build is published,
+install is the usual drag-to-Applications `.dmg`; without a paid Apple Developer ID signing it,
+Gatekeeper will block the first launch rather than offering a Windows-SmartScreen-style
+click-through, so MACOS.md also covers the workaround.
+
+First launch does some one-time setup, the same on both platforms.
 
 1. If Blurt cannot find a healthy Python virtual environment, it shows a short setup screen with a
    step list and a live log while it creates one and installs the pinned `litert-lm` package into
@@ -101,20 +121,35 @@ Blurt is ready after that. Open **Dictate** and press record, or use push-to-tal
 
 ## Troubleshooting
 
-- **"No Python 3.10+ installation was found."** Install Python 3.10 or newer from
+- **"No Python 3.10+ installation was found."** On Windows, install Python 3.10 or newer from
   [python.org](https://www.python.org/) with "Add python.exe to PATH" checked, then relaunch
-  Blurt.
+  Blurt. On macOS, install one with Homebrew (`brew install python@3.12`) or a python.org
+  installer, then relaunch; macOS's built-in `/usr/bin/python3` is an Xcode Command Line Tools
+  stub, not a full interpreter, so it does not count and Blurt does not look for it.
 - **SmartScreen blocks the app.** Click **More info**, then **Run anyway**. See
   [Install](#install) above.
+- **Push-to-talk or auto-paste does nothing on macOS.** Grant Blurt Accessibility access: System
+  Settings > Privacy & Security > Accessibility. Without it, push-to-talk refuses to arm at all
+  (attempting the key hook without permission is a known way to crash the whole app, so Blurt
+  declines instead), and auto-paste's synthesized Cmd+V fails outright - the text still lands on
+  your clipboard either way. Settings has an "Open System Settings" button next to push to talk
+  that raises the permission prompt directly and re-arms push-to-talk as soon as it is granted.
+  Rebuilding an unsigned copy of Blurt loses this permission every time, since macOS ties it to the
+  app's code signature; see [MACOS.md](MACOS.md).
 - **"Port 9379 is already in use."** Blurt's local model server listens on port 9379 by default.
   Something else is using it, often a sidecar left over from a session that did not shut down
-  cleanly. The error names the process ID so you can end it in Task Manager, or you can change the
-  port in Settings under Advanced. Both a normal quit and a hard crash shut this process down on
-  their own, so you should only see this after something unusual.
+  cleanly. The error names the process ID so you can end it in Task Manager (Windows) or Activity
+  Monitor (macOS), or you can change the port in Settings under Advanced. Both a normal quit and a
+  hard crash shut this process down on their own, so you should only see this after something
+  unusual.
 - **Uninstalling.** Uninstall Blurt like any other Windows app through Settings > Apps or the
   Start Menu shortcut. It asks separately whether to also remove your saved data, which includes
   settings, history, and the downloaded model, and whether to remove the shared Python runtime it
-  set up. Keeping the runtime is safe if you plan to reinstall later.
+  set up. Keeping the runtime is safe if you plan to reinstall later. On macOS, quit Blurt and drag
+  it from Applications to the Trash; there is no separate uninstall step for its data or runtime,
+  since settings, history, the downloaded model, and the Python virtual environment all live
+  together under `~/Library/Application Support/Blurt`, which you can delete by hand if you want
+  everything gone.
 
 ## Contributing
 

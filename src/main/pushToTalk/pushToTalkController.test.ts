@@ -1,8 +1,41 @@
 import { EventEmitter } from 'events'
-import { describe, expect, it } from 'vitest'
-import { PushToTalkController } from './pushToTalkController'
+import { describe, expect, it, vi } from 'vitest'
+
+// pushToTalkController imports `systemPreferences` from electron at module
+// scope (used as the default, real implementation of the
+// checkAccessibilityGranted dep - see that file). Mocked here for the same
+// reason overlayController.test.ts mocks `clipboard`: none of this exists
+// outside a running Electron app, and every test below either runs on a
+// non-darwin platform (where this mock is never even reached - see
+// queryAccessibility's platform guard) or injects its own
+// checkAccessibilityGranted fake via deps, so the mock's return value itself
+// is never actually asserted on.
+vi.mock('electron', () => ({
+  systemPreferences: { isTrustedAccessibilityClient: vi.fn(() => false) }
+}))
+
+import { PushToTalkController, canStartGlobalHook } from './pushToTalkController'
 import { PTT_KEYCODES } from './keyMap'
 import type { UiohookInstanceLike, UiohookModuleLike } from './uiohookLoader'
+
+/**
+ * `process.platform` is defined as a non-writable-but-configurable property,
+ * so a plain `process.platform = ...` assignment throws in strict mode -
+ * this redefines it for the duration of `fn` and restores the original
+ * value afterward. Synchronous (unlike src/main/paste.test.ts's identical
+ * helper) because every PushToTalkController method exercised below is
+ * synchronous, so there is no risk of the restore running before a later
+ * `await` reads the stubbed value.
+ */
+function withPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
+  const original = process.platform
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+  try {
+    return fn()
+  } finally {
+    Object.defineProperty(process, 'platform', { value: original, configurable: true })
+  }
+}
 
 /** A fake uiohook backed by a plain EventEmitter, so tests can synthesize keydown/keyup without the native module. */
 function fakeUiohook(): {
@@ -123,5 +156,114 @@ describe('PushToTalkController - hold gesture detection', () => {
 
     emitter.emit('keydown', { keycode: PTT_KEYCODES.F9 })
     expect(events).toEqual(['hold-start'])
+  })
+})
+
+describe('canStartGlobalHook', () => {
+  it('always allows starting on every non-darwin platform, regardless of the accessibility flag', () => {
+    for (const platform of ['win32', 'linux', 'freebsd', 'aix'] as NodeJS.Platform[]) {
+      expect(canStartGlobalHook({ platform, accessibilityGranted: null })).toBe(true)
+      expect(canStartGlobalHook({ platform, accessibilityGranted: false })).toBe(true)
+      expect(canStartGlobalHook({ platform, accessibilityGranted: true })).toBe(true)
+    }
+  })
+
+  it('refuses to start on darwin when the Accessibility permission is not granted', () => {
+    expect(canStartGlobalHook({ platform: 'darwin', accessibilityGranted: false })).toBe(false)
+  })
+
+  it('refuses to start on darwin when the permission state is unknown (null)', () => {
+    // null means "couldn't determine" - treated as unsafe, same as false, not
+    // as a free pass. See the function's doc comment.
+    expect(canStartGlobalHook({ platform: 'darwin', accessibilityGranted: null })).toBe(false)
+  })
+
+  it('allows starting on darwin once the Accessibility permission is granted', () => {
+    expect(canStartGlobalHook({ platform: 'darwin', accessibilityGranted: true })).toBe(true)
+  })
+})
+
+describe('PushToTalkController - macOS Accessibility gating', () => {
+  it('reports null (not false) for accessibilityGranted on non-darwin platforms', () => {
+    withPlatform('win32', () => {
+      const { instance } = fakeUiohook()
+      const controller = new PushToTalkController('AltRight', { load: loadOk(instance) })
+      expect(controller.getAccessibilityStatus()).toBeNull()
+    })
+  })
+
+  it('does not start the hook on darwin when Accessibility is not granted, and reports that in status', () => {
+    withPlatform('darwin', () => {
+      const { instance, started } = fakeUiohook()
+      const controller = new PushToTalkController('AltRight', {
+        load: loadOk(instance),
+        checkAccessibilityGranted: () => false
+      })
+      controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+
+      expect(started).toEqual([]) // uIOhook.start() was never called
+      expect(controller.getAccessibilityStatus()).toBe(false)
+    })
+  })
+
+  it('starts the hook on darwin when Accessibility is already granted', () => {
+    withPlatform('darwin', () => {
+      const { instance, started } = fakeUiohook()
+      const controller = new PushToTalkController('AltRight', {
+        load: loadOk(instance),
+        checkAccessibilityGranted: () => true
+      })
+      controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+
+      expect(started).toEqual([true])
+      expect(controller.getAccessibilityStatus()).toBe(true)
+    })
+  })
+
+  it('recheckAccessibility arms the hook once permission is granted after an earlier refusal', () => {
+    withPlatform('darwin', () => {
+      const { instance, started } = fakeUiohook()
+      let granted = false
+      const controller = new PushToTalkController('AltRight', {
+        load: loadOk(instance),
+        checkAccessibilityGranted: () => granted
+      })
+      controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+      expect(started).toEqual([]) // refused - not granted yet
+
+      granted = true // user granted it in System Settings, in between
+      const result = controller.recheckAccessibility()
+
+      expect(result).toBe(true)
+      expect(started).toEqual([true])
+    })
+  })
+
+  it('recheckAccessibility does not re-start an already-running hook or re-attempt for a disabled feature', () => {
+    withPlatform('darwin', () => {
+      const { instance, started } = fakeUiohook()
+      const controller = new PushToTalkController('AltRight', {
+        load: loadOk(instance),
+        checkAccessibilityGranted: () => true
+      })
+      controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+      expect(started).toEqual([true])
+
+      controller.recheckAccessibility()
+      expect(started).toEqual([true]) // unchanged - no redundant restart
+    })
+  })
+
+  it('recheckAccessibility is a no-op (beyond reporting the always-null state) on non-darwin platforms', () => {
+    withPlatform('linux', () => {
+      const { instance, started } = fakeUiohook()
+      const controller = new PushToTalkController('AltRight', { load: loadOk(instance) })
+      controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+      expect(started).toEqual([true]) // started normally - no darwin gating applies
+
+      const result = controller.recheckAccessibility()
+      expect(result).toBeNull()
+      expect(started).toEqual([true]) // unchanged
+    })
   })
 })

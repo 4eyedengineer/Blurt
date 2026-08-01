@@ -3,6 +3,7 @@ import {
   decidePortOccupiedAction,
   decideStalePidAction,
   matchesSidecarSignature,
+  parseLsofListeningPids,
   parseNetstatListeningPids,
   parsePidFileContent,
   parseSsListeningPids,
@@ -108,8 +109,18 @@ describe('decideStalePidAction', () => {
 })
 
 describe('decidePortOccupiedAction', () => {
-  it('proceeds when nothing foreign is listening', () => {
-    expect(decidePortOccupiedAction({ port: 9379, foreignPids: [] })).toEqual({ action: 'proceed' })
+  // This is only ever called after a real trial bind (`isPortFree`) has
+  // already found the port occupied - so an empty `foreignPids` list is NOT
+  // evidence of "actually free", just "couldn't identify who's holding it"
+  // (see `findPidsListeningOnPort`'s doc comment). Both branches must
+  // therefore refuse to proceed; this used to incorrectly `proceed` on the
+  // empty case, which on a platform where the lookup tool is missing or
+  // fails silently defeated this module's entire purpose.
+  it('errors with a less specific message when nothing foreign was identified (tool missing/unparsable, not an actually-free port)', () => {
+    const result = decidePortOccupiedAction({ port: 9379, foreignPids: [] })
+    expect(result.action).toBe('error')
+    expect(result.action === 'error' && result.message).toMatch(/9379/)
+    expect(result.action === 'error' && result.message).toMatch(/couldn't be identified/)
   })
 
   it('errors, naming the PID(s), when a foreign process still holds the port', () => {
@@ -179,5 +190,54 @@ describe('parseSsListeningPids', () => {
 
   it('returns an empty array when nothing matches', () => {
     expect(parseSsListeningPids(sample, 6666)).toEqual([])
+  })
+})
+
+describe('parseLsofListeningPids', () => {
+  // Realistic-looking `lsof -nP -iTCP:9379 -sTCP:LISTEN` capture: the same
+  // pid shows up twice, once per IPv4/IPv6 socket, which is why dedup matters.
+  const sample = [
+    'COMMAND     PID    USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME',
+    'python3.1 54321 garrett   12u  IPv4 0x8f3a2b1c9d0e4f56      0t0  TCP 127.0.0.1:9379 (LISTEN)',
+    'python3.1 54321 garrett   13u  IPv6 0x1a2b3c4d5e6f7890      0t0  TCP [::1]:9379 (LISTEN)'
+  ].join('\n')
+
+  it('extracts the PID of a LISTEN row bound to the target port', () => {
+    expect(parseLsofListeningPids(sample, 9379)).toEqual([54321])
+  })
+
+  it('dedupes the same PID appearing on both its IPv4 and IPv6 listening sockets', () => {
+    expect(parseLsofListeningPids(sample, 9379)).toHaveLength(1)
+  })
+
+  it('matches an IPv6-addressed LISTEN row on its own', () => {
+    const ipv6Only =
+      'python3.1 54321 garrett   13u  IPv6 0x1a2b3c4d5e6f7890      0t0  TCP [::1]:9379 (LISTEN)'
+    expect(parseLsofListeningPids(ipv6Only, 9379)).toEqual([54321])
+  })
+
+  it('ignores LISTEN rows on other ports', () => {
+    expect(parseLsofListeningPids(sample, 5173)).toEqual([])
+  })
+
+  it('skips the header row', () => {
+    const headerOnly = 'COMMAND     PID    USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME'
+    expect(parseLsofListeningPids(headerOnly, 9379)).toEqual([])
+  })
+
+  it('ignores non-LISTEN rows (e.g. an already-established connection) even if the port matches', () => {
+    const established =
+      'python3.1 54321 garrett   14u  IPv4 0x1234abcd      0t0  TCP 127.0.0.1:9379->127.0.0.1:54444 (ESTABLISHED)'
+    expect(parseLsofListeningPids(established, 9379)).toEqual([])
+  })
+
+  it('returns an empty array for garbage input rather than throwing', () => {
+    const garbage = 'not lsof output\nrandom garbage line\n\t\n(LISTEN)\nfoo (LISTEN)'
+    expect(() => parseLsofListeningPids(garbage, 9379)).not.toThrow()
+    expect(parseLsofListeningPids(garbage, 9379)).toEqual([])
+  })
+
+  it('returns an empty array when nothing matches', () => {
+    expect(parseLsofListeningPids(sample, 6666)).toEqual([])
   })
 })

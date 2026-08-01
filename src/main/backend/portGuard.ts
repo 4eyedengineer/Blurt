@@ -122,22 +122,56 @@ export function decideStalePidAction(params: {
   }
 }
 
-export type PortOccupiedDecision = { action: 'proceed' } | { action: 'error'; message: string }
+/**
+ * Deliberately has no `proceed` arm. `decidePortOccupiedAction` is only ever
+ * reached once `isPortFree(port)` has already returned false via a real
+ * trial bind, so "the port is occupied" is a settled fact by then and every
+ * outcome is a refusal - the only open question is how specific the message
+ * can be. This used to be a two-arm union, and that shape is exactly what
+ * let the empty-`foreignPids` case quietly return `proceed` and defeat the
+ * whole module on any platform whose lookup tool is missing (see that
+ * function's doc comment). Keeping the impossible arm out of the type means
+ * a future edit can't reintroduce that bug without first having to argue
+ * with the compiler.
+ */
+export type PortOccupiedDecision = { action: 'error'; message: string }
 
 /**
  * Pure decision for whether it's safe to spawn on `port`, given the set of
  * PIDs (if any) found still listening on it after the stale-pid-file
- * hygiene step above. Any foreign PID still there = hard error naming it,
- * never a silent "try anyway" - see this module's doc comment for why
- * (trusting an unidentified process answering the port is exactly the bug
- * this all exists to prevent).
+ * hygiene step above. Callers only reach this once `isPortFree(port)` has
+ * already returned false via a real trial bind - i.e. something IS holding
+ * the port - so there are exactly two possible outcomes, and both are a
+ * hard error, never a silent "try anyway":
+ *
+ * - `foreignPids` non-empty: a hard error naming the offending PID(s).
+ * - `foreignPids` empty: `findPidsListeningOnPort`'s own doc comment already
+ *   documents that it returns `[]` on anything from "tool not installed" to
+ *   "output didn't parse" - it is NOT evidence the port is actually free
+ *   (that was already ruled out by the trial bind). Treating an empty list
+ *   as "safe to proceed" was a pre-existing bug: on a platform where the
+ *   lookup tool is missing or fails, it silently defeated this whole
+ *   module's purpose (see this module's doc comment - trusting an
+ *   unidentified process answering the port is exactly the bug this all
+ *   exists to prevent), so this returns a less specific error instead,
+ *   naming the port but admitting the occupant couldn't be identified.
  */
 export function decidePortOccupiedAction(params: {
   port: number
   foreignPids: number[]
 }): PortOccupiedDecision {
   const { port, foreignPids } = params
-  if (foreignPids.length === 0) return { action: 'proceed' }
+  if (foreignPids.length === 0) {
+    return {
+      action: 'error',
+      message:
+        `Port ${port} is already in use, but the process holding it couldn't be identified ` +
+        `(the platform lookup tool is unavailable, or its output couldn't be parsed) - refusing ` +
+        `to start a managed sidecar there, since an unidentified process answering that port ` +
+        `can't be trusted as "ready". Free up port ${port} (or change the sidecar port in ` +
+        `Settings) and try again.`
+    }
+  }
   const pidList = foreignPids.join(', ')
   return {
     action: 'error',
@@ -171,6 +205,37 @@ export function readCmdlineForPid(pid: number): string | null {
       if (res.status !== 0 || !res.stdout) return null
       const match = res.stdout.match(/CommandLine=(.+)/)
       return match ? match[1].trim() : null
+    }
+    if (process.platform === 'darwin') {
+      // macOS has no /proc filesystem (that's Linux-only), so the `readFileSync`
+      // path below can't work here - `ps -o command= -p <pid>` is the
+      // documented BSD-userland way to print one process's full command line
+      // by pid. The trailing `=` on `command=` sets an empty header for that
+      // column, which per `ps`'s own docs suppresses the header row entirely
+      // for a single-column request, so stdout is just the command line (or
+      // empty if the pid no longer exists). NOTE: unverified on an actual
+      // Mac - nobody on this project has run this on macOS yet; this is
+      // based on documented `ps` behavior, not a confirmed capture.
+      // `-ww` is load-bearing, not cosmetic. BSD `ps` truncates the command
+      // column to the terminal width (falling back to 80 when stdout isn't a
+      // tty, which is always the case for this spawn); `-w` widens that to
+      // 132 and a second `-w` removes the limit entirely. Our own managed
+      // command comfortably exceeds both defaults before it ever reaches the
+      // part that identifies it - e.g. "/Users/<user>/Library/Application
+      // Support/Blurt/venv/bin/python /Applications/Blurt.app/Contents/
+      // Resources/serve_gpu.py serve --host ..." puts "serve_gpu.py" past
+      // column 110 - so a truncated line would fail
+      // `matchesSidecarSignature`, `decideStalePidAction` would decline to
+      // reclaim a sidecar that really was ours, and the stale process would
+      // keep the port forever. That is the exact failure this darwin branch
+      // exists to prevent, so it must not be reintroduced by the tool's
+      // default formatting.
+      const res = spawnSync('ps', ['-ww', '-o', 'command=', '-p', String(pid)], {
+        encoding: 'utf-8',
+        timeout: 5000
+      })
+      if (res.status !== 0 || !res.stdout) return null
+      return res.stdout.trim()
     }
     return readFileSync(`/proc/${pid}/cmdline`, 'utf-8').replace(/\0/g, ' ').trim()
   } catch {
@@ -210,6 +275,37 @@ export function parseSsListeningPids(output: string, port: number): number[] {
   return [...pids]
 }
 
+/**
+ * Parses macOS `lsof -nP -iTCP:<port> -sTCP:LISTEN` output the same way.
+ * Real rows look like:
+ *
+ *   COMMAND     PID    USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+ *   python3.1 54321 garrett   12u  IPv4 0x8f3a2b1c9d0e4f56      0t0  TCP 127.0.0.1:9379 (LISTEN)
+ *
+ * PID is the second whitespace-separated column; the local address is the
+ * second-to-last column (the last is always the `(LISTEN)`/`(ESTABLISHED)`
+ * state marker, once one is present) - reading the address from the end
+ * rather than a fixed index tolerates the COMMAND/USER columns' widths
+ * varying. The same pid commonly appears twice (once per IPv4/IPv6 socket),
+ * so results are deduplicated. Pure/testable against captured-looking
+ * output.
+ */
+export function parseLsofListeningPids(output: string, port: number): number[] {
+  const pids = new Set<number>()
+  const suffix = `:${port}`
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('COMMAND')) continue // header row (or blank line)
+    if (!/\(LISTEN\)$/.test(line)) continue // only LISTEN rows, not e.g. ESTABLISHED
+    const cols = line.split(/\s+/)
+    const addr = cols[cols.length - 2] ?? ''
+    if (!addr.endsWith(suffix)) continue
+    const pid = Number(cols[1])
+    if (Number.isInteger(pid) && pid > 0) pids.add(pid)
+  }
+  return [...pids]
+}
+
 /** Best-effort, cross-platform "who's listening on this port" lookup, for building a clear error message. Returns `[]` (never throws) if the platform tool isn't available or its output can't be parsed - the caller must still refuse to proceed in that case, just with a less specific message. */
 export function findPidsListeningOnPort(port: number): number[] {
   try {
@@ -221,6 +317,23 @@ export function findPidsListeningOnPort(port: number): number[] {
       })
       if (res.status !== 0 || !res.stdout) return []
       return parseNetstatListeningPids(res.stdout, port)
+    }
+    if (process.platform === 'darwin') {
+      // Neither Linux's `ss` nor Windows' `netstat -ano` exist on macOS -
+      // `lsof` is the standard BSD-userland way to find which process holds
+      // a TCP port. `-sTCP:LISTEN` asks lsof itself to filter to listening
+      // sockets; `parseLsofListeningPids` still checks the state marker
+      // defensively rather than trusting that filter blindly, same as the
+      // other two parsers double-check their own tool's output. NOTE:
+      // unverified on an actual Mac - nobody on this project has run this on
+      // macOS yet; this is based on documented `lsof` behavior, not a
+      // confirmed capture.
+      const res = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], {
+        encoding: 'utf-8',
+        timeout: 5000
+      })
+      if (res.status !== 0 || !res.stdout) return []
+      return parseLsofListeningPids(res.stdout, port)
     }
     const res = spawnSync('ss', ['-ltnp'], { encoding: 'utf-8', timeout: 5000 })
     if (res.status !== 0 || !res.stdout) return []
@@ -313,8 +426,11 @@ export async function reclaimPortForSpawn(params: {
 
   if (await isPortFree(port)) return { action: 'proceed' }
 
+  // Past the trial bind above, the port is occupied by definition, so this
+  // is always a refusal - no `action === 'error'` check to make first (see
+  // PortOccupiedDecision).
   const foreignPids = findPidsListeningOnPort(port)
   const decision = decidePortOccupiedAction({ port, foreignPids })
-  if (decision.action === 'error') log.error(`sidecar-hygiene: ${decision.message}`)
+  log.error(`sidecar-hygiene: ${decision.message}`)
   return decision
 }
