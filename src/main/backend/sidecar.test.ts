@@ -169,7 +169,7 @@ describe('Sidecar auto-restart', () => {
     // serve_gpu.py so this would be GPU-retry-eligible if the process ever
     // actually spawned - it must not get that far.
     const missingBinary =
-      'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe'
+      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe'
     const sidecar = new Sidecar({
       mode: 'managed',
       externalUrl: '',
@@ -534,12 +534,12 @@ describe('isMissingManagedBinary', () => {
     const exists = vi.fn(() => false)
     expect(
       isMissingManagedBinary(
-        'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe',
+        'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe',
         exists
       )
     ).toBe(true)
     expect(exists).toHaveBeenCalledWith(
-      'C:\\Users\\modte\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe'
+      'C:\\Users\\testuser\\AppData\\Local\\WindowsEloquent\\venv\\Scripts\\python.exe'
     )
   })
 

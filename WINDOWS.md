@@ -1,14 +1,14 @@
 # Running Blurt from source on Windows
 
 This is the practical guide for building and running Blurt from source on a Windows host, plus a
-deep dive into how its GPU acceleration works. If you just want to *use* Blurt, you don't need any
-of this - see the main [README.md](README.md) for the installer/portable download.
+deep dive into how its GPU acceleration works. If you just want to _use_ Blurt, you don't need any
+of this. See the main [README.md](README.md) for the installer/portable download.
 
 This assumes you've read [CONTRIBUTING.md](CONTRIBUTING.md)'s "The real backend: LiteRT-LM"
 section for the wire-protocol/architecture background; this doc is the Windows-specific how-to.
 
 Everything below was verified against a real `litert-lm` 0.14.0 pip install. GPU execution
-specifically was verified against a real RTX 3060 Laptop GPU - see "GPU acceleration" below for the
+specifically was verified against a real RTX 3060 Laptop GPU. See "GPU acceleration" below for the
 exact commands/log lines and measured tokens/s.
 
 ## 1. Install Python 3.10+
@@ -27,7 +27,7 @@ python --version
 
 ## 2. Install Node.js
 
-Blurt needs **Node.js >= 20.19.0, or >= 22.12.0** - that's Vite's own `engines` requirement
+Blurt needs **Node.js >= 20.19.0, or >= 22.12.0**. That's Vite's own `engines` requirement
 (`node_modules/vite/package.json` once installed), and it's a hard requirement, not a soft
 recommendation: Vite's config loader calls the Node built-in `crypto.hash()`, which was added in
 Node 21.7.0 and backported to 20.12.0. Anything in the 20.12-20.18 or 21.0-21.6 ranges either lacks
@@ -50,7 +50,7 @@ pip install litert-lm
 ```
 
 This pulls `litert-lm` + `litert-lm-api` (the compiled native engine and its Python bindings) +
-`litert-lm-builder` - no compiler, no Bazel, no Visual Studio needed. This is a prebuilt binary
+`litert-lm-builder`. No compiler, no Bazel, no Visual Studio needed. This is a prebuilt binary
 wheel, unlike the from-source Bazel recipe in "Building `litert-lm` from source" below, which you
 only need if you want to hand-modify the native engine itself.
 
@@ -62,7 +62,7 @@ litert-lm --version
 
 ## 4. Import a model
 
-`litert-lm serve` only serves models that have been **registered** via `litert-lm import` - a
+`litert-lm serve` only serves models that have been **registered** via `litert-lm import`. A
 plain download or `.litertlm` file sitting on disk isn't enough on its own. Import gives the model
 a short **alias**, and that alias (not the HuggingFace repo name, not any internal app ID) is what
 goes in the `"model"` field of every request. Blurt's `ModelManager` does this automatically after
@@ -82,7 +82,7 @@ litert-lm import --from-huggingface-repo litert-community/gemma-4-12B-it-litert-
 
 All three repos are ungated (Apache-2.0, no HuggingFace account/token needed). Downloads land in
 `%USERPROFILE%\.litert-lm\models\<alias>\model.litertlm` by default (overridable via the
-`LITERT_LM_DIR` environment variable - the app sets this itself to a sandboxed folder under its own
+`LITERT_LM_DIR` environment variable; the app sets this itself to a sandboxed folder under its own
 `userData` directory so it never touches your real `~/.litert-lm`; see
 `ModelManager.getLitertLmDir()`).
 
@@ -107,68 +107,71 @@ npm install
 npm run dev
 ```
 
-**Run this on the Windows host itself**, not inside WSL2 - two independent reasons:
+**Run this on the Windows host itself**, not inside WSL2, for two independent reasons:
 
 1. **Microphone access.** The renderer's audio capture (`useAudioCapture.ts`, real
    `getUserMedia`/`AudioWorklet`) needs a real audio input device with OS permission, which WSL2
    doesn't expose the way a native Windows Electron process does.
-2. **GPU access for the model.** See "GPU acceleration" below - it needs a native Windows process
+2. **GPU access for the model.** See "GPU acceleration" below. It needs a native Windows process
    with a direct path to your GPU's driver stack. A WSL2 process sits behind virtualized GPU
    passthrough with no real Vulkan ICD in the common case, so the sidecar falls back to CPU via its
-   own fallback logic instead of actually using the GPU - and the app knows and shows this
-   truthfully (Settings reads "Running on CPU", status pill reads "Ready · CPU") rather than
-   displaying anything it hasn't observed.
+   own fallback logic instead of actually using the GPU. The app knows and shows this truthfully
+   (Settings reads "Running on CPU", status pill reads "Ready · CPU") rather than displaying
+   anything it hasn't observed.
 
 Both the Electron app and the `litert-lm serve` sidecar run as native Windows processes on the same
-machine - there's no need to split them across hosts.
+machine. There's no need to split them across hosts.
 
 Once the window opens, open **Settings**, pick a model, and hit Download if it isn't already
 "Installed" (the in-app downloader does the same HuggingFace download + `litert-lm import` as
-step 4 - if you already imported by hand, use the in-app Download button anyway, since the app
+step 4; if you already imported by hand, use the in-app Download button anyway, since the app
 manages its own model file store under its own `userData/models/` directory and doesn't currently
 read models imported entirely outside it).
 
 The default sidecar command runs `resources/serve_gpu.py` through the venv Python that
-`npm run dev` bootstraps for a packaged build (see "GPU acceleration" below) - port `9379`, matching
-`litert-lm serve`'s own default. There's nothing to configure for GPU vs. CPU; it's decided
-automatically per machine.
+`npm run dev` bootstraps for a packaged build (see "GPU acceleration" below), on port `9379`,
+matching `litert-lm serve`'s own default. There's nothing to configure for GPU vs. CPU; it's
+decided automatically per machine.
 
-## 6. GPU acceleration - how it works and what was measured
+## 6. GPU acceleration: how it works and what was measured
 
-**Short version: GPU acceleration is automatic - and was verified end-to-end against a real RTX
-3060 Laptop GPU (6 GB VRAM) - decode throughput is ~3.4x faster than CPU once warm.** Getting there
-needed a small wrapper script, because the pip `serve` CLI itself has no way to select a backend -
-the two findings below explain why, and are still accurate as of `litert-lm` 0.14.0.
+**Short version: GPU acceleration is automatic. It was verified end-to-end against a real RTX
+3060 Laptop GPU (6 GB VRAM), and decode throughput is ~3.4x faster than CPU once warm.** Getting
+there needed a small wrapper script, because the pip `serve` CLI itself has no way to select a
+backend. The two findings below explain why, and are still accurate as of `litert-lm` 0.14.0.
 
 ### Supported hardware (this is not NVIDIA/RTX-specific)
 
-GPU acceleration goes through **Dawn (WebGPU)**, whose Windows backend is **Direct3D 12** - any
+GPU acceleration goes through **Dawn (WebGPU)**, whose Windows backend is **Direct3D 12**. Any
 DX12-capable GPU is a supported adapter (NVIDIA, AMD, or Intel; discrete or integrated). Nothing in
-Blurt or `resources/serve_gpu.py` filters, checks, or branches on a vendor/adapter name - the
+Blurt or `resources/serve_gpu.py` filters, checks, or branches on a vendor/adapter name. The
 RTX 3060 numbers throughout this doc are one _measured example_, not a requirement. Dawn logs
 whichever adapter it actually picked: `Selected adapter: <name>, vendor=<vendor>, backend=Direct3D
-12, adapterType=<Discrete|Integrated> GPU` - `<name>`/`<vendor>` come from your driver, never from
+12, adapterType=<Discrete|Integrated> GPU`. `<name>`/`<vendor>` come from your driver, never from
 this codebase.
 
-**Multi-GPU (hybrid graphics) laptops**: adapter selection is entirely delegated to Dawn/D3D12 -
+**Multi-GPU (hybrid graphics) laptops**: adapter selection is entirely delegated to Dawn/D3D12:
 neither `litert-lm`'s Python API nor `serve_gpu.py` expose a way to force a specific physical GPU.
 Confirmed on a machine with both an NVIDIA dGPU and an Intel iGPU: Dawn's default picked the
 discrete GPU with zero configuration. If a different machine's default enumeration ever prefers the
 integrated GPU instead, there is currently no supported knob to override that.
 
-**Minimum VRAM**: budget **at least 4 GB of VRAM for E2B/E4B on GPU** - derived from this model's
+**Minimum VRAM**: budget **at least 4 GB of VRAM for E2B/E4B on GPU**, derived from this model's
 measured GPU-resident footprint (~3.9 GB warm). A 6 GB card (the RTX 3060 Laptop GPU example
-throughout this doc) has comfortable headroom. The 12B model was only ever verified on CPU - don't
+throughout this doc) has comfortable headroom. The 12B model was only ever verified on CPU. Don't
 expect it to fit on a 6 GB-class GPU.
 
 **Unsupported hardware**: no compatible DX12 adapter (or a GPU below Dawn's required feature level)
 means the wrapper's own fallback (see "Fallback if GPU init fails" below) catches the failed engine
-creation and retries on CPU for the rest of that process's lifetime - reported truthfully as "CPU
-(GPU unavailable)", never a silent/wrong "GPU" claim.
+creation and retries on CPU for the rest of that process's lifetime. This is reported truthfully as
+"CPU (GPU unavailable)", never a silent/wrong "GPU" claim.
 
-**Verify what's actually running, vendor-neutral**: NVIDIA - `nvidia-smi` (see "Verifying GPU"
-below); AMD/Intel - Task Manager -> Performance -> GPU (or the GPU column on the Processes tab) -
-same idea, no NVIDIA-specific tool required either way.
+**Verify what's actually running, vendor-neutral**:
+
+- NVIDIA: `nvidia-smi` (see "Verifying GPU" below)
+- AMD/Intel: Task Manager -> Performance -> GPU (or the GPU column on the Processes tab)
+
+Same idea either way, no NVIDIA-specific tool required.
 
 **Finding 1: `litert-lm serve --help` exposes no backend-selection flag at all.**
 
@@ -182,9 +185,9 @@ Options:
 ```
 
 No `--backend`. Reading the installed `litert_lm_cli/commands/serve_util.py`, the server always
-calls `model.parse_backend(None, model_obj=m)` for the main model - i.e. it auto-detects from the
-model file's own metadata and never lets you force it via `serve`'s CLI. (`litert-lm benchmark` and
-`litert-lm run` _do_ expose an explicit `--backend [cpu|gpu|npu]` flag - just not `serve`.)
+calls `model.parse_backend(None, model_obj=m)` for the main model. That is, it auto-detects from
+the model file's own metadata and never lets you force it via `serve`'s CLI. (`litert-lm benchmark`
+and `litert-lm run` _do_ expose an explicit `--backend [cpu|gpu|npu]` flag, just not `serve`.)
 
 **Finding 2: the Gemma-4 `.litertlm` exports declare a hardcoded `cpu` backend constraint in their
 own metadata for every section** (including the optional audio/vision adapters), which is what
@@ -194,8 +197,8 @@ own metadata for every section** (including the optional audio/vision adapters),
 I0000 ... litert_lm_loader.cc:244] section_backend_constraint: cpu   (repeated per section)
 ```
 
-**But that constraint does not actually block GPU execution of the main model** - it turns out only
-to matter for the audio/vision adapters, which genuinely are CPU-only. Forcing `--backend gpu` on
+**But that constraint does not actually block GPU execution of the main model.** It turns out to
+matter only for the audio/vision adapters, which genuinely are CPU-only. Forcing `--backend gpu` on
 `litert-lm benchmark` against the _same_ `cpu`-constrained E2B file, on a real RTX 3060 Laptop GPU,
 the engine happily initializes GPU and runs real inference:
 
@@ -211,12 +214,12 @@ I0000 ... engine_settings.cc:98] The Audio backend constraint is matched: CPU
 decode tokens, `--cache disk` default):
 
 | Backend                         | Prefill tok/s | Decode tok/s | Init time                         |
-| -------------------------------- | ------------- | ------------ | --------------------------------- |
-| CPU                              | ~327          | ~16          | ~8s                               |
-| GPU (cold, first run)            | ~49           | ~46          | ~15.5s (compiling WebGPU shaders) |
-| GPU (warm, disk-cached shaders)  | ~85           | ~54          | ~7.8s                              |
+| ------------------------------- | ------------- | ------------ | --------------------------------- |
+| CPU                             | ~327          | ~16          | ~8s                               |
+| GPU (cold, first run)           | ~49           | ~46          | ~15.5s (compiling WebGPU shaders) |
+| GPU (warm, disk-cached shaders) | ~85           | ~54          | ~7.8s                             |
 
-Decode throughput - what dominates perceived latency for anything longer than a couple words - is
+Decode throughput, which dominates perceived latency for anything longer than a couple words, is
 **~3.4x faster on GPU once warm** (~54 vs ~16 tok/s). Prefill is actually _slower_ on GPU in this
 configuration; that's fine for a dictation/chat workload where prefill is already fast in absolute
 terms and decode length is what you feel. The first run after enabling GPU pays a one-time ~15s
@@ -226,11 +229,11 @@ file so every run after the first is warm).
 **How Blurt gets GPU without a `litert-lm serve --backend` flag:** `resources/serve_gpu.py` is a
 thin wrapper (see its own doc comment for the full mechanism) that monkeypatches
 `litert_lm_cli.commands.serve_util`'s backend-resolution function so the _main_ model is forced onto
-GPU while the audio/vision adapters are left on their own (correctly CPU-constrained) default -
-verified end-to-end against a real `litert-lm serve` process spawned this way, hitting
+GPU while the audio/vision adapters are left on their own (correctly CPU-constrained) default. This
+was verified end-to-end against a real `litert-lm serve` process spawned this way, hitting
 `/v1/chat/completions` and getting back a real completion with `MainExecutorSettings: backend: GPU`
 and the `Selected adapter: ... Direct3D 12` line in the log. The managed sidecar always points at
-this wrapper - there is no separate CPU-only command to opt into.
+this wrapper; there is no separate CPU-only command to opt into.
 
 **Fallback if GPU init fails**: the wrapper catches a failed GPU engine-creation and retries the
 same request on CPU, logging a `[serve_gpu] GPU engine initialization failed (...); falling back to
@@ -241,7 +244,7 @@ falling back), the app's own `Sidecar` retries the whole process once more with 
 stuck in an error state. Crucially, none of this fallback is silent to the user: the wrapper eagerly
 creates the engine at process startup (before the sidecar looks "ready" to the Electron app) and
 prints an unambiguous `BLURT_EFFECTIVE_BACKEND=gpu`/`=cpu` marker line to stdout as soon as it
-knows which backend it actually got - the app parses that marker and the Settings readout / status
+knows which backend it actually got. The app parses that marker, and the Settings readout / status
 pill reflect the real backend, not just the one it hoped for.
 
 **If you want to re-verify any of this yourself** once you've imported a model:
@@ -255,8 +258,9 @@ Look for `Selected adapter: ... backend=Direct3D 12` in the GPU run's log and co
 `----- Results -----` blocks' decode tok/s.
 
 **For full control** (custom accelerator flags, a patched engine, bundling a Python-free sidecar),
-see "Building `litert-lm` from source" below - not needed for GPU acceleration itself (the wrapper
-above covers that), only for going beyond what the pip wheel + wrapper combination exposes.
+see "Building `litert-lm` from source" below. That's not needed for GPU acceleration itself (the
+wrapper above covers that); it's only for going beyond what the pip wheel + wrapper combination
+exposes.
 
 ### Verifying GPU: "is it actually on?"
 
@@ -264,15 +268,15 @@ The Settings readout and status pill tell the truth, but here's how to double-ch
 under a minute:
 
 - **Status pill** (top of the app window): `Ready · GPU` once the sidecar's engine has actually
-  confirmed it - not just "Ready" alone, and not `Ready · CPU` (that means it fell back).
-- **main.log** (Settings > "Open logs folder"): grep for `effective-backend=gpu` - the line looks
+  confirmed it: not just "Ready" alone, and not `Ready · CPU` (that means it fell back).
+- **main.log** (Settings > "Open logs folder"): grep for `effective-backend=gpu`: the line looks
   like `sidecar: effective-backend=gpu`. If you instead see `Port 9379 is already in use by another
-  process (PID ...)`, some other process (commonly a stale sidecar left running from a previous app
-  session that didn't shut down cleanly - see `src/main/backend/portGuard.ts`) is squatting on the
+process (PID ...)`, some other process (commonly a stale sidecar left running from a previous app
+  session that didn't shut down cleanly; see `src/main/backend/portGuard.ts`) is squatting on the
   port; the message names its PID so you can `taskkill /PID <pid> /F` it, then relaunch.
 - **Task Manager** -> Performance -> GPU (or the GPU column on the Processes tab): a `python.exe`
   process should be visible with non-trivial VRAM usage (roughly 2-3 GiB for the E2B model) and its
-  GPU-Util spikes while you're actively dictating/generating - not before, since the engine only
+  GPU-Util spikes while you're actively dictating/generating, not before, since the engine only
   runs inference on request.
 - **One-liner from PowerShell**:
 
@@ -282,7 +286,7 @@ under a minute:
 
   Look for a `python.exe` row under "Processes" with nonzero GPU memory, and `GPU-Util` ticking up
   while a request is in flight. No `python.exe` row at all (only browser/desktop processes) means
-  nothing is currently using the GPU - either the sidecar isn't running, or it's on CPU.
+  nothing is currently using the GPU: either the sidecar isn't running, or it's on CPU.
 
 ### Crash-safe cleanup
 
@@ -291,7 +295,7 @@ A normal app quit already kills the sidecar (`child.kill()`/Windows `TerminatePr
 the Electron process (Task Manager, `taskkill /f`, power loss) is also covered: `serve_gpu.py` runs
 a parent-watchdog thread (`BLURT_PARENT_PID`, set automatically by `sidecar.ts`) that notices the
 moment the Electron process dies and exits itself immediately, releasing the GPU/CPU engine's
-memory - no orphaned model process left running until your next launch.
+memory. No orphaned model process is left running until your next launch.
 
 ## 7. Building a distributable (`npm run build:win`)
 
@@ -304,38 +308,38 @@ npm run build:win
 `npm run build:win` additionally runs `electron-builder --win`, producing an NSIS installer and a
 portable `.exe` per `electron-builder.yml`.
 
-Must be run on a real Windows machine (or a Windows CI runner) - electron-builder needs the Windows
+Must be run on a real Windows machine (or a Windows CI runner): electron-builder needs the Windows
 toolchain to produce these. `electron-builder install-app-deps` will fail to rebuild `uiohook-napi`
 (the push-to-talk key hook) unless Visual Studio Build Tools are installed; that failure is safe to
 ignore, because the package ships a prebuilt N-API binary which loads correctly at runtime. Neither
-build is code-signed, so a fresh install triggers a Windows SmartScreen warning - see the README's
+build is code-signed, so a fresh install triggers a Windows SmartScreen warning. See the README's
 Troubleshooting section for what to click through.
 
 This has been run on a real Windows host and the resulting installer + portable exe were verified
 end to end: boot to a ready backend on GPU, a second launch refused by the single-instance lock,
 and a clean shutdown with no orphaned sidecar process.
 
-Note that `litert-lm` itself is **not bundled** by `electron-builder` - it's a separate install the
+Note that `litert-lm` itself is **not bundled** by `electron-builder`; it's a separate install the
 end user's copy of Blurt sets up for itself on first launch (see
 `src/main/runtime/firstRunSetup.ts`), or that you provide yourself when developing, exactly as
 described in steps 1-4 above.
 
 ## Building `litert-lm` from source
 
-Not needed for GPU acceleration itself (the pip wheel + `serve_gpu.py` wrapper above covers that) -
-only useful if you need custom accelerator flags or a patched engine. A documented from-source
+Not needed for GPU acceleration itself (the pip wheel + `serve_gpu.py` wrapper above covers that).
+It's only useful if you need custom accelerator flags or a patched engine. A documented from-source
 Windows build recipe exists upstream (see
 [google-ai-edge/LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM),
 `docs/getting-started/build-and-run.md`): Visual Studio 2022 ("Desktop development with C++"),
-Bazel via Bazelisk, Git for Windows (its bundled `bash.exe` is required - some build steps shell out
-to it), Python 3.13, a JDK, and enabling NTFS long paths (`LongPathsEnabled` registry key, since
-Bazel's output tree nests deep). CPU builds are
+Bazel via Bazelisk, Git for Windows (its bundled `bash.exe` is required, since some build steps
+shell out to it), Python 3.13, a JDK, and enabling NTFS long paths (`LongPathsEnabled` registry key,
+since Bazel's output tree nests deep). CPU builds are
 `bazelisk build //runtime/engine:litert_lm_main --config=windows`; GPU (WebGPU/Dawn/D3D12) builds
 additionally need `--define=litert_runtime_link_mode=dynamic
 --define=resolve_symbols_in_exec=false` and require copying the prebuilt accelerator DLLs
 (`prebuilt/windows_x86_64/*.dll`) plus Dawn's `dxcompiler.dll`/`dxil.dll` (fetched hermetically by
-Bazel from Microsoft's DirectXShaderCompiler releases) into the same directory as the built binary -
-a hand-built binary doesn't get these copied automatically the way the upstream Python-wheel build
+Bazel from Microsoft's DirectXShaderCompiler releases) into the same directory as the built binary.
+A hand-built binary doesn't get these copied automatically the way the upstream Python-wheel build
 target does.
 
 ## Summary checklist
@@ -345,8 +349,8 @@ target does.
 - [ ] `pip install litert-lm`
 - [ ] `litert-lm import --from-huggingface-repo litert-community/gemma-4-E2B-it-litert-lm gemma-4-E2B-it.litertlm e2b` (or e4b/12b)
 - [ ] `npm install && npm run dev`, then in Settings pick a model and hit Download
-- [ ] GPU acceleration is automatic (~3.4x faster decode, measured on an RTX 3060 Laptop GPU - see
+- [ ] GPU acceleration is automatic (~3.4x faster decode, measured on an RTX 3060 Laptop GPU; see
       section 6); drops to CPU on its own if GPU init fails, and Settings/the status pill say so
       truthfully if it does
-- [ ] Model/VRAM is cleaned up on quit _and_ on a hard crash - see "Crash-safe cleanup" above
+- [ ] Model/VRAM is cleaned up on quit _and_ on a hard crash; see "Crash-safe cleanup" above
 - [ ] `npm run build && npm run build:win` on a real Windows machine to produce an installer

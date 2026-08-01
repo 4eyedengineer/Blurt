@@ -166,7 +166,7 @@ export function readCmdlineForPid(pid: number): string | null {
       const res = spawnSync(
         'wmic',
         ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine', '/value'],
-        { encoding: 'utf-8', timeout: 5000 }
+        { encoding: 'utf-8', timeout: 5000, windowsHide: true }
       )
       if (res.status !== 0 || !res.stdout) return null
       const match = res.stdout.match(/CommandLine=(.+)/)
@@ -214,7 +214,11 @@ export function parseSsListeningPids(output: string, port: number): number[] {
 export function findPidsListeningOnPort(port: number): number[] {
   try {
     if (process.platform === 'win32') {
-      const res = spawnSync('netstat', ['-ano'], { encoding: 'utf-8', timeout: 5000 })
+      const res = spawnSync('netstat', ['-ano'], {
+        encoding: 'utf-8',
+        timeout: 5000,
+        windowsHide: true
+      })
       if (res.status !== 0 || !res.stdout) return []
       return parseNetstatListeningPids(res.stdout, port)
     }

@@ -99,11 +99,6 @@ export function checkXdotoolAvailable(): Promise<boolean> {
   return xdotoolAvailableCache
 }
 
-/** Test-only hook to reset the memoized probe between cases. */
-export function resetXdotoolAvailableCacheForTests(): void {
-  xdotoolAvailableCache = null
-}
-
 // --- Paste injection dispatch ------------------------------------------------------------------
 
 /**

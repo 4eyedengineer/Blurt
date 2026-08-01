@@ -32,6 +32,7 @@ import {
 import { shouldLaunchPartialTick } from './partialTickScheduler'
 import { ThrottledTextEmitter } from './streamThrottle'
 import { stitchTranscript } from './transcriptStitcher'
+import { log } from '../log'
 
 /**
  * How often (ms of *new* audio, not wall-clock time) to fire a partial
@@ -528,12 +529,15 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       const n = ++this.debugSessionCounter
       const filePath = path.join(dir, `session-${n}.wav`)
       await fsPromises.writeFile(filePath, pcm16ToWavBuffer(samples, sampleRate))
-      console.log(
-        `[LitertBackend] ${DEBUG_AUDIO_ENV_VAR}: wrote ${filePath} ` +
+      log.info(
+        `litertBackend: ${DEBUG_AUDIO_ENV_VAR} wrote ${filePath} ` +
           `(${samples.length} samples, rms=${computeRms(samples).toFixed(1)})`
       )
     } catch (err) {
-      console.warn(`[LitertBackend] ${DEBUG_AUDIO_ENV_VAR}: failed to write debug WAV:`, err)
+      log.warn(
+        `litertBackend: ${DEBUG_AUDIO_ENV_VAR} failed to write debug WAV: ` +
+          `${err instanceof Error ? err.message : String(err)}`
+      )
     }
   }
 

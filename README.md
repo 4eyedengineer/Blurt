@@ -1,130 +1,128 @@
 # Blurt
 
-Blurt is an offline, on-device dictation app for Windows: hold a key or hit record, speak, and get
-back cleaned-up text - filler words stripped, punctuation and capitalization fixed - ready to paste
-anywhere. Everything runs locally on your own machine against a local Gemma model. Nothing you say
+Blurt is an offline dictation app for Windows. Hold a key or press record, speak, and get back
+clean text with filler words removed and punctuation and capitalization fixed, ready to paste
+anywhere. Everything runs on your own machine against a local Gemma model, so nothing you say
 leaves your computer.
 
-Blurt is inspired by Google's AI Edge Eloquent, which has no Windows version - Blurt is an
-independent project, not a Google product and not affiliated with Google.
+## Credit
 
-<!-- TODO: add a screenshot or short GIF of the Dictate screen / push-to-talk overlay here -->
+Blurt exists because of Google's [AI Edge Eloquent](https://github.com/google-ai-edge/eloquent).
+Eloquent showed that a small on-device model can do dictation cleanup well enough to use every
+day, and it is the direct inspiration for this project's design, from the hold-to-talk flow to the
+cleanup pass that runs after transcription. Blurt is an independent reimplementation for Windows,
+which Eloquent does not currently target. It is not a Google product and is not affiliated with or
+endorsed by Google.
+
+<!-- TODO: add a screenshot or short GIF of the Dictate screen and the push-to-talk overlay here -->
 
 ## Requirements
 
-Check these *before* downloading anything - the model download alone is a couple gigabytes, and
-it's better to find a missing prerequisite first:
+Check these before downloading anything. The model download alone is a couple of gigabytes, so it
+is better to find a missing prerequisite first.
 
 - **Windows 10 or 11, 64-bit.**
 - **Python 3.10 or newer, already installed and on `PATH`.** Blurt does not bundle Python. On
-  first launch it looks for `py -3.12`, `py -3`, or `python`, in that order; if none of those
-  resolve to Python 3.10+, it shows an error screen instead of guessing. Get it from
-  [python.org](https://www.python.org/) if you don't have it - check "Add python.exe to PATH"
-  during install.
-- **About 6 GB of free disk space** for the smallest model, more for the larger ones. A model
-  costs roughly twice its download size on disk: Blurt keeps the file it downloaded *and* the copy
-  the model server registers, plus around a gigabyte of compiled shader cache. So E2B needs about
-  6 GB, E4B about 8 GB, and 12B about 13 GB. Blurt checks this before it starts downloading and
-  tells you if there isn't room, so you won't discover it halfway through.
+  first launch it looks for `py -3.12`, `py -3`, and then `python`. If none of those resolve to
+  Python 3.10 or newer, it shows an error instead of guessing. You can get Python from
+  [python.org](https://www.python.org/). Check "Add python.exe to PATH" during install.
+- **About 6 GB of free disk space** for the smallest model, and more for the larger ones. A model
+  costs roughly twice its download size on disk, because Blurt keeps both the file it downloaded
+  and the copy the model server registers, plus about a gigabyte of compiled shader cache. E2B
+  needs about 6 GB, E4B about 8 GB, and 12B about 13 GB. Blurt checks for space before it starts
+  downloading and tells you if there is not enough room.
 - **A microphone.**
 
-A discrete or integrated GPU is not required. If your machine has a usable one, Blurt uses it
-automatically and dictation is noticeably faster; if not, it falls back to your CPU by itself (see
-[Using Blurt](#using-blurt) below).
+A GPU is optional. If your machine has a usable one, Blurt uses it automatically and dictation is
+noticeably faster. If it does not, Blurt falls back to your CPU on its own.
 
 ## Install
 
-Grab the latest build from the Releases page. Two options:
+Download the latest build from the
+[Releases page](https://github.com/4eyedengineer/Blurt/releases). There are two options.
 
-- **Installer** (`Blurt-<version>-setup.exe`) - a normal per-user installer: Start Menu and desktop
-  shortcuts, a proper entry in "Installed apps" with an uninstaller.
-- **Portable** (`Blurt-<version>-portable.exe`) - a single exe, no install step. Run it from
-  anywhere (Downloads, a USB stick).
+- **Installer** (`blurt-<version>-setup.exe`) is a normal per-user installer. It creates Start
+  Menu and desktop shortcuts and an entry in "Installed apps" with an uninstaller.
+- **Portable** (`blurt-<version>-portable.exe`) is a single exe with no install step. You can run
+  it from anywhere, including a USB stick.
 
-Neither build is code-signed, so Windows SmartScreen will very likely show a blue "Windows
-protected your PC" warning the first time you run it. This is normal for a small, independently
-published app rather than a sign anything is wrong - click **More info**, then **Run anyway**.
+Neither build is code-signed, so Windows SmartScreen will probably show a blue "Windows protected
+your PC" warning the first time you run it. This is normal for a small independently published
+app. Click **More info**, then **Run anyway**.
 
-**First launch** does a bit of one-time setup:
+First launch does some one-time setup.
 
-- If Blurt can't find a healthy Python virtual environment yet, it shows a short setup screen
-  (a small step list plus a live log) while it creates one and installs the pinned `litert-lm`
-  Python package into it - a roughly 45 MB download, typically well under a minute on a normal
-  connection.
-- Once that's done, open the **Settings** tab and download a model (Gemma 4 E2B, E4B, or 12B -
-  E2B is the smallest and fastest, and a reasonable default to start with). This is a separate,
-  much larger download from Hugging Face and is the one that takes real time: ~2.4 GB for E2B,
-  ~3.4 GB for E4B, ~6.1 GB for 12B, so budget several minutes depending on your connection. Each
-  model's row shows what it will actually cost on disk, and whether this machine can run it.
+1. If Blurt cannot find a healthy Python virtual environment, it shows a short setup screen with a
+   step list and a live log while it creates one and installs the pinned `litert-lm` package into
+   it. That download is around 45 MB and usually takes well under a minute.
+2. Once that finishes, open the **Settings** tab and download a model. The choices are Gemma 4
+   E2B, E4B, and 12B. E2B is the smallest and fastest and is a good place to start. This is a much
+   larger download from Hugging Face and is the step that takes real time, roughly 2.4 GB for E2B,
+   3.4 GB for E4B, and 6.1 GB for 12B. Each model's row shows what it will cost on disk and
+   whether your machine can run it.
 
-After that, Blurt is ready: go to **Dictate** and press record, or use push-to-talk from anywhere
-(see below).
+Blurt is ready after that. Open **Dictate** and press record, or use push-to-talk from anywhere.
 
 ## Privacy
 
-- All speech recognition and text cleanup run locally, on your machine, against the model you
-  downloaded. Audio and transcripts are never sent anywhere for inference.
+- Speech recognition and text cleanup both run locally against the model you downloaded. Audio and
+  transcripts are never sent anywhere for inference.
 - The only network access Blurt makes is the one-time model download from Hugging Face described
-  above (and, if you're installing dependencies or running from source, whatever `npm install`/
-  `pip install` fetch from the npm and PyPI registries).
-- Dictation history is stored locally on disk (see [Using Blurt](#using-blurt)) and is never
-  uploaded anywhere.
-- There is no telemetry, analytics, or crash reporting, and no account or sign-in of any kind.
+  above. If you install dependencies or run from source, npm and PyPI are also contacted.
+- Dictation history is stored locally on disk and is never uploaded.
+- There is no telemetry, no analytics, no crash reporting, and no account or sign-in.
 
 ## Using Blurt
 
-- **Dictate tab** - press the record button, speak; a live transcript streams in as you talk. On
-  stop, a cleanup pass runs automatically (removing filler words, fixing punctuation), briefly
-  showing what changed before settling on the cleaned text. Key Points / Formal / Short / Long
-  buttons rewrite the result in that style; a copy button and an optional "voice edit" text box
-  (e.g. "replace foo with bar") round out the screen.
-- **Push-to-talk** - hold a configurable key (Right Alt by default) from anywhere in Windows, not
-  just while Blurt's window is focused. A small pill appears; a short tone plays the moment the
-  microphone is actually live (opening the audio device takes a second or two, so the tone is your
-  cue that it's really listening, not just that you pressed the key). Speak, then release the key:
-  the text is cleaned up, copied to the clipboard, and - if auto-paste is enabled - pasted directly
-  into whatever had focus. Every push-to-talk dictation is also saved to History, exactly like one
-  done from the Dictate tab. Change the key or turn off auto-paste in Settings.
-- **If you don't say anything**, nothing happens - the pill just disappears. Blurt won't paste,
-  won't touch your clipboard, and won't save a row to History. A hold that picked up no speech
-  leaves your machine exactly as it found it.
-- **Closing the window** doesn't quit Blurt - it drops to the system tray so push-to-talk keeps
-  working with nothing on screen. Click the tray icon to bring the window back, or right-click it
-  to quit. Turn this off in Settings if you'd rather the close button quit outright.
-- **History** - every completed dictation (from either the Dictate tab or push-to-talk) is saved
-  locally, searchable by text, and clickable to reopen.
-- **Settings** - choose which model to use and download/delete it, see whether the engine is
-  currently running on GPU or CPU (this is a read-out of what actually happened, not a toggle -
-  see [Requirements](#requirements)), manage custom vocabulary words, set the global hotkey, and
-  configure push-to-talk.
+- **Dictate tab.** Press the record button and speak. A live transcript streams in as you talk.
+  When you stop, a cleanup pass runs automatically and briefly shows what changed before settling
+  on the cleaned text. The Key Points, Formal, Short, and Long buttons rewrite the result in that
+  style. There is also a copy button and a voice edit box, where you can type an instruction such
+  as "replace foo with bar".
+- **Push-to-talk.** Hold a configurable key, Right Alt by default, from anywhere in Windows. A
+  small pill appears, and a short tone plays once the microphone is actually live. Opening the
+  audio device takes a second or two, so the tone is your cue that Blurt is really listening
+  rather than just that you pressed the key. Speak, then release the key. The text is cleaned up,
+  copied to the clipboard, and pasted into whatever had focus if auto-paste is on. Push-to-talk
+  dictations are saved to History like any other. You can change the key or turn off auto-paste in
+  Settings.
+- **If you do not say anything**, nothing happens and the pill disappears. Blurt does not paste,
+  does not touch your clipboard, and does not save a row to History.
+- **Closing the window** leaves Blurt running in the system tray so push-to-talk keeps working
+  with nothing on screen. Click the tray icon to bring the window back, or right-click it to quit.
+  You can turn this off in Settings if you would rather the close button quit outright.
+- **History** keeps every completed dictation from both the Dictate tab and push-to-talk. It is
+  searchable by text, and clicking an entry reopens it.
+- **Settings** is where you choose and download a model, see whether the engine is running on GPU
+  or CPU, manage custom vocabulary, set the global hotkey, and configure push-to-talk. The
+  GPU or CPU line reports what actually happened rather than offering a choice.
 
 ## Troubleshooting
 
 - **"No Python 3.10+ installation was found."** Install Python 3.10 or newer from
-  [python.org](https://www.python.org/), making sure "Add python.exe to PATH" is checked, then
-  relaunch Blurt.
-- **SmartScreen blocks the app.** See [Install](#install) above - click **More info**, then
-  **Run anyway**.
+  [python.org](https://www.python.org/) with "Add python.exe to PATH" checked, then relaunch
+  Blurt.
+- **SmartScreen blocks the app.** Click **More info**, then **Run anyway**. See
+  [Install](#install) above.
 - **"Port 9379 is already in use."** Blurt's local model server listens on port 9379 by default.
-  This message means some other process (often a Blurt sidecar left over from a session that
-  didn't shut down cleanly) is already using it; the error names the offending PID so you can end
-  it in Task Manager, or change the port in Settings' Advanced section, then try again.
-  A normal quit, and a hard crash of the app, both shut this process down on their own - you
-  should only see this after something unusual.
-- **Uninstalling.** If you used the installer, uninstall Blurt like any other Windows app (Settings
-  > Apps, or the Start Menu shortcut's uninstaller) - this removes your settings, history, and
-  downloaded model, and separately asks whether to also remove the shared Python runtime it set up
-  (safe to keep if you plan to reinstall later). If you used the portable exe, just delete it; you
-  can remove its userData and Python runtime folders under `%APPDATA%` and `%LOCALAPPDATA%`
-  yourself if you want a completely clean slate.
+  Something else is using it, often a sidecar left over from a session that did not shut down
+  cleanly. The error names the process ID so you can end it in Task Manager, or you can change the
+  port in Settings under Advanced. Both a normal quit and a hard crash shut this process down on
+  their own, so you should only see this after something unusual.
+- **Uninstalling.** If you used the installer, uninstall Blurt like any other Windows app through
+  Settings > Apps or the Start Menu shortcut. It asks separately whether to also remove your saved
+  data, which includes settings, history, and the downloaded model, and whether to remove the
+  shared Python runtime it set up. Keeping the runtime is safe if you plan to reinstall later. If
+  you used the portable exe, delete it. You can then remove its folders under `%APPDATA%\blurt`
+  and `%LOCALAPPDATA%\Blurt` yourself for a completely clean slate.
 
 ## Contributing
 
-Building from source, running the dev server, running tests, and understanding how the app fits
-together all live in [CONTRIBUTING.md](CONTRIBUTING.md).
+Building from source, running the dev server, running the tests, and understanding how the pieces
+fit together are all covered in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Blurt is licensed under the [GNU General Public License v3.0](LICENSE). In short: you're free to
-run, study, modify, and redistribute it, but any derivative work you distribute must also be
-licensed under GPL-3.0 and its source made available.
+Blurt is licensed under the [GNU General Public License v3.0](LICENSE). You are free to run,
+study, modify, and redistribute it. Any derivative work you distribute must also be licensed under
+GPL-3.0 with its source made available.

@@ -78,13 +78,4 @@ nsis:
   include: build/installer.nsh
 portable:
   artifactName: ${name}-${version}-portable.${ext}
-linux:
-  target:
-    - AppImage
-    - snap
-    - deb
-  maintainer: electronjs.org
-  category: Utility
-appImage:
-  artifactName: ${name}-${version}.${ext}
 npmRebuild: false

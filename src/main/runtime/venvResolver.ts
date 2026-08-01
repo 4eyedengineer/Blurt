@@ -69,11 +69,3 @@ export function getRuntimeBaseDir(env: NodeJS.ProcessEnv = process.env): string 
 export function isVenvHealthy(paths: VenvPaths): boolean {
   return existsSync(paths.pythonExe) && existsSync(paths.litertLmExe)
 }
-
-/** Convenience: resolve the current platform's venv paths under the default runtime base dir. */
-export function resolveDefaultVenvPaths(
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform
-): VenvPaths {
-  return venvPathsFor(join(getRuntimeBaseDir(env), 'venv'), platform)
-}

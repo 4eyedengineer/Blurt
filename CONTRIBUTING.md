@@ -12,8 +12,8 @@ npm run dev          # electron-vite dev server + Electron, with HMR
 ```
 
 `npm run dev` starts the app in dev mode against whatever backend settings are already saved (or
-the defaults, on a fresh checkout). It does not install Python or a `litert-lm` runtime for you -
-see [WINDOWS.md](WINDOWS.md) for the full from-source Windows setup (Python, `litert-lm`, model
+the defaults, on a fresh checkout). It does not install Python or a `litert-lm` runtime for you.
+See [WINDOWS.md](WINDOWS.md) for the full from-source Windows setup (Python, `litert-lm`, model
 import) if you need a real backend running while developing.
 
 Other useful scripts:
@@ -38,9 +38,9 @@ this override is harmless but unnecessary.
 
 ### Developing under WSL/Linux
 
-The renderer and the LiteRT-LM backend both run fine under WSL2 with WSLg (a graphical WSL2
-environment - check for `DISPLAY`/`WAYLAND_DISPLAY` env vars and `/mnt/wslg`), which is useful for
-UI and backend work without a Windows host. Two things to know:
+The renderer and the LiteRT-LM backend both run fine under WSL2 with WSLg, a graphical WSL2
+environment (check for `DISPLAY`/`WAYLAND_DISPLAY` env vars and `/mnt/wslg`). This is useful for UI
+and backend work without a Windows host. Two things to know:
 
 - **Sandbox helper permissions.** A plain `npm install` doesn't leave
   `node_modules/electron/dist/chrome-sandbox` setuid-root, which Electron's sandbox needs. If the
@@ -53,7 +53,7 @@ UI and backend work without a Windows host. Two things to know:
   development, and use a real Windows host (see [WINDOWS.md](WINDOWS.md)) for dictation you
   actually trust to capture real speech.
 - GPU acceleration needs a real Vulkan/D3D12-capable adapter, which a WSL2/WSLg sandbox does not
-  expose - the backend falls back to CPU automatically in that case (see "The real backend:
+  expose. The backend falls back to CPU automatically in that case (see "The real backend:
   LiteRT-LM" below), the same as it would on any machine without a usable GPU.
 
 ## Tests
@@ -61,12 +61,12 @@ UI and backend work without a Windows host. Two things to know:
 `npm test` runs Vitest across the pure/dependency-injected logic that doesn't need a native module
 or a live sidecar:
 
-- `litertWire.test.ts` - request builders, SSE/JSON response parsing, WAV encoding
-- `sidecar.test.ts` - managed-command templating, port-guard/stale-process decisions, readiness
+- `litertWire.test.ts`: request builders, SSE/JSON response parsing, WAV encoding
+- `sidecar.test.ts`: managed-command templating, port-guard/stale-process decisions, readiness
   and GPU-fallback-marker logic
 - push-to-talk's key-map/debounce/controller logic and WSL detection
 - the push-to-talk overlay's phase reducer
-- `wordDiff.test.ts` - the word-diff used for the cleanup reveal
+- `wordDiff.test.ts`: the word-diff used for the cleanup reveal
 
 ## Project layout
 
@@ -78,16 +78,31 @@ src/
     types.ts                  Settings (incl. backend/sidecar config), DictationEntry, etc.
     models.ts                  Model catalog (HF repo per ModelId) + download-progress types
     ipc-channels.ts           Centralized IPC channel name constants
+    hardware.ts                Shared GpuInfo/HardwareProbeResult shapes used by hardwareProbe.ts
+                               and the renderer
+    modelRequirements.ts        Pure policy: checks a model's disk/RAM/VRAM needs against a
+                               HardwareProbeResult before a download is allowed to start
+    stats.ts                    Word count/duration/WPM calculation, shared by the overlay's
+                               history write and the Dictate screen's stats bar
 
   main/                     Electron main process (Node context)
     index.ts                  App bootstrap: creates the window, wires backend controller +
                                model manager + stores + IPC, registers the global hotkey
     hotkey.ts                  globalShortcut register/unregister helper
+    tray.ts                     System-tray icon and menu; keeps Blurt running in the tray when
+                               the window closes if `runInBackground` is enabled
+    tray.test.ts                Tests for the close-to-tray decision (`shouldHideOnClose`)
+    log.ts                      Main-process logger; writes to userData/logs/main.log, mirrors to
+                               console in dev
     overlay.ts                 Creates/positions the push-to-talk overlay BrowserWindow
     overlayController.ts       State machine: PushToTalkController events -> overlay IPC ->
                                clipboard/paste injection - see Push-to-talk overlay below
     paste.ts                   clipboard.writeText + platform-specific Ctrl+V injection
     wsl.ts                      /proc/version-based WSL detection (explains PTT limitations)
+    hardware/
+      hardwareProbe.ts           Probes total RAM, free disk, and (on Windows) per-adapter GPU
+                                 VRAM, so a model can be checked against the machine before it's
+                                 downloaded
     runtime/
       venvResolver.ts           Resolves the packaged app's self-managed Python venv location
       firstRunSetup.ts          Finds Python 3.10+, creates the venv, pip-installs litert-lm
@@ -124,6 +139,8 @@ src/
                                    triggers a backend rebuild on backend-relevant changes)
       modelManagerIpc.ts           Wires ModelManager (list/download/cancel/remove) <-> ipcMain
       pushToTalkIpc.ts             Exposes PushToTalkStatus (available/reason/isWSL/xdotool) to Settings
+      logIpc.ts                    Wires renderer error logging and the Settings "Open logs
+                                   folder" button to log.ts
 
   preload/                  contextBridge boundary
     index.ts                  Exposes a typed `window.api` (dictation / history / settings /
@@ -144,6 +161,7 @@ src/
         useDictationSession.ts   Orchestrates record -> cleanup -> transform -> history lifecycle
         useBackendStatus.ts      Subscribes to the header status pill's backend state
         useModelManager.ts       Drives the Settings screen's model download UI
+        useHardwareInfo.ts       Fetches RAM/disk/GPU facts once per Settings screen visit
       screens/                 DictateScreen, HistoryScreen, SettingsScreen
       components/              RecordButton, TransformBar, StatsBar, VoiceEditBar, Sidebar,
                                StatusPill, Toggle, Icons, MicLevelMeter, DiffReveal (word-diff
@@ -187,22 +205,22 @@ export interface InferenceBackend {
 }
 ```
 
-This interface only ever runs in the **main process**. The renderer never touches it directly -
-it goes through the typed IPC bridge in `src/preload/index.ts` (`window.api.dictation.*`), which
-is wired to the concrete backend instance in `src/main/ipc/backendIpc.ts`.
+This interface only ever runs in the **main process**. The renderer never touches it directly. It
+goes through the typed IPC bridge in `src/preload/index.ts` (`window.api.dictation.*`), which is
+wired to the concrete backend instance in `src/main/ipc/backendIpc.ts`.
 
 `LitertBackend` (`src/main/backend/litertBackend.ts`) is the only implementation, built and
 (re)constructed by `BackendController` (`src/main/backend/backendController.ts`) whenever
-model/sidecar settings change - see "The real backend: LiteRT-LM" below. If it fails to start (bad
+model/sidecar settings change (see "The real backend: LiteRT-LM" below). If it fails to start (bad
 sidecar command, model not downloaded, sidecar crashed past its restart budget, ...),
-`BackendController` swaps in `UnavailableBackend` (defined alongside it) - every method rejects
-with a clear message rather than silently degrading to fake output, so the status pill and any
+`BackendController` swaps in `UnavailableBackend` (defined alongside it). Every method rejects with
+a clear message rather than silently degrading to fake output, so the status pill and any
 in-flight call both surface the failure honestly.
 
-The renderer captures 16kHz mono PCM16 via an AudioWorklet - no fallback path; if it's unavailable,
-capture fails visibly instead - and forwards raw chunks over IPC as `AudioChunkPayload`
-(`{ buffer, sampleRate }`), which `backendIpc.ts` converts to `Int16Array` before calling
-`pushAudio`.
+The renderer captures 16kHz mono PCM16 via an AudioWorklet, with no fallback path (if it's
+unavailable, capture fails visibly instead), and forwards raw chunks over IPC as
+`AudioChunkPayload` (`{ buffer, sampleRate }`), which `backendIpc.ts` converts to `Int16Array`
+before calling `pushAudio`.
 
 ## Streaming partials + the cleanup diff-reveal
 
@@ -214,20 +232,20 @@ Two UX refinements sit on top of the base `InferenceBackend` contract, both impl
   tick streams its result in over the sidecar's SSE response as tokens arrive (via
   `ThrottledTextEmitter`, `src/main/backend/streamThrottle.ts`) instead of waiting for the whole
   re-transcription to finish and emitting once. A partial tick does **not** re-transcribe the
-  entire accumulated buffer - per-tick cost would otherwise grow linearly with session length.
+  entire accumulated buffer: per-tick cost would otherwise grow linearly with session length.
   Instead, each tick only sends a bounded trailing **window** (`DEFAULT_PARTIAL_WINDOW_MS`, ~4s) of
   audio, overlapping the previous window by `DEFAULT_PARTIAL_WINDOW_OVERLAP_MS` (~0.8s) so a word
   cut off at the boundary gets a full second chance to be heard whole.
   `src/main/backend/transcriptStitcher.ts`'s `stitchTranscript` (pure, unit-tested) then finds the
   repeated words at that overlap and dedupes them, so the _displayed_ text is always the full
-  transcript-so-far - text from earlier windows is "committed" (fixed) once a later window's start
+  transcript-so-far. Text from earlier windows is "committed" (fixed) once a later window's start
   advances past it, similar to streaming-ASR "confirm on agreement" designs. This keeps every
   tick's request cost roughly flat regardless of dictation length, at the cost of occasional
   live-only seam artifacts, which `endSession`'s final pass (below) is unaffected by. A **spiral
   guard** (`src/main/backend/partialTickScheduler.ts`'s `shouldLaunchPartialTick`, pure + unit-
   tested with an injectable clock) also enforces a minimum real-world idle gap
-  (`DEFAULT_MIN_PARTIAL_IDLE_GAP_MS`, 300ms) between a tick completing and the next one launching -
-  without it, a backlog of "new audio arrived while the last tick was still running" would launch
+  (`DEFAULT_MIN_PARTIAL_IDLE_GAP_MS`, 300ms) between a tick completing and the next one launching.
+  Without it, a backlog of "new audio arrived while the last tick was still running" would launch
   the next tick with zero breathing room, pegging the CPU with back-to-back requests on slow
   hardware. Emits are throttled to ~100ms batches (`streamThrottleMs`) so a fast token stream
   doesn't spam IPC. `endSession`'s final pass streams the same way, over the same
@@ -244,21 +262,21 @@ Two UX refinements sit on top of the base `InferenceBackend` contract, both impl
   via `<DiffReveal>` (`src/renderer/src/components/DiffReveal.tsx`) for ~2s: removed words
   (fillers, false starts) strike through and fade to transparent, inserted/changed words highlight
   and fade, then it settles to the plain cleaned text. `applyVoiceEdit` gets a shorter (~1.2s)
-  version of the same treatment. Critically, this delay is **purely visual** - `displayText`,
+  version of the same treatment. Critically, this delay is **purely visual**: `displayText`,
   history persistence, and auto-copy-on-cleanup all happen immediately once cleanup resolves; only
   the on-screen reveal lingers. `wordDiff.ts` is a pure LCS-based diff over whitespace-tokenized
   words: matching is case-insensitive with punctuation stripped, and it's unit-tested in
   `wordDiff.test.ts` (pure deletions, insertions, replacements, identical text, empty inputs). The
   push-to-talk overlay gets a lighter version of the same idea: `overlayState.ts` has a
   `'revealing'` phase between `'cleaning'` and `'done'` that shows the diff inline in the pill for
-  ~1.5s (`useOverlayPushToTalk.ts`'s `REVEAL_SETTLE_MS`) - the clipboard copy/paste fires
+  ~1.5s (`useOverlayPushToTalk.ts`'s `REVEAL_SETTLE_MS`). The clipboard copy/paste fires
   immediately on cleanup completion (`window.api.overlay.sendResult`), never delayed by the reveal.
 
 ## The real backend: LiteRT-LM
 
 `LitertBackend` (`src/main/backend/litertBackend.ts`) implements `InferenceBackend` by talking to
 [Google's LiteRT-LM runtime](https://github.com/google-ai-edge/LiteRT-LM), run out-of-process as
-`litert-lm serve` - an OpenAI-compatible HTTP/SSE server. Blurt spawns/talks to it rather than
+`litert-lm serve`, an OpenAI-compatible HTTP/SSE server. Blurt spawns/talks to it rather than
 re-implementing an FFI binding.
 
 ### Architecture
@@ -298,9 +316,9 @@ partialTickScheduler.ts (pure, unit-tested) - shouldLaunchPartialTick: spiral-gu
 ```
 
 Because the exact request/response shape of a given `litert-lm serve` build can vary, **every**
-wire-format assumption lives in `litertWire.ts` as small pure functions - nothing else in the app
+wire-format assumption lives in `litertWire.ts` as small pure functions; nothing else in the app
 touches JSON/SSE shapes directly. If a real server disagrees with an assumption here, only this one
-file needs to change; `src/main/backend/litertWire.test.ts` covers it with unit tests (`npm test`).
+file needs to change. `src/main/backend/litertWire.test.ts` covers it with unit tests (`npm test`).
 
 ### What it assumes about the sidecar
 
@@ -313,21 +331,21 @@ Verified against a real `litert-lm` 0.14.0 pip install and a real Gemma 4 E2B mo
 - Audio is sent as a user-message content part:
   `{ type: 'input_audio', input_audio: { data: '<base64 wav>', format: 'wav' } }`, alongside a
   `{ type: 'text', text: '<transcription prompt>' }` part. The `format` field is read but never
-  validated - the engine just requires `data` to decode to a real RIFF/WAV container (any declared
-  sample rate works; no client-side resampling needed), and headerless raw PCM16 silently returns
-  `content: null` (HTTP 200, no error) rather than failing loudly - `pcm16ToWavBuffer` always emits
-  a proper WAV header for exactly this reason.
-- `GET /v1/models` is used purely as a "is the server up yet" health check - it responds within
+  validated. The engine requires `data` to decode to a real RIFF/WAV container (any declared
+  sample rate works; no client-side resampling needed). Headerless raw PCM16 silently returns
+  `content: null` (HTTP 200, no error) rather than failing loudly, which is why `pcm16ToWavBuffer`
+  always emits a proper WAV header.
+- `GET /v1/models` is used purely as a "is the server up yet" health check. It responds within
   ~1-2s of process start, well before the model is actually loaded into memory (loading is lazy, on
-  the first real inference request - see `buildWarmupRequest` below).
+  the first real inference request; see `buildWarmupRequest` below).
 - No `usage`/token-count field appears in any response, streamed or not.
-- The reference server (`http.server.HTTPServer`, not `ThreadingHTTPServer`) is single-threaded - a
-  second concurrent request just blocks on the TCP accept until the first fully completes.
+- The reference server (`http.server.HTTPServer`, not `ThreadingHTTPServer`) is single-threaded: a
+  second concurrent request blocks on the TCP accept until the first fully completes.
   `LitertBackend` funnels every outgoing request through one serial promise-chain queue for this
   reason rather than assuming the sidecar can service overlapping calls.
 - Model selection is per-request via the JSON body's `"model"` field, but that field must be the
   **alias** the model was registered under via `litert-lm import <file> <alias>` (see
-  `ModelCatalogEntry.alias` in `src/shared/models.ts`) - not this app's own `ModelId` (e.g.
+  `ModelCatalogEntry.alias` in `src/shared/models.ts`), not this app's own `ModelId` (e.g.
   `"gemma-4-e2b"`). `serve` itself takes no model-selection flag at all; `BackendController`
   resolves the alias and imports the model (via `ModelManager.importModel`) before starting the
   sidecar if it hasn't been already.
@@ -335,7 +353,7 @@ Verified against a real `litert-lm` 0.14.0 pip install and a real Gemma 4 E2B mo
   lazy model load to happen right after the sidecar comes up (`LitertBackend.warmup()`, fired by
   `BackendController` once the sidecar is ready) instead of on the user's first real utterance. The
   warmup request includes a tiny (~0.3s) silent `input_audio` part alongside its text part, not
-  just text - the audio submodel appears to load lazily and separately from the text backbone, so a
+  just text: the audio submodel appears to load lazily and separately from the text backbone, so a
   text-only warmup left it cold for the user's first real dictation.
 
 ### Session lifecycle mapping
@@ -347,21 +365,21 @@ Verified against a real `litert-lm` 0.14.0 pip install and a real Gemma 4 E2B mo
   bounded trailing window of audio (`DEFAULT_PARTIAL_WINDOW_MS`, ~4s, not the whole session) is
   WAV-encoded, base64'd, and sent as one transcription chat-completion, whose SSE response streams
   into `onPartialTranscript` as it arrives (throttled), stitched against text already committed
-  from earlier windows. These requests are serialized - if the previous partial request is still in
+  from earlier windows. These requests are serialized: if the previous partial request is still in
   flight when the next mark is hit, that tick is skipped rather than firing a second overlapping
   request.
 - `endSession` waits for any in-flight partial to finish. For a **short session** (one that never
   needed more than one window), it reuses that in-flight tick's result directly instead of paying
   for a second, fully redundant full-buffer request. For a **longer session**, it instead pays for
-  exactly one final full-buffer transcription, streamed the same way - deliberately choosing
+  exactly one final full-buffer transcription, streamed the same way. This deliberately chooses
   accuracy over the (now seam-artifact-prone) stitched partial text, but only once.
 - `cleanup` sends a system prompt instructing the model to strip filler words
   (um/uh/like/you know), collapse self-corrections/repeated false starts, and fix
-  punctuation/capitalization while preserving meaning - plus a custom-vocabulary hint built from
+  punctuation/capitalization while preserving meaning, plus a custom-vocabulary hint built from
   `settings.customVocabulary`. Output is expected to be the cleaned text only.
 - `transform` sends a mode-specific prompt (Key Points / Formal / Short / Long).
 - `voiceEdit` sends the text + the spoken/typed command and expects only the edited text back.
-- All four strip a defensive `stripModelPreamble()` pass over the response - it removes
+- All four strip a defensive `stripModelPreamble()` pass over the response. It removes
   `<think>...</think>` blocks, unwraps a single wrapping markdown code fence, drops a leading
   "Here is the cleaned text:"-style preamble line, and strips wrapping quotes, in case the model
   doesn't perfectly follow the "output only the text" instruction.
@@ -369,7 +387,7 @@ Verified against a real `litert-lm` 0.14.0 pip install and a real Gemma 4 E2B mo
 ### Robustness
 
 - Every sidecar request has a timeout (default 30s) via `AbortController`.
-- SSE/JSON parsing never throws on malformed input - malformed chunks are skipped, not fatal.
+- SSE/JSON parsing never throws on malformed input: malformed chunks are skipped, not fatal.
 - If the sidecar dies mid-session, the Promise-returning methods reject with a message;
   `pushAudio`'s periodic partial-transcription requests have no Promise to reject, so
   `LitertBackend` additionally implements an `onError` hook (`BackendErrorSource` in
@@ -385,12 +403,12 @@ Verified against a real `litert-lm` 0.14.0 pip install and a real Gemma 4 E2B mo
 
 ### GPU/CPU: observed, not requested
 
-There is no accelerator setting - the managed sidecar always runs `resources/serve_gpu.py`, which
+There is no accelerator setting. The managed sidecar always runs `resources/serve_gpu.py`, which
 puts the model on the GPU when the machine has a usable one and drops to CPU by itself when it
 doesn't (see `Accelerator` in `src/shared/types.ts` and `serve_gpu.py`'s own doc comment for the
 full mechanism). `sidecar.ts` parses an `BLURT_EFFECTIVE_BACKEND=gpu`/`=cpu` marker line the
 wrapper prints once it knows which backend it actually got, and that's the only thing Settings and
-the status pill ever display (`BackendStatus.effectiveAccelerator`) - never the requested
+the status pill ever display (`BackendStatus.effectiveAccelerator`), never the requested
 accelerator, since that could be wrong. If a GPU-forced sidecar dies before ever becoming ready,
 `Sidecar.start()` retries exactly once with `LITERT_LM_SERVE_BACKEND=cpu` forced in its environment
 rather than leaving the app permanently broken on a machine with a broken GPU stack. See
@@ -402,13 +420,13 @@ and how the wrapper forces the backend in the first place.
 All under `Settings.sidecar` (`src/shared/types.ts`), editable from the Settings screen's
 Advanced section:
 
-| Setting | Meaning |
-| --- | --- |
-| `modelId` | `'gemma-4-e2b' \| 'gemma-4-e4b' \| 'gemma-4-12b'` - which model `ModelManager` downloads/uses. |
-| `sidecar.mode` | `'managed'` (app spawns the process) or `'external'` (you already have one running). |
-| `sidecar.managedCommand` | Command template for managed mode. Default runs `resources/serve_gpu.py` through the resolved runtime venv's Python (`{venvPython}`/`{wrapperPath}` placeholders - see `venvResolver.ts`); `{port}` is substituted, then the whole thing is split into argv (quote-aware) and spawned directly (no shell). Only worth changing for a non-default `litert-lm` location or extra flags. |
-| `sidecar.externalUrl` | Base URL for external mode, e.g. `http://127.0.0.1:9379` (litert-lm's real default port). |
-| `sidecar.port` | Port used to build the local URL in managed mode, and substituted into `managedCommand`. |
+| Setting                  | Meaning                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `modelId`                | `'gemma-4-e2b' \| 'gemma-4-e4b' \| 'gemma-4-12b'`: which model `ModelManager` downloads/uses.                                                                                                                                                                                                                                                                                        |
+| `sidecar.mode`           | `'managed'` (app spawns the process) or `'external'` (you already have one running).                                                                                                                                                                                                                                                                                                 |
+| `sidecar.managedCommand` | Command template for managed mode. Default runs `resources/serve_gpu.py` through the resolved runtime venv's Python (`{venvPython}`/`{wrapperPath}` placeholders; see `venvResolver.ts`); `{port}` is substituted, then the whole thing is split into argv (quote-aware) and spawned directly (no shell). Only worth changing for a non-default `litert-lm` location or extra flags. |
+| `sidecar.externalUrl`    | Base URL for external mode, e.g. `http://127.0.0.1:9379` (litert-lm's real default port).                                                                                                                                                                                                                                                                                            |
+| `sidecar.port`           | Port used to build the local URL in managed mode, and substituted into `managedCommand`.                                                                                                                                                                                                                                                                                             |
 
 ### Model downloads
 
@@ -423,15 +441,15 @@ Advanced section:
 
 The actual `.litertlm` filename inside each repo is **resolved at download time** via
 `https://huggingface.co/api/models/<repo>` rather than hardcoded, then downloaded from that repo's
-`resolve/main/<filename>` URL and stored locally as `<userData>/models/<modelId>.litertlm` - so "is
+`resolve/main/<filename>` URL and stored locally as `<userData>/models/<modelId>.litertlm`, so "is
 this installed" is a plain file-exists check, not a separate manifest. Downloads stream to a
 `.part` file and `rename()` into place only on success; if a `.part` file already exists, the next
 download attempt resumes via an HTTP `Range` request (falling back to a clean restart if the server
 doesn't honor it). Progress (bytes received/total, state) is pushed to the Settings screen over IPC
 as it downloads, including a final `'importing'` state (before `'done'`): once the file lands,
 `ModelManager` shells out to the real `litert-lm import <file> <alias>` CLI, pointed at
-`LITERT_LM_DIR=<userData>/litert-lm-home` - a sandbox entirely separate from your real
-`~/.litert-lm` - so the model is immediately servable by alias without a separate manual step.
+`LITERT_LM_DIR=<userData>/litert-lm-home` (a sandbox entirely separate from your real
+`~/.litert-lm`), so the model is immediately servable by alias without a separate manual step.
 
 ## Push-to-talk overlay (system-wide hold-to-talk)
 
@@ -445,8 +463,8 @@ always copied to the clipboard, then (if enabled) pasted into whichever app curr
 via a simulated Ctrl+V immediately on cleanup completion -> pill briefly shows an inline word-diff
 of raw vs. cleaned text (~1.5s) -> settles to the final text + "Copied" / "Pasted" -> fades out
 after ~2.5s total, and the dictation is saved to History exactly like one from the Dictate tab. The
-clipboard/paste step is never delayed by the diff-reveal - only the pill's visual state is. A hold
-shorter than 250ms is treated as an accidental tap and silently discarded - this also absorbs OS
+clipboard/paste step is never delayed by the diff-reveal; only the pill's visual state is. A hold
+shorter than 250ms is treated as an accidental tap and silently discarded. This also absorbs OS
 key-repeat, which sends many keydown events for one physical press.
 
 **Architecture:**
@@ -482,21 +500,21 @@ the exact same renderer bundle the main window uses - no separate build target)
 
 The overlay `BrowserWindow` (`src/main/overlay.ts`) is frameless, transparent, `skipTaskbar`,
 `alwaysOnTop` at the `'screen-saver'` level, `resizable: false`, and critically **`focusable:
-false`, shown only via `showInactive()`** - this is what makes the simulated Ctrl+V land in the app
+false`, shown only via `showInactive()`**. This is what makes the simulated Ctrl+V land in the app
 the user was actually dictating into instead of the pill itself.
 
 **Paste injection** (`src/main/paste.ts`) is platform-specific and always copies to the clipboard
 first regardless of whether injection succeeds:
 
-| Platform | Mechanism |
-| -------- | --------- |
+| Platform | Mechanism                                                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | Windows  | Spawns `powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')"` |
-| macOS    | `osascript -e 'tell application "System Events" to keystroke "v" using command down'` |
-| Linux    | `xdotool key --clearmodifiers ctrl+v`, only if `xdotool` is found on `PATH` (probed once, cached) |
+| macOS    | `osascript -e 'tell application "System Events" to keystroke "v" using command down'`                                                  |
+| Linux    | `xdotool key --clearmodifiers ctrl+v`, only if `xdotool` is found on `PATH` (probed once, cached)                                      |
 
 Because the user is still physically releasing the push-to-talk key when this runs, a naive paste
-could be received as e.g. Ctrl+Alt+V if that key were still logically "down" - mitigated with a
-150ms settle delay after the real uiohook keyup event before injecting anything, plus
+could be received as e.g. Ctrl+Alt+V if that key were still logically "down". This is mitigated
+with a 150ms settle delay after the real uiohook keyup event before injecting anything, plus
 `--clearmodifiers` on the `xdotool` path. If injection is unavailable or fails for any reason, the
 app falls back to clipboard-only and the pill shows "Copied - press Ctrl+V to paste" instead of
 "Pasted".
@@ -507,10 +525,10 @@ app falls back to clipboard-only and the pill shows "Copied - press Ctrl+V to pa
   N-API binaries, but its `linux-x64` prebuild requires glibc >= 2.34; on an older glibc,
   `require('uiohook-napi')` throws. The app handles this the same way it handles a missing/failed
   LiteRT-LM sidecar: push-to-talk is entirely optional, `PushToTalkController.getAvailability()` is
-  checked before ever starting the OS hook, and Settings surfaces the exact error instead of the
-  feature just doing nothing.
+  checked before ever starting the OS hook, and Settings surfaces the exact error instead of
+  letting the feature silently do nothing.
 - **Under WSL/WSLg specifically, this feature cannot be truly system-wide.** `uiohook-napi`'s Linux
-  backend hooks X11's RECORD extension - it only observes keys while an X11/WSLg-hosted window has
+  backend hooks X11's RECORD extension: it only observes keys while an X11/WSLg-hosted window has
   input focus. Keystrokes typed into native Windows applications are invisible to it, and
   `xdotool`'s paste injection can only target X11 windows either. True system-wide push-to-talk
   into arbitrary native Windows applications requires running the app natively on Windows (see
@@ -518,20 +536,20 @@ app falls back to clipboard-only and the pill shows "Copied - press Ctrl+V to pa
   injection are both genuinely global. Settings shows a hint explaining this whenever `/proc/version`
   indicates WSL (`src/main/wsl.ts`).
 - Right Alt (the default key) is the "AltGr" key on many non-US keyboard layouts, used to type
-  accented/special characters - Settings notes this next to the Right Alt option so affected users
-  know to pick Right Ctrl or F9 instead (or just disable the feature).
+  accented/special characters. Settings notes this next to the Right Alt option so affected users
+  know to pick Right Ctrl or F9 instead, or disable the feature.
 
 ## Local storage
 
 Under Electron's `app.getPath('userData')`:
 
-- `history.json` - array of `DictationEntry` (raw transcript, cleaned text, current display text,
+- `history.json`: array of `DictationEntry` (raw transcript, cleaned text, current display text,
   which transform (if any) produced it, word count, duration, WPM, timestamp)
-- `settings.json` - the `Settings` object (model id, sidecar config, auto-copy, custom vocabulary,
+- `settings.json`: the `Settings` object (model id, sidecar config, auto-copy, custom vocabulary,
   hotkey accelerator, push-to-talk enable/key/auto-paste)
-- `models/<modelId>.litertlm` - downloaded model files; `models/<modelId>.litertlm.part` for an
+- `models/<modelId>.litertlm`: downloaded model files; `models/<modelId>.litertlm.part` for an
   in-progress or interrupted download
-- `logs/main.log` - rotating main-process log (Settings has an "Open logs folder" button)
+- `logs/main.log`: rotating main-process log (Settings has an "Open logs folder" button)
 
 ## Building a distributable
 
@@ -540,33 +558,20 @@ npm run build
 npm run build:win    # NSIS installer + portable exe, per electron-builder.yml
 ```
 
-Must be run on a real Windows machine (or a Windows CI runner) - electron-builder needs the Windows
-toolchain to produce these. `electron-builder install-app-deps` may fail to rebuild `uiohook-napi`
-(the push-to-talk key hook) unless Visual Studio Build Tools are installed; that failure is safe to
-ignore, because the package ships a prebuilt N-API binary that loads correctly at runtime. Neither
-the installer nor the portable exe are code-signed - `build:win` explicitly disables
-`CSC_IDENTITY_AUTO_DISCOVERY` - so a fresh install triggers a Windows SmartScreen warning; see
-README's Troubleshooting section for what a user should click through.
-
-`litert-lm` itself is **not bundled** by electron-builder - it's a separate Python package the app
-installs into its own venv on first launch (see `src/main/runtime/firstRunSetup.ts`), exactly as
-described in [WINDOWS.md](WINDOWS.md).
-
-This has been run on a real Windows host and the resulting installer and portable exe were both
-verified end to end: boot to a ready backend on GPU, a second launch refused by the single-instance
-lock (`app.requestSingleInstanceLock()`), and a clean shutdown with no orphaned sidecar process.
+See [WINDOWS.md](WINDOWS.md) for the full build how-to, including the Visual Studio Build Tools /
+`uiohook-napi` caveat and the SmartScreen warning.
 
 ## Known deviations / notes
 
 - The AudioWorklet capture path requests a 16kHz `AudioContext`; some browsers/OS audio stacks
-  ignore the requested sample rate and use the device default instead - `LitertBackend` doesn't
-  assume exactly 16kHz, it tags the WAV it builds (`pcm16ToWavBase64` in `litertWire.ts`) with
+  ignore the requested sample rate and use the device default instead. `LitertBackend` doesn't
+  assume exactly 16kHz: it tags the WAV it builds (`pcm16ToWavBase64` in `litertWire.ts`) with
   whatever sample rate `startSession`/the audio pipeline actually reported.
-- `voiceEdit` has no dedicated screen mock-up in the original spec - it's exposed as a small
+- `voiceEdit` has no dedicated screen mock-up in the original spec. It's exposed as a small
   text-command input on the Dictate screen so the full `InferenceBackend` contract is actually
   exercised by the UI, not just implemented.
 - `BackendController`'s hot-swap doesn't cancel an in-flight `startSession`/`cleanup`/etc. call
-  against the _old_ backend when settings change mid-call - it only stops accepting new work on the
+  against the _old_ backend when settings change mid-call. It only stops accepting new work on the
   old instance and stops the old sidecar process once the new one is ready. A dictation session
   started just before a backend switch should still be allowed to finish naturally.
 - Auto-update is not implemented. New versions have to be downloaded and installed manually.

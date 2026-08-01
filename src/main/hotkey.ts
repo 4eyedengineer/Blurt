@@ -1,4 +1,5 @@
 import { globalShortcut } from 'electron'
+import { log } from './log'
 
 /**
  * (Re-)registers the single global shortcut this app uses to toggle
@@ -10,13 +11,14 @@ export function applyGlobalShortcut(accelerator: string, onTrigger: () => void):
   try {
     const ok = globalShortcut.register(accelerator, onTrigger)
     if (!ok) {
-      console.error(
-        `[hotkey] Failed to register "${accelerator}" (already in use by another app?).`
-      )
+      log.error(`hotkey: failed to register "${accelerator}" (already in use by another app?)`)
     }
     return ok
   } catch (err) {
-    console.error(`[hotkey] Error registering "${accelerator}".`, err)
+    log.error(
+      `hotkey: error registering "${accelerator}": ` +
+        `${err instanceof Error ? err.message : String(err)}`
+    )
     return false
   }
 }
