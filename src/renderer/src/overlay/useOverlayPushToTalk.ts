@@ -118,6 +118,19 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
     const durationMs = liveAt === null ? 0 : Date.now() - liveAt
     try {
       const raw = await window.api.dictation.endSession(sessionId)
+
+      // Nobody spoke. Skip cleanup entirely - handed an empty transcript,
+      // the cleanup model invents a plausible dictation rather than
+      // returning nothing (see isBlank in litertBackend.ts), and on this
+      // path that invented sentence would be pasted straight into whatever
+      // window the user was typing in. Report it so the controller knows
+      // not to touch the clipboard or history.
+      if (!raw.trim()) {
+        dispatch({ type: 'no-speech' })
+        window.api.overlay.sendResult({ rawTranscript: '', cleanedText: '', durationMs })
+        return
+      }
+
       const cleaned = await window.api.dictation.cleanup(raw)
       dispatch({ type: 'cleaned', raw, text: cleaned })
       // Clipboard copy/paste and the history write both fire immediately on

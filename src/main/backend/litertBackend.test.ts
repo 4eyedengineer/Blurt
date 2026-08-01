@@ -411,3 +411,79 @@ describe('LitertBackend - endSession on a longer (multi-window) session', () => 
     expect(final).toBe('word5')
   })
 })
+
+/**
+ * Regression tests for the invented-dictation bug.
+ *
+ * A real user's history.json contained two entries with an empty
+ * `rawTranscript` (the transcription pass had correctly found no speech)
+ * and `cleanedText: "I want to go to the store."` - a sentence nobody said,
+ * manufactured by the cleanup pass when it was handed that empty string,
+ * then copied to the clipboard and saved as a genuine dictation. The
+ * rewrite prompts all say "clean up / rewrite the user's text", and a
+ * generative model given an empty user message under that instruction
+ * writes a plausible example rather than returning nothing.
+ *
+ * These assert on `fetch` not being called at all, not merely on the return
+ * value: the fix is to never make the request. Asserting only on `''` would
+ * still pass if the model were called and happened to return nothing that
+ * run, which is exactly the non-determinism that made this bug intermittent
+ * in the first place.
+ */
+describe('LitertBackend - blank input is never sent to a rewrite model', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function makeBackend(): LitertBackend {
+    return new LitertBackend({
+      getBaseUrl: () => 'http://test-sidecar',
+      modelId: 'e2b',
+      requestTimeoutMs: 5000
+    })
+  }
+
+  // Whitespace-only counts as blank: an empty transcript that picked up a
+  // stray newline somewhere in the wire/stitching layer is still nothing
+  // said, and would hallucinate exactly the same way.
+  const blanks: Array<[string, string]> = [
+    ['empty string', ''],
+    ['spaces', '   '],
+    ['newline', '\n'],
+    ['mixed whitespace', ' \t\r\n ']
+  ]
+
+  for (const [label, blank] of blanks) {
+    it(`cleanup returns '' without any model call for ${label}`, async () => {
+      const backend = makeBackend()
+      await expect(backend.cleanup(blank)).resolves.toBe('')
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+  }
+
+  it("transform returns '' without any model call for blank input", async () => {
+    const backend = makeBackend()
+    await expect(backend.transform('   ', 'formal')).resolves.toBe('')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("voiceEdit returns '' without any model call for blank input", async () => {
+    const backend = makeBackend()
+    await expect(backend.voiceEdit('', 'replace foo with bar')).resolves.toBe('')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('still calls the model when there is real text to rewrite', async () => {
+    fetchMock.mockResolvedValue(makeStreamingResponse(['Hello', ' there.'], 1))
+    const backend = makeBackend()
+    await expect(backend.cleanup('hello there')).resolves.toBe('Hello there.')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})

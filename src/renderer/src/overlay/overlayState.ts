@@ -5,7 +5,15 @@
  */
 import { diffWords, type DiffToken } from '../lib/wordDiff'
 
-export type OverlayPhase = 'idle' | 'recording' | 'cleaning' | 'revealing' | 'done' | 'error'
+export type OverlayPhase =
+  | 'idle'
+  | 'recording'
+  | 'cleaning'
+  | 'revealing'
+  | 'done'
+  /** The transcription came back empty - the mic worked, nobody spoke. Distinct from 'error' on purpose: nothing went wrong. */
+  | 'no-speech'
+  | 'error'
 
 export interface OverlayState {
   phase: OverlayPhase
@@ -43,6 +51,8 @@ export type OverlayAction =
   | { type: 'paste-status'; copied: boolean; pasted: boolean; message: string | null }
   /** The dictation attempt failed (mic capture, transcription, or cleanup). Message shown until reset. */
   | { type: 'failed'; message: string }
+  /** Transcription succeeded but found no speech - see the 'no-speech' phase. */
+  | { type: 'no-speech' }
   | { type: 'reset' }
 
 /**
@@ -96,6 +106,11 @@ export function overlayReducer(state: OverlayState, action: OverlayAction): Over
       return state.phase === 'idle'
         ? state
         : { ...initialOverlayState, phase: 'error', errorMessage: action.message }
+
+    case 'no-speech':
+      // Only meaningful as the outcome of a hold that actually got as far as
+      // transcribing - same reasoning as 'cleaned' above.
+      return state.phase === 'cleaning' ? { ...initialOverlayState, phase: 'no-speech' } : state
 
     case 'cancel':
       return state.phase === 'idle' ? state : { ...initialOverlayState }

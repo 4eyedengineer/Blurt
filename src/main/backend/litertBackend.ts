@@ -95,6 +95,33 @@ const SILENCE_RMS_THRESHOLD = 40
 /** Env var gate for LitertBackend.maybeDumpDebugWav - see README/task notes. */
 const DEBUG_AUDIO_ENV_VAR = 'BLURT_DEBUG_AUDIO'
 
+/**
+ * Whether a piece of text is nothing at all, for the purposes of "is there
+ * anything here to rewrite".
+ *
+ * This tiny predicate guards a real, user-visible data-integrity bug. The
+ * cleanup/transform/voiceEdit prompts all mean "rewrite the user's text",
+ * and a generative model handed an *empty* user message under that
+ * instruction does not return an empty string - it writes a plausible
+ * example of the thing it was asked to clean up. Observed verbatim in a
+ * real user's history.json: two entries with `rawTranscript: ""` (the
+ * transcription pass had correctly reported no speech) and
+ * `cleanedText: "I want to go to the store."` - a sentence nobody ever
+ * said, invented downstream, copied to the clipboard, and filed into
+ * history as if it were a dictation.
+ *
+ * So the empty transcript was never the failure. It was the *correct
+ * answer*, destroyed one step later. Nothing about that is fixable by
+ * tuning audio thresholds, and no prompt wording reliably fixes it either
+ * (the transcription prompt's own "output nothing if silent" instruction
+ * worked exactly as intended - it's the cleanup pass that has no way to
+ * distinguish "nothing was said" from "clean up this empty text"). The only
+ * robust fix is to never make the call.
+ */
+function isBlank(text: string): boolean {
+  return text.trim().length === 0
+}
+
 interface LitertSession {
   id: string
   sampleRate: number
@@ -625,6 +652,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   }
 
   async cleanup(text: string, operationId?: string): Promise<string> {
+    if (isBlank(text)) return this.refuseBlankRewrite('cleanup')
     const request = buildCleanupRequest({
       model: this.options.modelId,
       text,
@@ -634,13 +662,29 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   }
 
   async transform(text: string, mode: TransformMode, operationId?: string): Promise<string> {
+    if (isBlank(text)) return this.refuseBlankRewrite(`transform:${mode}`)
     const request = buildTransformRequest({ model: this.options.modelId, text, mode })
     return this.runStreamingRequest(request, operationId)
   }
 
   async voiceEdit(text: string, command: string, operationId?: string): Promise<string> {
+    if (isBlank(text)) return this.refuseBlankRewrite('voiceEdit')
     const request = buildVoiceEditRequest({ model: this.options.modelId, text, command })
     return this.runStreamingRequest(request, operationId)
+  }
+
+  /**
+   * The shared "there is nothing to rewrite" exit for cleanup/transform/
+   * voiceEdit. Returns '' - the only honest rewrite of nothing - and logs,
+   * because a blank reaching here means an upstream caller should have
+   * stopped earlier (see the guards in useDictationSession/
+   * useOverlayPushToTalk) and that is worth seeing in main.log.
+   */
+  private refuseBlankRewrite(operation: string): string {
+    console.warn(
+      `[LitertBackend] ${operation}: input was blank - returning '' without a model call`
+    )
+    return ''
   }
 
   /**

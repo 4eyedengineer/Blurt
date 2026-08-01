@@ -31,6 +31,12 @@ export interface UseDictationSession {
   stats: SessionStats | null
   copyFlash: boolean
   sessionError: string | null
+  /**
+   * True when the last recording finished with an empty transcript - the
+   * model heard no speech. Not an error: the mic worked, nobody talked.
+   * Cleared when the next recording starts.
+   */
+  noSpeech: boolean
   /** Normalized 0-1 live mic input level - see useAudioCapture. */
   micLevel: number
   /** True once the mic level has read ~zero for >2s while recording - see useAudioCapture. */
@@ -62,6 +68,7 @@ export function useDictationSession(): UseDictationSession {
   const [entryId, setEntryId] = useState<string | null>(null)
   const [copyFlash, setCopyFlash] = useState(false)
   const [sessionError, setSessionError] = useState<string | null>(null)
+  const [noSpeech, setNoSpeech] = useState(false)
   const [streamPreview, setStreamPreview] = useState('')
   const [reveal, setReveal] = useState<DiffToken[] | null>(null)
 
@@ -145,6 +152,7 @@ export function useDictationSession(): UseDictationSession {
   const startRecording = useCallback(async () => {
     startNew()
     setSessionError(null)
+    setNoSpeech(false)
     setPhase('recording')
 
     const sessionId = await window.api.dictation.startSession({
@@ -192,6 +200,20 @@ export function useDictationSession(): UseDictationSession {
 
     const finalRaw = await window.api.dictation.endSession(sessionId)
     unsubscribePartialRef.current()
+
+    // Nothing was said. Stop here rather than running the rest of the
+    // pipeline over an empty string: the cleanup model, asked to tidy up
+    // nothing, invents a plausible dictation instead of returning nothing
+    // (see isBlank in src/main/backend/litertBackend.ts), and that
+    // invention would then be copied to the clipboard and filed into
+    // history as a real dictation. Back to 'idle' so the record button is
+    // immediately live again - there is no result to review.
+    if (!finalRaw.trim()) {
+      setPhase('idle')
+      setNoSpeech(true)
+      return
+    }
+
     setRawTranscript(finalRaw)
     setLiveText(finalRaw)
     setPhase('cleaning')
@@ -321,6 +343,7 @@ export function useDictationSession(): UseDictationSession {
     stats,
     copyFlash,
     sessionError,
+    noSpeech,
     micLevel: audio.level,
     noAudioDetected: audio.noAudioDetected,
     streamPreview,

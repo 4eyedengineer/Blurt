@@ -13,18 +13,29 @@
  * the arrival of the first PCM chunk from the worklet (see
  * useOverlayPushToTalk) - never from the keypress.
  *
- * Deliberately short, quiet and high-ish: it is unavoidably inside the
- * recorded audio (capture is live - that is the entire point), so it needs
- * to be something the mic's echo cancellation suppresses easily and the
- * model won't transcribe. The gain ramp at both ends is what keeps it a
- * "tick" rather than a click - an abrupt start/stop on a sine is a
- * discontinuity, and that broadband click is exactly the kind of transient
- * that survives echo cancellation.
+ * Deliberately short and high-ish: it is unavoidably inside the recorded
+ * audio (capture is live - that is the entire point), so it needs to be
+ * something the mic's echo cancellation suppresses easily and the model
+ * won't transcribe. The gain ramp at both ends is what keeps it a "tick"
+ * rather than a click - an abrupt start/stop on a sine is a discontinuity,
+ * and that broadband click is exactly the kind of transient that survives
+ * echo cancellation.
+ *
+ * It is *not* deliberately quiet. The first version was (peak gain 0.06,
+ * 70ms) and the result was inaudible in practice - which defeats the whole
+ * point, since a cue you don't notice is the same as no cue. A pure sine is
+ * a poor use of headroom: all its energy sits at one frequency, so it reads
+ * far quieter than its amplitude suggests next to broadband sound. Hence
+ * the values below - roughly 11dB hotter and half again as long, which is
+ * comfortably audible over laptop speakers without being startling.
+ * Loudness here costs nothing on the recognition side: a steady 880Hz tone
+ * looks nothing like speech, and it lands in the first ~100ms of the
+ * buffer, before anyone has started talking.
  */
 
 const FREQUENCY_HZ = 880
-const DURATION_S = 0.07
-const PEAK_GAIN = 0.06
+const DURATION_S = 0.11
+const PEAK_GAIN = 0.22
 /** Attack/release of the gain envelope - long enough to avoid a click, short enough to stay inside DURATION_S. */
 const RAMP_S = 0.012
 

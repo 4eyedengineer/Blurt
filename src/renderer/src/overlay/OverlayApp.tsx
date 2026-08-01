@@ -116,6 +116,10 @@ export function OverlayApp(): React.JSX.Element {
 
         {phase === 'cleaning' && <div className="overlay-app__status">Cleaning up…</div>}
 
+        {phase === 'no-speech' && (
+          <div className="overlay-app__status">No speech detected - nothing pasted</div>
+        )}
+
         {phase === 'error' && (
           <div className="overlay-app__status overlay-app__status--error">{errorMessage}</div>
         )}

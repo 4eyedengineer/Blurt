@@ -100,6 +100,17 @@ export class OverlayController {
       this.scheduleHide(AUTO_HIDE_MS)
       return
     }
+    // Nobody spoke (see useOverlayPushToTalk.stop). Everything below this
+    // point is destructive when there's no text: `copyAndPaste` would
+    // overwrite whatever the user had on their clipboard with an empty
+    // string, and - with auto-paste on - fire Ctrl+V into their focused
+    // window. A hold that captured no speech must leave the machine exactly
+    // as it found it.
+    if (!payload.cleanedText.trim()) {
+      log.info('overlay: no speech detected - skipping clipboard, paste and history')
+      this.scheduleHide(AUTO_HIDE_MS)
+      return
+    }
     const { autoPaste } = this.settingsStore.get().pushToTalk
     const outcome = await copyAndPaste(clipboard, payload.cleanedText, autoPaste)
     this.send(IPC.overlay.pasteStatus, outcome)

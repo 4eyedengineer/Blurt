@@ -27,6 +27,7 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
     stats,
     copyFlash,
     sessionError,
+    noSpeech,
     micLevel,
     noAudioDetected,
     streamPreview,
@@ -81,6 +82,11 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
         <p className="dictate-screen__warning">
           No audio detected from microphone - check that the correct input device is selected and
           unmuted.
+        </p>
+      )}
+      {!sessionError && !recording && noSpeech && (
+        <p className="dictate-screen__warning">
+          No speech detected - nothing was saved. Press record and try again.
         </p>
       )}
 
