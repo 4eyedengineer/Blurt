@@ -30,6 +30,16 @@ files:
   # because build-win.log was growing mid-pack). Excluded unconditionally,
   # not just as a one-off cleanup.
   - '!**/*.log'
+  # The dev-mode Python runtime (venv + litert-lm), created in-tree by
+  # `npm run dev` - see src/main/runtime/. It is git-ignored, so it is
+  # invisible until you try to package after having actually run the app,
+  # at which point the build fails outright rather than degrading: a venv
+  # symlinks its interpreter to the system Python, and electron-builder
+  # refuses to follow a symlink pointing outside the package ("Cannot copy
+  # file ... symlinked to file [/usr/bin/python3.11] outside the package").
+  # Nothing here belongs in a Windows build anyway - the packaged app
+  # provisions its own runtime under %LOCALAPPDATA% on first launch.
+  - '!.runtime/**'
 # serve_gpu.py ships OUTSIDE the asar entirely (not asarUnpack'd inside it) -
 # a spawned child process reads it straight off disk, and it has no reason
 # to live inside (or as an unpacked sibling of) the asar archive at all.
