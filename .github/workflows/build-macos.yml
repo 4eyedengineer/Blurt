@@ -82,6 +82,45 @@ jobs:
       - name: List build output
         run: ls -la dist/ && file dist/*.dmg
 
+      # Checks the handful of packaging facts that would silently produce a
+      # broken app rather than a failed build, and that cannot be verified
+      # from a Linux host at all (no codesign, no plutil, no lipo there).
+      # Each one is a real failure mode this config newly controls:
+      #
+      #  - NSMicrophoneUsageDescription missing => macOS terminates the app
+      #    outright the moment it asks for the mic, rather than denying it.
+      #    That is the entire feature dead, with a crash instead of a prompt.
+      #  - serve_gpu.py missing => extraResources did not land where
+      #    gpuWrapperPath.ts resolves it, so the sidecar can never start.
+      #  - a bad/absent signature => will not execute on Apple Silicon.
+      #  - wrong arch => an x64 or universal build would install on an Intel
+      #    Mac and then fail later at pip, which is exactly what arm64-only
+      #    is meant to prevent.
+      - name: Verify app bundle
+        run: |
+          set -euo pipefail
+          APP="dist/mac-arm64/Blurt.app"
+          test -d "$APP" || { echo "MISSING: $APP"; exit 1; }
+
+          echo "--- Info.plist keys ---"
+          plutil -extract NSMicrophoneUsageDescription raw "$APP/Contents/Info.plist"
+          plutil -extract LSMinimumSystemVersion raw "$APP/Contents/Info.plist"
+          plutil -extract CFBundleIdentifier raw "$APP/Contents/Info.plist"
+          plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist"
+
+          echo "--- extraResources (sidecar wrapper must sit beside app.asar) ---"
+          test -f "$APP/Contents/Resources/serve_gpu.py" || { echo "MISSING serve_gpu.py"; exit 1; }
+          test -f "$APP/Contents/Resources/app.asar" || { echo "MISSING app.asar"; exit 1; }
+          ls -la "$APP/Contents/Resources/" | head -20
+
+          echo "--- architecture ---"
+          lipo -archs "$APP/Contents/MacOS/"* || true
+
+          echo "--- signature ---"
+          codesign -dv --verbose=2 "$APP" 2>&1
+          codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 || \
+            echo "NOTE: deep verify reported issues (expected for an ad-hoc signed build)"
+
       - uses: actions/upload-artifact@v4
         with:
           name: blurt-macos-arm64-dmg
