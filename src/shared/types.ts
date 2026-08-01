@@ -103,8 +103,8 @@ export const DEFAULT_SIDECAR_SETTINGS: SidecarSettings = {
 export type PushToTalkKeyId = 'AltRight' | 'ControlRight' | 'F9'
 
 export const PTT_KEY_OPTIONS: Array<{ id: PushToTalkKeyId; label: string }> = [
-  { id: 'AltRight', label: 'Right Alt' },
   { id: 'ControlRight', label: 'Right Ctrl' },
+  { id: 'AltRight', label: 'Right Alt' },
   { id: 'F9', label: 'F9' }
 ]
 
@@ -116,9 +116,35 @@ export interface PushToTalkSettings {
   autoPaste: boolean
 }
 
+/**
+ * Right Ctrl rather than Right Alt, because of a Windows behaviour that
+ * Blurt cannot suppress.
+ *
+ * Windows watches for "Alt pressed, no other key pressed, Alt released"
+ * and treats it as a request to activate the focused window's menu bar,
+ * which moves keyboard focus out of whatever text field the user was
+ * typing in. A push-to-talk hold is exactly that pattern by construction:
+ * the user holds the key, speaks, and releases, and no other key is
+ * involved. So the field they wanted their dictation pasted into loses
+ * focus at the moment they release, before transcription has even
+ * finished.
+ *
+ * Blurt cannot prevent this. Its key hook (uiohook-napi) is observational
+ * on Windows: the native callback always calls CallNextHookEx and never
+ * consumes the event, so every Alt press and release reaches the OS
+ * untouched. Confirmed by measurement as well as by reading the source.
+ * Polling GetForegroundWindow during a hold shows no change, which is the
+ * signature of this bug rather than evidence against it, since menu
+ * activation moves focus within the foreground window instead of
+ * switching windows.
+ *
+ * Right Ctrl carries no such meaning to the OS. Right Alt remains
+ * selectable in Settings for anyone who prefers it, with the tradeoff
+ * spelled out there.
+ */
 export const DEFAULT_PUSH_TO_TALK_SETTINGS: PushToTalkSettings = {
   enabled: true,
-  key: 'AltRight',
+  key: 'ControlRight',
   autoPaste: true
 }
 

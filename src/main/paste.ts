@@ -161,7 +161,7 @@ export async function copyAndPaste(
   }
   clipboard.writeText(text)
   if (!autoPasteEnabled) {
-    return { copied: true, pasted: false, message: 'Copied — press Ctrl+V to paste.' }
+    return { copied: true, pasted: false, message: 'Copied. Press Ctrl+V to paste.' }
   }
   await delay(PASTE_SETTLE_MS)
   const command = describeInjectCommand()
@@ -175,7 +175,7 @@ export async function copyAndPaste(
     return {
       copied: true,
       pasted: false,
-      message: 'Paste failed — text is on your clipboard.'
+      message: 'Paste failed. The text is on your clipboard.'
     }
   }
 }

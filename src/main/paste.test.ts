@@ -75,7 +75,7 @@ describe('copyAndPaste', () => {
     expect(outcome).toEqual({
       copied: true,
       pasted: false,
-      message: 'Copied — press Ctrl+V to paste.'
+      message: 'Copied. Press Ctrl+V to paste.'
     })
   })
 
@@ -94,7 +94,7 @@ describe('copyAndPaste', () => {
     expect(outcome).toEqual({
       copied: true,
       pasted: false,
-      message: 'Paste failed — text is on your clipboard.'
+      message: 'Paste failed. The text is on your clipboard.'
     })
   })
 })

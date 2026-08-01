@@ -664,7 +664,7 @@ export class Sidecar extends EventEmitter {
       log.error(`sidecar: ${this.lastExitDetail}`)
       this.setState(
         'error',
-        `Failed to start sidecar: ${err.message}${summary ? ` — ${summary}` : ''}`
+        `Failed to start sidecar: ${err.message}${summary ? `. ${summary}` : ''}`
       )
       if (this.options.pidFilePath) removePidFile(this.options.pidFilePath)
       this.scheduleRestart()
@@ -678,7 +678,7 @@ export class Sidecar extends EventEmitter {
       log.warn(`sidecar: ${this.lastExitDetail}`)
       this.setState(
         'error',
-        `Sidecar exited unexpectedly (code ${code}, signal ${signal ?? 'none'})${summary ? ` — ${summary}` : ''}.`
+        `Sidecar exited unexpectedly (code ${code}, signal ${signal ?? 'none'})${summary ? `. ${summary}` : ''}.`
       )
       if (this.options.pidFilePath) removePidFile(this.options.pidFilePath)
       this.scheduleRestart()

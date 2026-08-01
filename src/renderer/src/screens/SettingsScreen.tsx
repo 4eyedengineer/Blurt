@@ -14,9 +14,9 @@ import { formatBytes } from '../lib/format'
 import './SettingsScreen.css'
 
 const MODEL_OPTIONS: Array<{ id: ModelId; label: string }> = [
-  { id: 'gemma-4-e2b', label: 'Gemma 4 E2B — fastest' },
-  { id: 'gemma-4-e4b', label: 'Gemma 4 E4B — balanced' },
-  { id: 'gemma-4-12b', label: 'Gemma 4 12B — best quality, slower' }
+  { id: 'gemma-4-e2b', label: 'Gemma 4 E2B, fastest' },
+  { id: 'gemma-4-e4b', label: 'Gemma 4 E4B, balanced' },
+  { id: 'gemma-4-12b', label: 'Gemma 4 12B, best quality and slowest' }
 ]
 
 type HotkeyStatus = 'idle' | 'saved' | 'error'
@@ -430,7 +430,9 @@ export function SettingsScreen(): React.JSX.Element {
                 <span className="settings-screen__radio-title">{opt.label}</span>
                 {opt.id === 'AltRight' && (
                   <span className="settings-screen__radio-desc">
-                    Also known as AltGr on some layouts.
+                    Windows moves focus to the menu bar when Alt is pressed and released on its own,
+                    so the field you were typing in can lose focus. Also known as AltGr on some
+                    layouts.
                   </span>
                 )}
               </div>

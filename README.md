@@ -79,13 +79,15 @@ Blurt is ready after that. Open **Dictate** and press record, or use push-to-tal
   on the cleaned text. The Key Points, Formal, Short, and Long buttons rewrite the result in that
   style. There is also a copy button and a voice edit box, where you can type an instruction such
   as "replace foo with bar".
-- **Push-to-talk.** Hold a configurable key, Right Alt by default, from anywhere in Windows. A
+- **Push-to-talk.** Hold a configurable key, Right Ctrl by default, from anywhere in Windows. A
   small pill appears, and a short tone plays once the microphone is actually live. Opening the
   audio device takes a second or two, so the tone is your cue that Blurt is really listening
   rather than just that you pressed the key. Speak, then release the key. The text is cleaned up,
   copied to the clipboard, and pasted into whatever had focus if auto-paste is on. Push-to-talk
   dictations are saved to History like any other. You can change the key or turn off auto-paste in
-  Settings.
+  Settings. Right Alt is available there but not recommended, because Windows moves focus to the
+  menu bar whenever Alt is pressed and released on its own, which takes focus away from the field
+  you were typing in.
 - **If you do not say anything**, nothing happens and the pill disappears. Blurt does not paste,
   does not touch your clipboard, and does not save a row to History.
 - **Closing the window** leaves Blurt running in the system tray so push-to-talk keeps working
