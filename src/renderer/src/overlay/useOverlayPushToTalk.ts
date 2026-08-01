@@ -123,10 +123,17 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
       // the cleanup model invents a plausible dictation rather than
       // returning nothing (see isBlank in litertBackend.ts), and on this
       // path that invented sentence would be pasted straight into whatever
-      // window the user was typing in. Report it so the controller knows
-      // not to touch the clipboard or history.
+      // window the user was typing in.
+      //
+      // Straight back to idle with nothing shown. Saying "no speech
+      // detected" would be reporting a non-event: the user knows they
+      // didn't say anything, and a hold that captured nothing should read
+      // as nothing happening, not as an outcome worth announcing. The
+      // result still goes to the controller (which owns hiding the window
+      // and is what keeps the clipboard and history untouched) - it just
+      // has nothing in it.
       if (!raw.trim()) {
-        dispatch({ type: 'no-speech' })
+        dispatch({ type: 'reset' })
         window.api.overlay.sendResult({ rawTranscript: '', cleanedText: '', durationMs })
         return
       }

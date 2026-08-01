@@ -151,37 +151,25 @@ describe('overlayReducer', () => {
 })
 
 /**
- * 'no-speech' is deliberately its own phase rather than a 'failed' with a
- * friendly message: nothing went wrong. The mic opened, capture ran, the
- * model was asked and correctly answered "nobody said anything". Rendering
- * that in the error style would train the user to distrust a working app.
+ * A hold that captured no speech is a non-event, not an outcome: the pill
+ * goes straight back to idle with nothing shown, exactly as if the hold had
+ * never happened. There is deliberately no phase (and no message) for it -
+ * telling someone "no speech detected" is narrating their own silence back
+ * at them.
  */
-describe('overlayReducer - no-speech', () => {
-  it('moves from cleaning to the no-speech phase with no text and no error', () => {
+describe('overlayReducer - a hold that captured no speech', () => {
+  it('resets to a completely clean state, keeping no trace of the discarded live text', () => {
     let state = overlayReducer(initialOverlayState, { type: 'start' })
     state = overlayReducer(state, { type: 'partial', text: 'partial that turned out to be noise' })
     state = overlayReducer(state, { type: 'stop' })
-    const next = overlayReducer(state, { type: 'no-speech' })
 
-    expect(next.phase).toBe('no-speech')
+    const next = overlayReducer(state, { type: 'reset' })
+
+    expect(next).toEqual(initialOverlayState)
+    expect(next.phase).toBe('idle')
     expect(next.errorMessage).toBeNull()
-    expect(next.finalText).toBe('')
-    // The discarded live text must not survive - it is exactly the
-    // provisional guess the final pass just overruled.
+    // The provisional guess the final pass overruled must not survive.
     expect(next.liveText).toBe('')
-  })
-
-  it('is a no-op outside the cleaning phase', () => {
-    expect(overlayReducer(initialOverlayState, { type: 'no-speech' })).toBe(initialOverlayState)
-
-    const recording = overlayReducer(initialOverlayState, { type: 'start' })
-    expect(overlayReducer(recording, { type: 'no-speech' })).toBe(recording)
-  })
-
-  it('resets back to idle like any other terminal phase', () => {
-    let state = overlayReducer(initialOverlayState, { type: 'start' })
-    state = overlayReducer(state, { type: 'stop' })
-    state = overlayReducer(state, { type: 'no-speech' })
-    expect(overlayReducer(state, { type: 'reset' })).toEqual(initialOverlayState)
+    expect(next.finalText).toBe('')
   })
 })

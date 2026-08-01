@@ -106,9 +106,14 @@ export class OverlayController {
     // string, and - with auto-paste on - fire Ctrl+V into their focused
     // window. A hold that captured no speech must leave the machine exactly
     // as it found it.
+    //
+    // Hidden on the short accidental-tap timer rather than AUTO_HIDE_MS:
+    // both are cases where there is nothing on the pill for the user to
+    // read, so leaving it up for the full "here is your result" beat just
+    // draws attention to a non-event. Only logged, never surfaced.
     if (!payload.cleanedText.trim()) {
       log.info('overlay: no speech detected - skipping clipboard, paste and history')
-      this.scheduleHide(AUTO_HIDE_MS)
+      this.scheduleHide(CANCEL_HIDE_MS)
       return
     }
     const { autoPaste } = this.settingsStore.get().pushToTalk

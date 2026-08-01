@@ -31,12 +31,6 @@ export interface UseDictationSession {
   stats: SessionStats | null
   copyFlash: boolean
   sessionError: string | null
-  /**
-   * True when the last recording finished with an empty transcript - the
-   * model heard no speech. Not an error: the mic worked, nobody talked.
-   * Cleared when the next recording starts.
-   */
-  noSpeech: boolean
   /** Normalized 0-1 live mic input level - see useAudioCapture. */
   micLevel: number
   /** True once the mic level has read ~zero for >2s while recording - see useAudioCapture. */
@@ -68,7 +62,6 @@ export function useDictationSession(): UseDictationSession {
   const [entryId, setEntryId] = useState<string | null>(null)
   const [copyFlash, setCopyFlash] = useState(false)
   const [sessionError, setSessionError] = useState<string | null>(null)
-  const [noSpeech, setNoSpeech] = useState(false)
   const [streamPreview, setStreamPreview] = useState('')
   const [reveal, setReveal] = useState<DiffToken[] | null>(null)
 
@@ -152,7 +145,6 @@ export function useDictationSession(): UseDictationSession {
   const startRecording = useCallback(async () => {
     startNew()
     setSessionError(null)
-    setNoSpeech(false)
     setPhase('recording')
 
     const sessionId = await window.api.dictation.startSession({
@@ -206,11 +198,15 @@ export function useDictationSession(): UseDictationSession {
     // nothing, invents a plausible dictation instead of returning nothing
     // (see isBlank in src/main/backend/litertBackend.ts), and that
     // invention would then be copied to the clipboard and filed into
-    // history as a real dictation. Back to 'idle' so the record button is
-    // immediately live again - there is no result to review.
+    // history as a real dictation.
+    //
+    // Straight back to 'idle', with no message: the empty transcript panel
+    // already says everything there is to say, and the record button is
+    // live again immediately. Announcing "no speech detected" would be
+    // narrating a non-event back at someone who knows perfectly well they
+    // didn't say anything.
     if (!finalRaw.trim()) {
       setPhase('idle')
-      setNoSpeech(true)
       return
     }
 
@@ -343,7 +339,6 @@ export function useDictationSession(): UseDictationSession {
     stats,
     copyFlash,
     sessionError,
-    noSpeech,
     micLevel: audio.level,
     noAudioDetected: audio.noAudioDetected,
     streamPreview,
