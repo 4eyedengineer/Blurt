@@ -1,0 +1,82 @@
+name: Build macOS
+
+# Builds the macOS (Apple Silicon) dmg on a real Mac. electron-builder cannot
+# cross-build macOS targets from Linux or Windows, so this runner is the only
+# way this artifact gets produced at all short of owning a Mac - and it is
+# also, right now, the first time any of the darwin code paths have been
+# compiled and packaged on real macOS rather than just unit-tested from Linux.
+#
+# Deliberately separate from ci.yml: that job is the fast typecheck/lint/test
+# gate that runs on every push and PR, and it must stay cheap. This one is
+# slower, produces a ~100 MB artifact, and is only worth running on demand or
+# when the macOS branch itself moves.
+on:
+  push:
+    branches: [macos-support]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: dmg (arm64)
+    # macos-14 is GitHub's Apple Silicon image. The arch matters beyond just
+    # "it's a Mac": the whole point of this build is arm64, because the
+    # engine dependency litert-lm-api ships only a macosx_12_0_arm64 wheel
+    # (see electron-builder.yml's mac: block for the full reasoning).
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Same floor as ci.yml - electron-vite needs a Node with
+          # crypto.hash (>= 20.19 / >= 22.12).
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # `npm run build` (typecheck + electron-vite bundle) then package,
+      # rather than `npm run build:mac`, so the signing flags below can be
+      # applied without editing the committed electron-builder.yml.
+      - run: npm run build
+
+      # THIS IS A TEST BUILD, NOT A RELEASE BUILD.
+      #
+      # A real distributable needs a Developer ID Application certificate and
+      # notarization, which needs a paid Apple Developer account - see
+      # MACOS.md. There is no certificate available to this runner, so the app
+      # is ad-hoc signed (`identity: -`) instead.
+      #
+      # Ad-hoc signing is not optional on Apple Silicon: macOS refuses to
+      # execute arm64 code with no signature at all, and repackaging Electron
+      # invalidates the signature its own binaries shipped with. So "unsigned"
+      # is not actually an available option here, only "ad-hoc" or "properly
+      # signed".
+      #
+      # hardenedRuntime is forced off for the same reason electron-builder's
+      # own docs give: hardened runtime combined with ad-hoc signing enforces
+      # library validation, which then rejects the bundled uiohook-napi native
+      # addon because ad-hoc signatures carry no Team ID to match against. The
+      # committed config keeps hardenedRuntime on and library validation
+      # enabled, which is correct for a real signed release; this override is
+      # scoped to this test build only and does not weaken that config.
+      #
+      # Consequence for whoever downloads the result: it is ad-hoc signed, so
+      # Gatekeeper will quarantine it on download and refuse to open it until
+      # the quarantine attribute is removed. That is expected, and it is the
+      # cost of not having a Developer ID yet.
+      - name: Package (ad-hoc signed test build)
+        run: npx electron-builder --mac -c.mac.identity=- -c.mac.hardenedRuntime=false
+
+      # Surfaced explicitly because a packaging step that "succeeds" while
+      # producing nothing (or producing an unexpected target) is otherwise
+      # invisible until someone downloads an empty artifact.
+      - name: List build output
+        run: ls -la dist/ && file dist/*.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blurt-macos-arm64-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
