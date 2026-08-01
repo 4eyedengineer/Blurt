@@ -33,7 +33,7 @@ describe('checkModelRequirements', () => {
   it('has no blockers or notes on a well-resourced machine with an ample GPU', () => {
     const result = checkModelRequirements(
       e2b,
-      hardware({ gpus: [{ name: 'RTX 3060', dedicatedVramBytes: 6 * GIB }] })
+      hardware({ gpus: [{ name: 'Example Discrete GPU', dedicatedVramBytes: 6 * GIB }] })
     )
     expect(result).toEqual({ blockers: [], notes: [] })
   })

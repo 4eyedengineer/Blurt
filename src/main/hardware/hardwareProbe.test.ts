@@ -6,15 +6,13 @@ import { parseGpuRegistryOutput, probeHardware } from './hardwareProbe'
 
 describe('parseGpuRegistryOutput', () => {
   it('parses a discrete GPU line with a real qwMemorySize into bytes', () => {
-    // Real captured line for an RTX 3060 Laptop GPU (6 GiB card) - the whole
-    // reason this file exists: Win32_VideoController.AdapterRAM overflows for
-    // this exact card (reports ~4 GiB instead), but this registry value is
-    // correct.
-    const gpus = parseGpuRegistryOutput(
-      'NVIDIA GeForce RTX 3060 Laptop GPU :: qwMemorySize=6442450944'
-    )
+    // Shape of a real captured line for a 6 GiB discrete card (adapter name
+    // genericized here) - the whole reason this file exists:
+    // Win32_VideoController.AdapterRAM overflows for a card like this
+    // (reports ~4 GiB instead), but this registry value is correct.
+    const gpus = parseGpuRegistryOutput('NVIDIA GeForce RTX Laptop GPU :: qwMemorySize=6442450944')
     expect(gpus).toEqual([
-      { name: 'NVIDIA GeForce RTX 3060 Laptop GPU', dedicatedVramBytes: 6442450944 }
+      { name: 'NVIDIA GeForce RTX Laptop GPU', dedicatedVramBytes: 6442450944 }
     ])
   })
 
@@ -28,20 +26,20 @@ describe('parseGpuRegistryOutput', () => {
   it('parses both real captured lines together, in order', () => {
     const output = [
       'Intel(R) UHD Graphics :: qwMemorySize=',
-      'NVIDIA GeForce RTX 3060 Laptop GPU :: qwMemorySize=6442450944'
+      'NVIDIA GeForce RTX Laptop GPU :: qwMemorySize=6442450944'
     ].join('\n')
     expect(parseGpuRegistryOutput(output)).toEqual([
       { name: 'Intel(R) UHD Graphics', dedicatedVramBytes: null },
-      { name: 'NVIDIA GeForce RTX 3060 Laptop GPU', dedicatedVramBytes: 6442450944 }
+      { name: 'NVIDIA GeForce RTX Laptop GPU', dedicatedVramBytes: 6442450944 }
     ])
   })
 
   it('handles CRLF line endings and blank lines between entries', () => {
     const output =
-      '\r\nIntel(R) UHD Graphics :: qwMemorySize=\r\n\r\nNVIDIA GeForce RTX 3060 Laptop GPU :: qwMemorySize=6442450944\r\n'
+      '\r\nIntel(R) UHD Graphics :: qwMemorySize=\r\n\r\nNVIDIA GeForce RTX Laptop GPU :: qwMemorySize=6442450944\r\n'
     expect(parseGpuRegistryOutput(output)).toEqual([
       { name: 'Intel(R) UHD Graphics', dedicatedVramBytes: null },
-      { name: 'NVIDIA GeForce RTX 3060 Laptop GPU', dedicatedVramBytes: 6442450944 }
+      { name: 'NVIDIA GeForce RTX Laptop GPU', dedicatedVramBytes: 6442450944 }
     ])
   })
 
@@ -52,11 +50,11 @@ describe('parseGpuRegistryOutput', () => {
   it('skips unrecognized lines instead of throwing (PowerShell noise, warnings, etc.)', () => {
     const output = [
       'WARNING: something unrelated printed to stdout',
-      'NVIDIA GeForce RTX 3060 Laptop GPU :: qwMemorySize=6442450944',
+      'NVIDIA GeForce RTX Laptop GPU :: qwMemorySize=6442450944',
       'not a matching line at all'
     ].join('\n')
     expect(parseGpuRegistryOutput(output)).toEqual([
-      { name: 'NVIDIA GeForce RTX 3060 Laptop GPU', dedicatedVramBytes: 6442450944 }
+      { name: 'NVIDIA GeForce RTX Laptop GPU', dedicatedVramBytes: 6442450944 }
     ])
   })
 })

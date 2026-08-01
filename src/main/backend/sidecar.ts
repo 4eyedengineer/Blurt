@@ -32,8 +32,9 @@ export type GpuCorroborationEvidence = 'selected-adapter' | 'main-executor-setti
  * on the bundled native library - see WINDOWS.md step 6, "GPU acceleration -
  * how it works and what was measured") to exist:
  *   - "Selected adapter: " - Dawn/WebGPU's log of the physical adapter it
- *     actually picked, e.g. WINDOWS.md's real captured example:
- *     "Selected adapter: NVIDIA GeForce RTX 3060 Laptop GPU, arch=ampere,
+ *     actually picked, e.g. WINDOWS.md's real captured example (adapter name
+ *     genericized here):
+ *     "Selected adapter: NVIDIA GeForce RTX Laptop GPU, arch=<arch>,
  *     vendor=nvidia, backend=Direct3D 12, adapterType=Discrete GPU".
  *   - "MainExecutorSettings: backend: GPU" - the engine's own log of which
  *     backend the *main* model executor was actually configured with.

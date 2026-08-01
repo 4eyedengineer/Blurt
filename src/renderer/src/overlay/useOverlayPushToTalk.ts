@@ -113,9 +113,32 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
     }
 
     dispatch({ type: 'stop' })
-    // 0 if capture never went live - that's a dictation with no audio, and
-    // an invented duration would only produce a nonsense WPM in history.
-    const durationMs = liveAt === null ? 0 : Date.now() - liveAt
+
+    // Capture never went live: the key was released before the microphone
+    // finished opening, so not a single PCM chunk was produced and the
+    // backend has literally nothing (see LitertBackend.endSession's
+    // `hasAudio` check, which returns without calling the model at all).
+    //
+    // This has to be said out loud. It is NOT the same as "you held the key
+    // and said nothing", which is deliberately silent, and treating the two
+    // alike is what made a too-short hold look like a broken app: the pill
+    // appeared, vanished, and nothing was pasted, with no way to tell
+    // whether Blurt was ignoring the key, the mic was dead, or the hold was
+    // simply too quick. Opening the audio device takes a second or two on
+    // Windows, which is exactly what the ready tone exists to signal.
+    if (liveAt === null) {
+      const message = 'Microphone was not ready yet. Hold the key until you hear the tone.'
+      dispatch({ type: 'failed', message })
+      window.api.overlay.sendResult({
+        rawTranscript: '',
+        cleanedText: '',
+        durationMs: 0,
+        error: 'capture never went live - the hold ended before the microphone opened'
+      })
+      return
+    }
+
+    const durationMs = Date.now() - liveAt
     try {
       const raw = await window.api.dictation.endSession(sessionId)
 

@@ -307,7 +307,7 @@ describe('parseGpuCorroborationLine', () => {
   it('matches the real captured "Selected adapter: ... GPU" example from WINDOWS.md', () => {
     expect(
       parseGpuCorroborationLine(
-        'I0000 ... environment.cc:522] Selected adapter: NVIDIA GeForce RTX 3060 Laptop GPU,'
+        'I0000 ... environment.cc:522] Selected adapter: NVIDIA GeForce RTX Laptop GPU,'
       )
     ).toBe('selected-adapter')
   })

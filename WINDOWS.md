@@ -8,7 +8,7 @@ This assumes you've read [CONTRIBUTING.md](CONTRIBUTING.md)'s "The real backend:
 section for the wire-protocol/architecture background; this doc is the Windows-specific how-to.
 
 Everything below was verified against a real `litert-lm` 0.14.0 pip install. GPU execution
-specifically was verified against a real RTX 3060 Laptop GPU. See "GPU acceleration" below for the
+specifically was verified against a real discrete NVIDIA GPU. See "GPU acceleration" below for the
 exact commands/log lines and measured tokens/s.
 
 ## 1. Install Python 3.10+
@@ -135,8 +135,8 @@ decided automatically per machine.
 
 ## 6. GPU acceleration: how it works and what was measured
 
-**Short version: GPU acceleration is automatic. It was verified end-to-end against a real RTX
-3060 Laptop GPU (6 GB VRAM), and decode throughput is ~3.4x faster than CPU once warm.** Getting
+**Short version: GPU acceleration is automatic. It was verified end-to-end against a real discrete
+NVIDIA GPU with 6 GB of VRAM, and decode throughput is ~3.4x faster than CPU once warm.** Getting
 there needed a small wrapper script, because the pip `serve` CLI itself has no way to select a
 backend. The two findings below explain why, and are still accurate as of `litert-lm` 0.14.0.
 
@@ -145,7 +145,8 @@ backend. The two findings below explain why, and are still accurate as of `liter
 GPU acceleration goes through **Dawn (WebGPU)**, whose Windows backend is **Direct3D 12**. Any
 DX12-capable GPU is a supported adapter (NVIDIA, AMD, or Intel; discrete or integrated). Nothing in
 Blurt or `resources/serve_gpu.py` filters, checks, or branches on a vendor/adapter name. The
-RTX 3060 numbers throughout this doc are one _measured example_, not a requirement. Dawn logs
+GPU numbers throughout this doc (from a 6 GB discrete NVIDIA card) are one _measured example_,
+not a requirement. Dawn logs
 whichever adapter it actually picked: `Selected adapter: <name>, vendor=<vendor>, backend=Direct3D
 12, adapterType=<Discrete|Integrated> GPU`. `<name>`/`<vendor>` come from your driver, never from
 this codebase.
@@ -157,8 +158,8 @@ discrete GPU with zero configuration. If a different machine's default enumerati
 integrated GPU instead, there is currently no supported knob to override that.
 
 **Minimum VRAM**: budget **at least 4 GB of VRAM for E2B/E4B on GPU**, derived from this model's
-measured GPU-resident footprint (~3.9 GB warm). A 6 GB card (the RTX 3060 Laptop GPU example
-throughout this doc) has comfortable headroom. The 12B model was only ever verified on CPU. Don't
+measured GPU-resident footprint (~3.9 GB warm). A 6 GB card (the example used throughout this doc)
+has comfortable headroom. The 12B model was only ever verified on CPU. Don't
 expect it to fit on a 6 GB-class GPU.
 
 **Unsupported hardware**: no compatible DX12 adapter (or a GPU below Dawn's required feature level)
@@ -199,19 +200,22 @@ I0000 ... litert_lm_loader.cc:244] section_backend_constraint: cpu   (repeated p
 
 **But that constraint does not actually block GPU execution of the main model.** It turns out to
 matter only for the audio/vision adapters, which genuinely are CPU-only. Forcing `--backend gpu` on
-`litert-lm benchmark` against the _same_ `cpu`-constrained E2B file, on a real RTX 3060 Laptop GPU,
+`litert-lm benchmark` against the _same_ `cpu`-constrained E2B file, on a real discrete NVIDIA GPU,
 the engine happily initializes GPU and runs real inference:
 
 ```
-I0000 ... environment.cc:522] Selected adapter: NVIDIA GeForce RTX 3060 Laptop GPU,
-arch=ampere, vendor=nvidia, backend=Direct3D 12, adapterType=Discrete GPU
+I0000 ... environment.cc:522] Selected adapter: <name>,
+arch=<arch>, vendor=<vendor>, backend=Direct3D 12, adapterType=Discrete GPU
 I0000 ... engine_settings.cc:101] The Main backend constraint is not set.
 I0000 ... engine_settings.cc:98] The Audio backend constraint is matched: CPU
   MainExecutorSettings: backend: GPU
 ```
 
-**Measured tokens/s** (`litert-lm benchmark`, Gemma 4 E2B, RTX 3060 Laptop GPU, 128 prefill / 64
-decode tokens, `--cache disk` default):
+(`<name>`/`<arch>`/`<vendor>` come from your driver, same as elsewhere in this doc; on the machine
+this was measured on, `vendor` read `nvidia`.)
+
+**Measured tokens/s** (`litert-lm benchmark`, Gemma 4 E2B, a 6 GB discrete NVIDIA GPU, 128 prefill /
+64 decode tokens, `--cache disk` default):
 
 | Backend                         | Prefill tok/s | Decode tok/s | Init time                         |
 | ------------------------------- | ------------- | ------------ | --------------------------------- |
@@ -349,7 +353,7 @@ target does.
 - [ ] `pip install litert-lm`
 - [ ] `litert-lm import --from-huggingface-repo litert-community/gemma-4-E2B-it-litert-lm gemma-4-E2B-it.litertlm e2b` (or e4b/12b)
 - [ ] `npm install && npm run dev`, then in Settings pick a model and hit Download
-- [ ] GPU acceleration is automatic (~3.4x faster decode, measured on an RTX 3060 Laptop GPU; see
+- [ ] GPU acceleration is automatic (~3.4x faster decode, measured on a discrete NVIDIA GPU; see
       section 6); drops to CPU on its own if GPU init fails, and Settings/the status pill say so
       truthfully if it does
 - [ ] Model/VRAM is cleaned up on quit _and_ on a hard crash; see "Crash-safe cleanup" above

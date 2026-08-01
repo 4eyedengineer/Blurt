@@ -17,7 +17,7 @@ file, and this script's own end-to-end test against a real `litert-lm
 serve` process) the *main* prefill/decode graph runs fine on GPU despite
 that constraint - `backend_constraint` on this model only actually matters
 for the optional audio/vision adapters, which are genuinely CPU-only.
-Measured on an RTX 3060 Laptop GPU (6 GB VRAM) against the Gemma-4 E2B
+Measured on a discrete NVIDIA GPU with 6 GB of VRAM against the Gemma-4 E2B
 `.litertlm`, warm (disk-cached compiled shaders):
 
     Backend   Prefill tok/s   Decode tok/s   Init time

@@ -10,14 +10,14 @@
  */
 
 export interface GpuInfo {
-  /** Adapter display name, e.g. "NVIDIA GeForce RTX 3060 Laptop GPU" - from the registry's DriverDesc value. */
+  /** Adapter display name, e.g. "NVIDIA GeForce RTX Laptop GPU" - from the registry's DriverDesc value. */
   name: string
   /**
    * Dedicated VRAM in bytes, from the registry's 64-bit
    * `HardwareInformation.qwMemorySize` value (NOT `Win32_VideoController.
    * AdapterRAM`, which is a uint32 that overflows on cards with >4 GiB VRAM -
-   * measured on a real RTX 3060: it reported ~4 GiB instead of 6 GiB). `null`
-   * means the adapter has no dedicated VRAM value at all (e.g. integrated
+   * measured on a 6 GB card: `AdapterRAM` reported ~4 GiB instead of the
+   * correct 6 GiB). `null` means the adapter has no dedicated VRAM value at all (e.g. integrated
    * graphics) - not zero, and not "unknown, assume the worst".
    */
   dedicatedVramBytes: number | null

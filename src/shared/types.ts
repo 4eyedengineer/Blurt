@@ -23,7 +23,7 @@ export type SidecarMode = 'managed' | 'external'
  * `BackendStatus.effectiveAccelerator`). The UI only ever displays this
  * observed value.
  *
- * Measured on an RTX 3060 Laptop GPU against the Gemma-4 E2B model: ~3.4x
+ * Measured on a 6 GB discrete NVIDIA GPU against the Gemma-4 E2B model: ~3.4x
  * faster decode throughput than CPU (~54 vs ~16 tok/s, warm), at the cost of
  * slower prefill and a one-time ~15s GPU shader-compile on the very first
  * run (see resources/serve_gpu.py for exact numbers and WINDOWS.md's GPU

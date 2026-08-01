@@ -14,7 +14,7 @@ import type { VenvPaths } from './venvResolver'
 
 /**
  * Pinned to the exact version verified working against a real Windows host
- * (RTX 3060 Laptop GPU) - see WINDOWS.md's GPU section. Bumped deliberately
+ * (with a discrete NVIDIA GPU) - see WINDOWS.md's GPU section. Bumped deliberately
  * when a newer version is verified, never automatically (`--upgrade`
  * without a pin would silently change behavior on some future relaunch).
  */

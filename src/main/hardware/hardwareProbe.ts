@@ -23,8 +23,9 @@ const GPU_PROBE_TIMEOUT_MS = 4000
  * This is the registry key confirmed (by reading it on a real Windows host)
  * to hold a correct, 64-bit VRAM figure -
  * `Win32_VideoController.AdapterRAM` is a uint32 and silently overflows for
- * any card with more than ~4 GiB VRAM (measured: it reported 4293918720,
- * ~4 GiB, for an RTX 3060 that actually has 6 GiB).
+ * any card with more than ~4 GiB VRAM (measured: a card with 6 GiB of VRAM
+ * reported 4293918720, ~4 GiB, via `AdapterRAM` because that field is a
+ * uint32 and overflows).
  */
 const GPU_REGISTRY_SCRIPT = `
 $base = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'
