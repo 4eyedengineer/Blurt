@@ -66,8 +66,15 @@ jobs:
       # Gatekeeper will quarantine it on download and refuse to open it until
       # the quarantine attribute is removed. That is expected, and it is the
       # cost of not having a Developer ID yet.
+      #
+      # `--publish never` is required, not optional. electron-builder detects
+      # CI and silently switches on implicit publishing, which then fails the
+      # whole step with "GitHub Personal Access Token is not set" *after* the
+      # dmg has already been built successfully - a confusing failure that has
+      # nothing to do with packaging. This job's job is to produce an artifact
+      # and nothing else; releasing is a separate, deliberate step.
       - name: Package (ad-hoc signed test build)
-        run: npx electron-builder --mac -c.mac.identity=- -c.mac.hardenedRuntime=false
+        run: npx electron-builder --mac --publish never -c.mac.identity=- -c.mac.hardenedRuntime=false
 
       # Surfaced explicitly because a packaging step that "succeeds" while
       # producing nothing (or producing an unexpected target) is otherwise
