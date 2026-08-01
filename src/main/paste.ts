@@ -62,10 +62,6 @@ export function getInjectPasteExecOptions(): ExecFileOptions {
   return { windowsHide: true }
 }
 
-export function buildMacPasteScript(): string {
-  return 'tell application "System Events" to keystroke "v" using command down'
-}
-
 /** --clearmodifiers so a still-physically-held modifier key doesn't get folded into the synthesized combo. */
 export function buildLinuxXdotoolArgs(): string[] {
   return ['key', '--clearmodifiers', 'ctrl+v']
@@ -112,10 +108,6 @@ async function injectPasteReal(): Promise<void> {
     await execFileAsync('powershell', buildWindowsSendKeysArgs(), getInjectPasteExecOptions())
     return
   }
-  if (process.platform === 'darwin') {
-    await execFileAsync('osascript', ['-e', buildMacPasteScript()])
-    return
-  }
   if (process.platform === 'linux') {
     await execFileAsync('xdotool', buildLinuxXdotoolArgs())
     return
@@ -131,7 +123,6 @@ function delay(ms: number): Promise<void> {
 function describeInjectCommand(): string {
   if (process.platform === 'win32')
     return 'powershell -WindowStyle Hidden -Command SendKeys(^v) (windowsHide)'
-  if (process.platform === 'darwin') return 'osascript (keystroke v, command down)'
   if (process.platform === 'linux') return `xdotool ${buildLinuxXdotoolArgs().join(' ')}`
   return `unsupported platform: ${process.platform}`
 }

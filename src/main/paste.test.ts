@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildLinuxXdotoolArgs,
-  buildMacPasteScript,
   buildWindowsSendKeysArgs,
   buildWindowsSendKeysCommand,
   copyAndPaste,
@@ -20,18 +19,6 @@ function fakeClipboard(): ClipboardLike & { written: string[] } {
 }
 
 describe('paste command builders', () => {
-  it('builds a Windows SendKeys command that loads System.Windows.Forms and sends literal ctrl+v', () => {
-    const cmd = buildWindowsSendKeysCommand()
-    expect(cmd).toContain('System.Windows.Forms')
-    expect(cmd).toContain("SendKeys]::SendWait('^v')")
-  })
-
-  it('builds a macOS System Events keystroke script using command down', () => {
-    const script = buildMacPasteScript()
-    expect(script).toContain('keystroke "v"')
-    expect(script).toContain('using command down')
-  })
-
   it('builds xdotool args with --clearmodifiers so a still-held key is not folded into the combo', () => {
     expect(buildLinuxXdotoolArgs()).toEqual(['key', '--clearmodifiers', 'ctrl+v'])
   })
