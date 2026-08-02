@@ -5,6 +5,7 @@ import {
   buildWindowsSendKeysArgs,
   buildWindowsSendKeysCommand,
   copyAndPaste,
+  describeCopiedOnlyMessage,
   describePasteFailure,
   getInjectPasteExecOptions,
   type ClipboardLike
@@ -136,6 +137,20 @@ describe('describePasteFailure', () => {
   })
 })
 
+describe('describeCopiedOnlyMessage', () => {
+  it('returns the Ctrl+V message on win32 - byte-identical to the pre-macOS wording', () => {
+    expect(describeCopiedOnlyMessage('win32')).toBe('Copied. Press Ctrl+V to paste.')
+  })
+
+  it('returns the Ctrl+V message on linux - byte-identical to the pre-macOS wording', () => {
+    expect(describeCopiedOnlyMessage('linux')).toBe('Copied. Press Ctrl+V to paste.')
+  })
+
+  it('returns the Cmd+V message on darwin', () => {
+    expect(describeCopiedOnlyMessage('darwin')).toBe('Copied. Press Cmd+V to paste.')
+  })
+})
+
 describe('copyAndPaste', () => {
   it('leaves the clipboard untouched when there is nothing to copy', async () => {
     const clipboard = fakeClipboard()
@@ -154,6 +169,20 @@ describe('copyAndPaste', () => {
       copied: true,
       pasted: false,
       message: 'Copied. Press Ctrl+V to paste.'
+    })
+  })
+
+  it('uses the darwin Cmd+V copied-only message when autoPaste is disabled on darwin', async () => {
+    const clipboard = fakeClipboard()
+    const injectPaste = vi.fn().mockResolvedValue(undefined)
+    const outcome = await withPlatform('darwin', () =>
+      copyAndPaste(clipboard, 'hello', false, injectPaste)
+    )
+    expect(injectPaste).not.toHaveBeenCalled()
+    expect(outcome).toEqual({
+      copied: true,
+      pasted: false,
+      message: 'Copied. Press Cmd+V to paste.'
     })
   })
 

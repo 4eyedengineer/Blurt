@@ -36,7 +36,7 @@ import { log } from '../log'
  * code trying to detect Intel Macs itself and pre-empting pip with a
  * separate, parallel error path.
  */
-export const LITERT_LM_PINNED_VERSION = '0.14.0'
+const LITERT_LM_PINNED_VERSION = '0.14.0'
 
 export interface PythonCandidate {
   cmd: string
@@ -153,7 +153,7 @@ export function isPythonVersionOk(version: string): boolean {
  * here has seen, so it must never be able to hang app startup. 5s is far
  * more than a real interpreter needs to print two lines and exit.
  */
-export const PYTHON_PROBE_TIMEOUT_MS = 5000
+const PYTHON_PROBE_TIMEOUT_MS = 5000
 
 /**
  * Probes one candidate by actually invoking it - the only reliable way to
@@ -193,7 +193,7 @@ export function probePython(candidate: PythonCandidate): FoundPython | null {
 }
 
 /** Tries each candidate in order (see `pythonCandidatesFor`); returns the first Python 3.10+ found, or null if none qualify. */
-export function findPython(platform: NodeJS.Platform = process.platform): FoundPython | null {
+function findPython(platform: NodeJS.Platform = process.platform): FoundPython | null {
   for (const candidate of pythonCandidatesFor(platform)) {
     const found = probePython(candidate)
     if (found) return found
@@ -283,7 +283,7 @@ export interface SetupStepDef {
 export const SETUP_STEPS: SetupStepDef[] = [
   { id: 'python', label: 'Finding Python 3.10+' },
   { id: 'venv', label: 'Creating virtual environment' },
-  { id: 'litert-lm', label: `Installing litert-lm ${LITERT_LM_PINNED_VERSION}` }
+  { id: 'litert-lm', label: 'Installing speech engine' }
 ]
 
 export interface FirstRunSetupCallbacks {

@@ -33,8 +33,7 @@ export function HistoryScreen({ onOpenEntry }: HistoryScreenProps): React.JSX.El
     return window.api.history.onChanged(() => void refresh(query))
   }, [query, refresh])
 
-  const remove = useCallback(async (id: string, event: React.MouseEvent) => {
-    event.stopPropagation()
+  const remove = useCallback(async (id: string) => {
     await window.api.history.remove(id)
     setEntries((prev) => prev.filter((entry) => entry.id !== id))
   }, [])
@@ -64,23 +63,33 @@ export function HistoryScreen({ onOpenEntry }: HistoryScreenProps): React.JSX.El
 
       <ul className="history-screen__list">
         {entries.map((entry) => (
-          <li key={entry.id} className="history-screen__item" onClick={() => onOpenEntry(entry)}>
-            <div className="history-screen__item-main">
-              <p className="history-screen__item-text">{entry.displayText || entry.cleanedText}</p>
-              <div className="history-screen__item-meta">
+          <li key={entry.id} className="history-screen__item">
+            {/* Spans, not <p>/<div>: a <button> may only contain phrasing
+                content, so flow elements in here would be invalid markup.
+                Both classes already set their own `display`, so this is
+                purely a correctness change with no visual effect. */}
+            <button
+              type="button"
+              className="history-screen__item-main"
+              onClick={() => onOpenEntry(entry)}
+            >
+              <span className="history-screen__item-text">
+                {entry.displayText || entry.cleanedText}
+              </span>
+              <span className="history-screen__item-meta">
                 <span>{formatTimestamp(entry.createdAt)}</span>
                 <span>{entry.wordCount} words</span>
                 <span>{entry.wpm} wpm</span>
                 {entry.displayMode !== 'none' && (
                   <span className="history-screen__badge">{entry.displayMode}</span>
                 )}
-              </div>
-            </div>
+              </span>
+            </button>
             <button
               type="button"
               className="history-screen__delete"
               aria-label="Delete dictation"
-              onClick={(e) => void remove(entry.id, e)}
+              onClick={() => void remove(entry.id)}
             >
               <TrashIcon width={16} height={16} />
             </button>

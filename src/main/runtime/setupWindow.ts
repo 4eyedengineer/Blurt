@@ -47,6 +47,10 @@ function renderHtml(steps: SetupStepDef[]): string {
     background: #111318; color: #e6e8ec;
     font-family: -apple-system, "Segoe UI", sans-serif;
     font-size: 13px;
+    /* The window is sized for the collapsed view (see SetupWindow's
+       constructor). Expanding "Show details" adds the log's full height, so
+       the body has to be able to scroll rather than clip it. */
+    overflow-y: auto;
   }
   h1 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
   p.sub { margin: 0 0 16px; color: #9aa1ac; }
@@ -64,6 +68,10 @@ function renderHtml(steps: SetupStepDef[]): string {
   ul#steps li[data-state="done"] { color: #e6e8ec; }
   ul#steps li[data-state="done"] .mark { border-color: #3ecf6a; background: #3ecf6a; }
   ul#steps li[data-state="error"] .mark { border-color: #ef5350; background: #ef5350; }
+  #log-details summary {
+    cursor: pointer; color: #9aa1ac; font-size: 12px;
+    margin-bottom: 8px; user-select: none;
+  }
   #log {
     background: #0a0b0e; border: 1px solid #23262e; border-radius: 6px;
     padding: 10px; height: 220px; overflow-y: auto;
@@ -80,9 +88,12 @@ function renderHtml(steps: SetupStepDef[]): string {
 </head>
 <body>
   <h1>Setting up Blurt</h1>
-  <p class="sub">One-time setup - creating a local Python environment for offline speech recognition.</p>
+  <p class="sub">One-time setup. This runs only on first launch.</p>
   <ul id="steps">${stepItems}</ul>
-  <div id="log"></div>
+  <details id="log-details">
+    <summary>Show details</summary>
+    <div id="log"></div>
+  </details>
   <div id="error"></div>
   <script>
     window.__setStep = function (id, state) {
@@ -100,6 +111,8 @@ function renderHtml(steps: SetupStepDef[]): string {
       var box = document.getElementById('error');
       box.textContent = message + ' (Close this window to quit.)';
       box.classList.add('visible');
+      var d = document.getElementById('log-details');
+      if (d) d.open = true;
     };
   </script>
 </body>
@@ -113,8 +126,14 @@ export class SetupWindow {
   constructor(steps: SetupStepDef[]) {
     this.window = new BrowserWindow({
       width: 560,
-      height: 480,
-      resizable: false,
+      // Sized for the default (collapsed) view - title, subtitle and the
+      // three steps. The log used to be permanently expanded, which is what
+      // the old 480 accounted for; leaving it at 480 once the log moved
+      // behind a disclosure would have left a third of the window empty.
+      // Resizable so anyone who expands the log can enlarge it, and the
+      // error path grows the window itself (see showFatalError).
+      height: 300,
+      resizable: true,
       autoHideMenuBar: true,
       backgroundColor: '#111318',
       title: 'Blurt - First-run setup',
@@ -150,7 +169,17 @@ export class SetupWindow {
     return this.run(`window.__appendLog(${JSON.stringify(line)})`)
   }
 
+  /**
+   * Setup failed. `__showFatalError` force-opens the log disclosure, because
+   * at this point the log is the only thing that explains what went wrong -
+   * so grow the window to fit it first. Without this the user would have to
+   * scroll or resize to read the reason their install died.
+   */
   showFatalError(message: string): Promise<void> {
+    if (!this.window.isDestroyed()) {
+      this.window.setContentSize(560, 560)
+      this.window.center()
+    }
     return this.run(`window.__showFatalError(${JSON.stringify(message)})`)
   }
 

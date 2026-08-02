@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ModelId, PushToTalkStatus, SidecarMode } from '@shared/types'
-import { DEFAULT_MANAGED_COMMAND, PTT_KEY_OPTIONS } from '@shared/types'
+import { DEFAULT_MANAGED_COMMAND, PTT_KEY_OPTIONS, pttKeyLabel } from '@shared/types'
 import type { ModelDownloadState } from '@shared/models'
 import { getCatalogEntry } from '@shared/models'
 import type { HardwareProbeResult } from '@shared/hardware'
@@ -149,6 +149,145 @@ function ModelRow({
   )
 }
 
+/**
+ * One labelled on/off row - the shape every toggle in Settings uses.
+ *
+ * The wrapping <label> is deliberate and load-bearing: <button> is a
+ * labelable element, so wrapping it means clicking the row's text activates
+ * the toggle, not just the switch itself. Swapping this for a <div> would
+ * silently shrink the hit target to the switch.
+ *
+ * `label` is passed to Toggle as well so the switch keeps an accessible name
+ * of its own, rather than depending on how a given screen reader resolves a
+ * wrapping label.
+ */
+function SettingRow({
+  label,
+  checked,
+  onChange
+}: {
+  label: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+}): React.JSX.Element {
+  return (
+    <label className="settings-screen__toggle-row">
+      <strong>{label}</strong>
+      <Toggle checked={checked} onChange={onChange} label={label} />
+    </label>
+  )
+}
+
+/**
+ * Engine plumbing: which sidecar to talk to, and how to reach it. Lives
+ * in its own component both to keep SettingsScreen readable and because
+ * it is the one section a normal user never needs to open - it renders
+ * last, collapsed, after every everyday setting.
+ */
+function AdvancedSection(): React.JSX.Element {
+  const { settings, update } = useSettings()
+  return (
+    <details className="settings-screen__group settings-screen__advanced">
+      <summary>Advanced</summary>
+
+      <div className="settings-screen__radio-group">
+        {(['managed', 'external'] as SidecarMode[]).map((mode) => (
+          <label key={mode} className="settings-screen__radio">
+            <input
+              type="radio"
+              name="sidecar-mode"
+              checked={settings.sidecar.mode === mode}
+              onChange={() => void update({ sidecar: { ...settings.sidecar, mode } })}
+            />
+            <div>
+              <span className="settings-screen__radio-title">
+                {mode === 'managed' ? 'Managed (app spawns it)' : 'External (already running)'}
+              </span>
+            </div>
+          </label>
+        ))}
+      </div>
+
+      {settings.sidecar.mode === 'managed' ? (
+        <>
+          <label className="settings-screen__field-label" htmlFor="sidecar-command">
+            Command template
+          </label>
+          <div className="settings-screen__inline-input">
+            <input
+              id="sidecar-command"
+              type="text"
+              value={settings.sidecar.managedCommand}
+              onChange={(e) =>
+                void update({
+                  sidecar: { ...settings.sidecar, managedCommand: e.target.value }
+                })
+              }
+            />
+            {/* Escape hatch for a stale/hand-edited command pointing at a
+                path that no longer exists (e.g. after a rename/upgrade
+                moved the venv) - see sidecar.ts's isMissingManagedBinary. */}
+            <button
+              type="button"
+              onClick={() =>
+                void update({
+                  sidecar: { ...settings.sidecar, managedCommand: DEFAULT_MANAGED_COMMAND }
+                })
+              }
+            >
+              Reset to default
+            </button>
+          </div>
+          <label className="settings-screen__field-label" htmlFor="sidecar-port">
+            Port
+          </label>
+          <div className="settings-screen__inline-input">
+            <input
+              id="sidecar-port"
+              type="number"
+              min={1}
+              max={65535}
+              value={settings.sidecar.port}
+              onChange={(e) =>
+                void update({
+                  sidecar: { ...settings.sidecar, port: Number(e.target.value) || 9379 }
+                })
+              }
+            />
+          </div>
+        </>
+      ) : (
+        <>
+          <label className="settings-screen__field-label" htmlFor="sidecar-url">
+            Server URL
+          </label>
+          <div className="settings-screen__inline-input">
+            <input
+              id="sidecar-url"
+              type="text"
+              placeholder="http://127.0.0.1:9379"
+              value={settings.sidecar.externalUrl}
+              onChange={(e) =>
+                void update({
+                  sidecar: { ...settings.sidecar, externalUrl: e.target.value }
+                })
+              }
+            />
+          </div>
+        </>
+      )}
+
+      <button
+        type="button"
+        className="settings-screen__logs-link"
+        onClick={() => void window.api.log.openFolder()}
+      >
+        Open logs folder
+      </button>
+    </details>
+  )
+}
+
 export function SettingsScreen(): React.JSX.Element {
   const { settings, update, addVocabularyWord, removeVocabularyWord, updateHotkey } = useSettings()
   const models = useModelManager()
@@ -159,6 +298,10 @@ export function SettingsScreen(): React.JSX.Element {
   const [hotkeyInput, setHotkeyInput] = useState(settings.hotkey)
   const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus>('idle')
   const [pttStatus, setPttStatus] = useState<PushToTalkStatus | null>(null)
+  // Synchronous and always available (unlike pttStatus, which is loaded
+  // asynchronously and is null on first render) - used for platform-specific
+  // copy that must already be correct on the very first paint.
+  const platform = window.electron.process.platform
 
   useEffect(() => {
     let cancelled = false
@@ -232,16 +375,20 @@ export function SettingsScreen(): React.JSX.Element {
       */}
       {backendStatus.effectiveAccelerator && (
         <div className="settings-screen__group">
-          <label className="settings-screen__toggle-row">
-            <span>
-              <strong>
-                Running on {backendStatus.effectiveAccelerator === 'gpu' ? 'GPU' : 'CPU'}
-              </strong>
-              {backendStatus.effectiveAccelerator === 'cpu' && (
-                <p className="settings-screen__hint">No usable GPU on this machine.</p>
-              )}
-            </span>
-          </label>
+          {/*
+            Plain markup, not a toggle-row: there is no control here to
+            label. This used to be a <label> wrapping nothing, with a <p>
+            nested inside a <span> - which is invalid (a <span> holds
+            phrasing content, a <p> is flow content).
+          */}
+          <div className="settings-screen__engine">
+            <strong>
+              Running on {backendStatus.effectiveAccelerator === 'gpu' ? 'GPU' : 'CPU'}
+            </strong>
+            {backendStatus.effectiveAccelerator === 'cpu' && (
+              <p className="settings-screen__hint">No usable GPU on this machine.</p>
+            )}
+          </div>
         </div>
       )}
 
@@ -269,121 +416,21 @@ export function SettingsScreen(): React.JSX.Element {
         </select>
       </div>
 
-      <details className="settings-screen__group settings-screen__advanced">
-        <summary>Advanced</summary>
-
-        <div className="settings-screen__radio-group">
-          {(['managed', 'external'] as SidecarMode[]).map((mode) => (
-            <label key={mode} className="settings-screen__radio">
-              <input
-                type="radio"
-                name="sidecar-mode"
-                checked={settings.sidecar.mode === mode}
-                onChange={() => void update({ sidecar: { ...settings.sidecar, mode } })}
-              />
-              <div>
-                <span className="settings-screen__radio-title">
-                  {mode === 'managed' ? 'Managed (app spawns it)' : 'External (already running)'}
-                </span>
-              </div>
-            </label>
-          ))}
-        </div>
-
-        {settings.sidecar.mode === 'managed' ? (
-          <>
-            <label className="settings-screen__field-label" htmlFor="sidecar-command">
-              Command template
-            </label>
-            <div className="settings-screen__inline-input">
-              <input
-                id="sidecar-command"
-                type="text"
-                value={settings.sidecar.managedCommand}
-                onChange={(e) =>
-                  void update({
-                    sidecar: { ...settings.sidecar, managedCommand: e.target.value }
-                  })
-                }
-              />
-              {/* Escape hatch for a stale/hand-edited command pointing at a
-                  path that no longer exists (e.g. after a rename/upgrade
-                  moved the venv) - see sidecar.ts's isMissingManagedBinary. */}
-              <button
-                type="button"
-                onClick={() =>
-                  void update({
-                    sidecar: { ...settings.sidecar, managedCommand: DEFAULT_MANAGED_COMMAND }
-                  })
-                }
-              >
-                Reset to default
-              </button>
-            </div>
-            <label className="settings-screen__field-label" htmlFor="sidecar-port">
-              Port
-            </label>
-            <div className="settings-screen__inline-input">
-              <input
-                id="sidecar-port"
-                type="number"
-                min={1}
-                max={65535}
-                value={settings.sidecar.port}
-                onChange={(e) =>
-                  void update({
-                    sidecar: { ...settings.sidecar, port: Number(e.target.value) || 9379 }
-                  })
-                }
-              />
-            </div>
-          </>
-        ) : (
-          <>
-            <label className="settings-screen__field-label" htmlFor="sidecar-url">
-              Server URL
-            </label>
-            <div className="settings-screen__inline-input">
-              <input
-                id="sidecar-url"
-                type="text"
-                placeholder="http://127.0.0.1:9379"
-                value={settings.sidecar.externalUrl}
-                onChange={(e) =>
-                  void update({
-                    sidecar: { ...settings.sidecar, externalUrl: e.target.value }
-                  })
-                }
-              />
-            </div>
-          </>
-        )}
-
-        <button
-          type="button"
-          className="settings-screen__logs-link"
-          onClick={() => void window.api.log.openFolder()}
-        >
-          Open logs folder
-        </button>
-      </details>
-
+      {/*
+        One group rather than two: "Processing" was a whole section wrapping
+        a single toggle, and "cleanup" is this codebase's internal name for
+        the post-transcription rewrite - not a word the UI uses anywhere the
+        user can see.
+      */}
       <div className="settings-screen__group">
-        <h2>Processing</h2>
-        <label className="settings-screen__toggle-row">
-          <span>
-            <strong>Auto-copy on cleanup</strong>
-          </span>
-          <Toggle
-            checked={settings.autoCopyOnCleanup}
-            onChange={(checked) => void update({ autoCopyOnCleanup: checked })}
-            label="Auto-copy on cleanup"
-          />
-        </label>
-      </div>
+        <h2>Dictation</h2>
+        <SettingRow
+          label="Copy result automatically"
+          checked={settings.autoCopyOnCleanup}
+          onChange={(checked) => void update({ autoCopyOnCleanup: checked })}
+        />
 
-      <div className="settings-screen__group">
-        <h2>Custom vocabulary</h2>
+        <p className="settings-screen__field-label">Custom vocabulary</p>
         <p className="settings-screen__hint">Names and jargon to bias the recognizer towards.</p>
         <div className="settings-screen__inline-input">
           <input
@@ -447,38 +494,32 @@ export function SettingsScreen(): React.JSX.Element {
           </p>
         )}
 
-        <label className="settings-screen__toggle-row">
-          <span>
-            <strong>Enable push to talk</strong>
-          </span>
-          <Toggle
-            checked={settings.pushToTalk.enabled}
-            onChange={(checked) =>
-              void update({ pushToTalk: { ...settings.pushToTalk, enabled: checked } })
-            }
-            label="Enable push to talk"
-          />
-        </label>
+        <SettingRow
+          label="Enable push to talk"
+          checked={settings.pushToTalk.enabled}
+          onChange={(checked) =>
+            void update({ pushToTalk: { ...settings.pushToTalk, enabled: checked } })
+          }
+        />
 
         <p className="settings-screen__field-label">Key</p>
         <div className="settings-screen__radio-group">
-          {PTT_KEY_OPTIONS.map((opt) => (
-            <label key={opt.id} className="settings-screen__radio">
+          {PTT_KEY_OPTIONS.map((keyId) => (
+            <label key={keyId} className="settings-screen__radio">
               <input
                 type="radio"
                 name="ptt-key"
-                checked={settings.pushToTalk.key === opt.id}
-                onChange={() =>
-                  void update({ pushToTalk: { ...settings.pushToTalk, key: opt.id } })
-                }
+                checked={settings.pushToTalk.key === keyId}
+                onChange={() => void update({ pushToTalk: { ...settings.pushToTalk, key: keyId } })}
               />
               <div>
-                <span className="settings-screen__radio-title">{opt.label}</span>
-                {opt.id === 'AltRight' && pttStatus?.platform === 'win32' && (
+                <span className="settings-screen__radio-title">{pttKeyLabel(keyId, platform)}</span>
+                {/* The consequence, not the mechanism - someone picking a
+                    hotkey needs to know this key can cost them focus, not
+                    why Windows does it. */}
+                {keyId === 'AltRight' && pttStatus?.platform === 'win32' && (
                   <span className="settings-screen__radio-desc">
-                    Windows moves focus to the menu bar when Alt is pressed and released on its own,
-                    so the field you were typing in can lose focus. Also known as AltGr on some
-                    layouts.
+                    Windows may move focus away when Alt is tapped on its own.
                   </span>
                 )}
               </div>
@@ -486,36 +527,29 @@ export function SettingsScreen(): React.JSX.Element {
           ))}
         </div>
 
-        <label className="settings-screen__toggle-row">
-          <span>
-            <strong>Auto-paste</strong>
-          </span>
-          <Toggle
-            checked={settings.pushToTalk.autoPaste}
-            onChange={(checked) =>
-              void update({ pushToTalk: { ...settings.pushToTalk, autoPaste: checked } })
-            }
-            label="Auto-paste"
-          />
-        </label>
+        <SettingRow
+          label="Auto-paste"
+          checked={settings.pushToTalk.autoPaste}
+          onChange={(checked) =>
+            void update({ pushToTalk: { ...settings.pushToTalk, autoPaste: checked } })
+          }
+        />
       </div>
 
       <div className="settings-screen__group">
         <h2>Background</h2>
+        {/* The toggle below already says it keeps running - this only needs
+            to add what that buys you, and how to actually quit. */}
         <p className="settings-screen__hint">
-          Closing the window leaves Blurt in the system tray, so push to talk keeps working. Quit
-          from the tray icon.
+          {platform === 'darwin'
+            ? 'Push to talk keeps working. Quit from the menu bar icon.'
+            : 'Push to talk keeps working. Quit from the tray icon.'}
         </p>
-        <label className="settings-screen__toggle-row">
-          <span>
-            <strong>Keep running when closed</strong>
-          </span>
-          <Toggle
-            checked={settings.runInBackground}
-            onChange={(checked) => void update({ runInBackground: checked })}
-            label="Keep running when closed"
-          />
-        </label>
+        <SettingRow
+          label="Keep running when closed"
+          checked={settings.runInBackground}
+          onChange={(checked) => void update({ runInBackground: checked })}
+        />
       </div>
 
       <div className="settings-screen__group">
@@ -524,7 +558,7 @@ export function SettingsScreen(): React.JSX.Element {
           <input
             type="text"
             value={hotkeyInput}
-            placeholder="e.g. Ctrl+Shift+Space"
+            placeholder={platform === 'darwin' ? 'e.g. Cmd+Shift+Space' : 'e.g. Ctrl+Shift+Space'}
             onChange={(e) => setHotkeyInput(e.target.value)}
           />
           <button type="button" onClick={() => void saveHotkey()}>
@@ -540,6 +574,7 @@ export function SettingsScreen(): React.JSX.Element {
           </p>
         )}
       </div>
+      <AdvancedSection />
     </section>
   )
 }

@@ -58,6 +58,11 @@
   gap: 10px;
 }
 
+/* No cursor: pointer here. The row itself is no longer clickable - the
+   click handler moved onto the .history-screen__item-main button so the
+   list can be reached from the keyboard - so a pointer on the row's padding
+   and on the gap between the two buttons would promise a click that does
+   nothing. The two buttons set their own pointer. */
 .history-screen__item {
   display: flex;
   align-items: flex-start;
@@ -66,7 +71,6 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: 14px 16px;
-  cursor: pointer;
   transition: border-color 0.15s ease;
 }
 
@@ -77,6 +81,23 @@
 .history-screen__item-main {
   flex: 1;
   min-width: 0;
+  display: block;
+  appearance: none;
+  background: none;
+  border: none;
+  border-radius: inherit;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+}
+
+.history-screen__item-main:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 
 .history-screen__item-text {

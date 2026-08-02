@@ -85,6 +85,20 @@
   font-weight: 600;
 }
 
+/* Read-only engine status. Matches a toggle row's typography so it sits in
+   the same visual rhythm, but it is not a control and carries no pointer
+   cursor - nothing here responds to a click. */
+.settings-screen__engine {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-screen__engine strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .settings-screen__inline-input {
   display: flex;
   gap: 8px;

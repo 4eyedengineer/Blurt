@@ -86,7 +86,7 @@ export interface SidecarSettings {
 export const DEFAULT_MANAGED_COMMAND =
   '"{venvPython}" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
 
-export const DEFAULT_SIDECAR_SETTINGS: SidecarSettings = {
+const DEFAULT_SIDECAR_SETTINGS: SidecarSettings = {
   mode: 'managed',
   managedCommand: DEFAULT_MANAGED_COMMAND,
   externalUrl: 'http://127.0.0.1:9379',
@@ -102,17 +102,51 @@ export const DEFAULT_SIDECAR_SETTINGS: SidecarSettings = {
  */
 export type PushToTalkKeyId = 'AltRight' | 'ControlRight' | 'F9'
 
-export const PTT_KEY_OPTIONS: Array<{ id: PushToTalkKeyId; label: string }> = [
-  { id: 'ControlRight', label: 'Right Ctrl' },
-  { id: 'AltRight', label: 'Right Alt' },
-  { id: 'F9', label: 'F9' }
-]
+/**
+ * The keys Settings offers for push-to-talk, in display order. Ids only:
+ * display text comes from `pttKeyLabel`, which is platform-dependent and so
+ * cannot be baked into a constant. This deliberately carries no `label`
+ * field - one used to live here, and leaving it in place once the labels
+ * became platform-dependent would have meant the same three strings existed
+ * both here and in `pttKeyLabel`, with only the latter reaching the screen.
+ * Editing the dead copy would then have looked like it worked and changed
+ * nothing.
+ */
+export const PTT_KEY_OPTIONS: PushToTalkKeyId[] = ['ControlRight', 'AltRight', 'F9']
+
+/**
+ * Platform-correct display label for a push-to-talk key id - the single
+ * source of truth for this text (see PTT_KEY_OPTIONS, which supplies only
+ * the ids and their order). On darwin, "Right Ctrl" and "Right Alt" are
+ * wrong: that hardware is physically labeled Control and Option, so this
+ * substitutes the Mac wording there. Every other platform keeps the exact
+ * wording Blurt has always shown.
+ *
+ * Takes `platform` as an explicit parameter rather than reading
+ * `process.platform` - it has to, since this is shared code that also runs
+ * in the renderer, where the value comes from `window.electron.process`.
+ * That also keeps it a pure function that unit tests can drive directly.
+ *
+ * The switch is deliberately exhaustive with no `default`: adding a member
+ * to PushToTalkKeyId should fail the typecheck here rather than silently
+ * render a key with no name.
+ */
+export function pttKeyLabel(id: PushToTalkKeyId, platform: string): string {
+  switch (id) {
+    case 'ControlRight':
+      return platform === 'darwin' ? 'Right Control' : 'Right Ctrl'
+    case 'AltRight':
+      return platform === 'darwin' ? 'Right Option' : 'Right Alt'
+    case 'F9':
+      return 'F9'
+  }
+}
 
 export interface PushToTalkSettings {
   /** Master on/off switch for the global hold-to-talk overlay. No-ops if the native key-hook failed to load - see PushToTalkStatus. */
   enabled: boolean
   key: PushToTalkKeyId
-  /** Whether to simulate Ctrl+V into the previously-focused app after cleanup, in addition to always copying to the clipboard. */
+  /** Whether to simulate the platform paste keystroke (Ctrl+V, or Cmd+V on darwin) into the previously-focused app after cleanup, in addition to always copying to the clipboard. */
   autoPaste: boolean
 }
 
@@ -142,7 +176,7 @@ export interface PushToTalkSettings {
  * selectable in Settings for anyone who prefers it, with the tradeoff
  * spelled out there.
  */
-export const DEFAULT_PUSH_TO_TALK_SETTINGS: PushToTalkSettings = {
+const DEFAULT_PUSH_TO_TALK_SETTINGS: PushToTalkSettings = {
   enabled: true,
   key: 'ControlRight',
   autoPaste: true

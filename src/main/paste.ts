@@ -200,6 +200,23 @@ export function describePasteFailure(platform: NodeJS.Platform, reason: string):
 }
 
 /**
+ * The copy-only message shown when auto-paste is off - see copyAndPaste. The
+ * keystroke that actually pastes differs by platform: Cmd+V on darwin,
+ * Ctrl+V on win32/linux.
+ *
+ * Takes `platform` as an explicit parameter (rather than reading
+ * `process.platform` itself) so it stays a pure function - `process.platform`
+ * can't be reassigned in a test without a defineProperty-based helper, and
+ * this way its unit tests don't need one.
+ */
+export function describeCopiedOnlyMessage(platform: NodeJS.Platform): string {
+  if (platform === 'darwin') {
+    return 'Copied. Press Cmd+V to paste.'
+  }
+  return 'Copied. Press Ctrl+V to paste.'
+}
+
+/**
  * Always copies `text` to the clipboard - that's the feature, and it always
  * happens first regardless of what follows. If `autoPasteEnabled`, waits
  * `PASTE_SETTLE_MS` (see doc comment above) then attempts to simulate the
@@ -225,7 +242,7 @@ export async function copyAndPaste(
   }
   clipboard.writeText(text)
   if (!autoPasteEnabled) {
-    return { copied: true, pasted: false, message: 'Copied. Press Ctrl+V to paste.' }
+    return { copied: true, pasted: false, message: describeCopiedOnlyMessage(process.platform) }
   }
   await delay(PASTE_SETTLE_MS)
   const command = describeInjectCommand()

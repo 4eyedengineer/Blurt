@@ -81,7 +81,7 @@ const RECENT_CHUNKS_PRUNE_SLACK_MS = 500
  * longer than the interval - it makes such hardware degrade to a slower,
  * stable cadence instead of pegging the CPU with zero-gap requests.
  */
-export const DEFAULT_MIN_PARTIAL_IDLE_GAP_MS = 300
+const DEFAULT_MIN_PARTIAL_IDLE_GAP_MS = 300
 /** How often (ms) streamed partial/cleanup/transform/voiceEdit text is allowed to reach the renderer - see ThrottledTextEmitter. */
 const DEFAULT_STREAM_THROTTLE_MS = 100
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000

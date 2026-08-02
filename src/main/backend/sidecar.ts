@@ -325,7 +325,7 @@ const MAX_RESTARTS = 3
  * far too fast for a real eager engine load, because something else
  * entirely was answering its port (see `portGuard.ts`).
  */
-export const MARKER_TIMEOUT_MS = 90_000
+const MARKER_TIMEOUT_MS = 90_000
 
 /** Cap on a single logged child-output line (see `logChildLine`) - long enough to be useful, short enough that a runaway line (e.g. a native stack trace with no newlines) can't blow up main.log. */
 const MAX_LOGGED_LINE_LENGTH = 500

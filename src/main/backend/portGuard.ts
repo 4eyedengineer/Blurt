@@ -184,7 +184,7 @@ export function decidePortOccupiedAction(params: {
 }
 
 /** `true` if `pid` refers to a currently-running process (any owner) - `process.kill(pid, 0)` sends no signal, just probes existence. `EPERM` means it exists but we lack permission to signal it, which still counts as "alive" for this check. */
-export function isProcessAlive(pid: number): boolean {
+function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true
@@ -194,7 +194,7 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 /** Best-effort cmdline lookup for `pid`, cross-platform. Returns null (never throws) if it can't be determined - callers must treat that as "unknown", never as a match. */
-export function readCmdlineForPid(pid: number): string | null {
+function readCmdlineForPid(pid: number): string | null {
   try {
     if (process.platform === 'win32') {
       const res = spawnSync(
@@ -357,7 +357,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-export function readPidRecord(pidFilePath: string): SidecarPidRecord | null {
+function readPidRecord(pidFilePath: string): SidecarPidRecord | null {
   try {
     if (!existsSync(pidFilePath)) return null
     return parsePidFileContent(readFileSync(pidFilePath, 'utf-8'))

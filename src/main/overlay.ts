@@ -2,12 +2,12 @@ import { BrowserWindow, screen } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 
-export const OVERLAY_WIDTH = 600
+const OVERLAY_WIDTH = 600
 // Tall enough for the 3-line teleprompter transcript area (see
 // .overlay-app__transcript in OverlayApp.css) plus its sibling row (the mic
 // level bar while recording, or the paste-status badge once done) and the
 // pill's own vertical padding, with a little slack - see OverlayApp.tsx.
-export const OVERLAY_HEIGHT = 136
+const OVERLAY_HEIGHT = 136
 const BOTTOM_MARGIN = 48
 
 /**
@@ -57,7 +57,7 @@ export function createOverlayWindow(): BrowserWindow {
 }
 
 /** Bottom-center of the primary display's work area (i.e. excluding the taskbar). */
-export function positionOverlayWindow(window: BrowserWindow): void {
+function positionOverlayWindow(window: BrowserWindow): void {
   const { x, y, width, height } = screen.getPrimaryDisplay().workArea
   window.setBounds({
     x: Math.round(x + (width - OVERLAY_WIDTH) / 2),
