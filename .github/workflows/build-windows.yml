@@ -1,0 +1,108 @@
+name: Build Windows
+
+# Builds the Windows NSIS installer on a real Windows runner.
+#
+# This cannot be done from Linux or WSL, and not only for the usual
+# cross-compilation reasons: `uiohook-napi` (the global key hook that
+# push-to-talk is built on) is a native addon that has to be rebuilt against
+# the target's toolchain, which needs Visual Studio Build Tools. A build
+# produced anywhere else would either fail outright or, worse, package a
+# key hook that cannot load - silently disabling the app's primary feature
+# while every other part of it looks fine. See WINDOWS.md section 7.
+#
+# Deliberately separate from ci.yml, for the same reason build-macos.yml is:
+# that job is the fast typecheck/lint/test gate on every push and must stay
+# cheap. This one is slow, produces a ~100 MB artifact, and is only worth
+# running on demand or when a release branch moves.
+on:
+  push:
+    branches: [macos-support]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: nsis installer (x64)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Same floor as ci.yml - electron-vite needs a Node with
+          # crypto.hash (>= 20.19 / >= 22.12).
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      # `--publish never` is required, not optional. electron-builder detects
+      # CI and silently switches on implicit publishing, which then fails the
+      # whole step with "GitHub Personal Access Token is not set" *after* the
+      # installer has already been built - a confusing failure with nothing
+      # to do with packaging. This job produces an artifact and nothing else.
+      #
+      # CSC_IDENTITY_AUTO_DISCOVERY=false mirrors the build:win script: there
+      # is no code-signing certificate, and without this electron-builder can
+      # go looking for one. The installer is therefore unsigned, and
+      # SmartScreen will warn on first run exactly as it does for the
+      # released build (see README's Install section).
+      - name: Package installer
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win --publish never
+
+      - name: List build output
+        shell: bash
+        run: ls -la dist/ && ls -la dist/win-unpacked/resources/
+
+      # Checks the packaging facts that would silently produce a broken app
+      # rather than a failed build. Each is a real failure mode:
+      #
+      #  - uiohook-napi missing or unbuilt => push-to-talk, the feature the
+      #    app is actually for, fails to load at runtime while everything
+      #    else works. This is the single most important check here and the
+      #    whole reason this job runs on Windows.
+      #  - serve_gpu.py missing => extraResources did not land where
+      #    gpuWrapperPath.ts resolves it, so the sidecar can never start.
+      #  - no installer produced => the job "succeeded" with nothing to ship.
+      - name: Verify packaged output
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d dist/win-unpacked || { echo "MISSING dist/win-unpacked"; exit 1; }
+
+          echo "--- installer ---"
+          ls dist/*.exe
+          test -n "$(ls dist/*-setup.exe 2>/dev/null)" || { echo "MISSING *-setup.exe"; exit 1; }
+
+          echo "--- extraResources (sidecar wrapper must sit beside app.asar) ---"
+          test -f dist/win-unpacked/resources/serve_gpu.py || { echo "MISSING serve_gpu.py"; exit 1; }
+          test -f dist/win-unpacked/resources/app.asar || { echo "MISSING app.asar"; exit 1; }
+
+          echo "--- native key hook (push-to-talk) ---"
+          found=$(find dist/win-unpacked -name 'uiohook-napi.node' -o -name 'iohook*.node' | head -5)
+          if [ -z "$found" ]; then
+            echo "NOTE: no uiohook-napi.node found loose - it may be inside app.asar"
+            node -e "
+              const {execFileSync}=require('child_process');
+              const out=execFileSync('npx',['asar','list','dist/win-unpacked/resources/app.asar'],{encoding:'utf-8'});
+              const hit=out.split('\n').filter(l=>/uiohook/i.test(l));
+              if(!hit.length){console.error('MISSING uiohook-napi inside app.asar');process.exit(1)}
+              console.log('found inside asar:'); hit.slice(0,10).forEach(l=>console.log('  '+l));
+            "
+          else
+            echo "$found"
+          fi
+
+          echo "--- d3d/dxc shipped for the GPU path ---"
+          ls dist/win-unpacked/dxcompiler.dll dist/win-unpacked/dxil.dll 2>/dev/null || \
+            echo "NOTE: dxcompiler/dxil not present - GPU (Dawn D3D12) path may be unavailable"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blurt-windows-x64-setup
+          path: dist/*-setup.exe
+          if-no-files-found: error
