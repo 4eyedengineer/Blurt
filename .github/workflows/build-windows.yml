@@ -82,20 +82,19 @@ jobs:
           test -f dist/win-unpacked/resources/serve_gpu.py || { echo "MISSING serve_gpu.py"; exit 1; }
           test -f dist/win-unpacked/resources/app.asar || { echo "MISSING app.asar"; exit 1; }
 
+          # Assert the WINDOWS binary specifically. uiohook-napi ships
+          # prebuilds for every platform in its npm package, so simply
+          # finding "a uiohook-napi.node" proves nothing - an earlier
+          # version of this check globbed, truncated with `head -5`, and
+          # passed while printing only darwin and linux prebuilds. The one
+          # binary this app needs on this platform is the one it never
+          # looked at.
           echo "--- native key hook (push-to-talk) ---"
-          found=$(find dist/win-unpacked -name 'uiohook-napi.node' -o -name 'iohook*.node' | head -5)
-          if [ -z "$found" ]; then
-            echo "NOTE: no uiohook-napi.node found loose - it may be inside app.asar"
-            node -e "
-              const {execFileSync}=require('child_process');
-              const out=execFileSync('npx',['asar','list','dist/win-unpacked/resources/app.asar'],{encoding:'utf-8'});
-              const hit=out.split('\n').filter(l=>/uiohook/i.test(l));
-              if(!hit.length){console.error('MISSING uiohook-napi inside app.asar');process.exit(1)}
-              console.log('found inside asar:'); hit.slice(0,10).forEach(l=>console.log('  '+l));
-            "
-          else
-            echo "$found"
-          fi
+          HOOK=dist/win-unpacked/resources/app.asar.unpacked/node_modules/uiohook-napi/prebuilds/win32-x64/uiohook-napi.node
+          test -f "$HOOK" || { echo "MISSING win32-x64 uiohook-napi.node - push-to-talk would not load"; exit 1; }
+          ls -l "$HOOK"
+          echo "  (all prebuilds present, for reference:)"
+          ls dist/win-unpacked/resources/app.asar.unpacked/node_modules/uiohook-napi/prebuilds/
 
           echo "--- d3d/dxc shipped for the GPU path ---"
           ls dist/win-unpacked/dxcompiler.dll dist/win-unpacked/dxil.dll 2>/dev/null || \
