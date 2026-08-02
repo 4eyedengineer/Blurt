@@ -3,6 +3,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { describe, expect, it, vi } from 'vitest'
 import { log } from '../log'
+import { DEFAULT_MANAGED_COMMAND } from '../../shared/types'
 import {
   buildManagedChildEnv,
   commandReferencesServeGpuWrapper,
@@ -690,6 +691,35 @@ describe('resolveManagedCliForImport', () => {
     )
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.error).toMatch(/no runtime venv has been resolved/i)
+  })
+
+  // Binds the resolver to the command a fresh install ACTUALLY gets, rather
+  // than to a copy of that string. The tests above pin the template
+  // literally, so they would keep passing if DEFAULT_MANAGED_COMMAND ever
+  // changed shape and stopped being resolvable.
+  it('resolves the real DEFAULT_MANAGED_COMMAND a fresh install ships with', () => {
+    expect(resolveManagedCliForImport(DEFAULT_MANAGED_COMMAND, venvPaths)).toEqual({
+      ok: true,
+      cli: venvPaths.litertLmExe
+    })
+  })
+
+  // The regression this pair exists for. Settings' Download button used to
+  // call the placeholder-UNaware resolveImportCli with this exact string, so
+  // on a fresh install it name-sniffed the literal "{venvPython}", matched
+  // nothing, and failed 100% of the time - "Can't derive the litert-lm
+  // import CLI from managed command's binary "{venvPython}"". It was
+  // invisible to every developer, because a settings.json with a
+  // hand-edited absolute-path command resolves fine.
+  //
+  // Asserting the failure (rather than deleting it as a curiosity) is the
+  // point: it records that resolveImportCli MUST NOT be handed a raw
+  // template, so anyone reaching for it on a settings-derived command has a
+  // failing test explaining why.
+  it('documents why resolveImportCli must not be used on the default command', () => {
+    const wrong = resolveImportCli(DEFAULT_MANAGED_COMMAND)
+    expect(wrong.ok).toBe(false)
+    expect(wrong.ok === false && wrong.error).toContain('{venvPython}')
   })
 
   it('falls through to resolveImportCli for a custom (non-placeholder) command', () => {

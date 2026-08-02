@@ -3,15 +3,27 @@ import { IPC } from '../../shared/ipc-channels'
 import type { ModelId } from '../../shared/types'
 import type { HardwareProbeResult } from '../../shared/hardware'
 import type { ModelManager } from '../backend/modelManager'
-import { resolveImportCli } from '../backend/sidecar'
+import { resolveManagedCliForImport } from '../backend/sidecar'
 import { probeHardware } from '../hardware/hardwareProbe'
 import type { SettingsStore } from '../store/settingsStore'
+import type { VenvPaths } from '../runtime/venvResolver'
 
-/** Wires the ModelManager (download/list/cancel/remove) up to IPC, forwarding progress events to the renderer for the Settings screen's progress bars. */
+/**
+ * Wires the ModelManager (download/list/cancel/remove) up to IPC, forwarding
+ * progress events to the renderer for the Settings screen's progress bars.
+ *
+ * `venvPaths` is needed for one reason: the download's import step has to
+ * resolve the litert-lm CLI out of the managed sidecar command, and the
+ * default command is a *template* referencing `{venvPython}` - see
+ * `resolveManagedCliForImport`. Undefined on platforms that do not manage a
+ * runtime of their own (Linux/WSL dev builds), where the command is expected
+ * to be a real path already.
+ */
 export function registerModelManagerIpc(
   modelManager: ModelManager,
   settingsStore: SettingsStore,
-  getWindow: () => BrowserWindow | null
+  getWindow: () => BrowserWindow | null,
+  venvPaths?: VenvPaths
 ): void {
   ipcMain.handle(IPC.models.list, () => ({
     installed: modelManager.listInstalled(),
@@ -24,7 +36,21 @@ export function registerModelManagerIpc(
     // sidecar command (see resolveImportCli's doc comment for why that's
     // not simply "the managed command's first token") so the import lands
     // where `serve` will find it.
-    const cliResolution = resolveImportCli(settingsStore.get().sidecar.managedCommand)
+    //
+    // This MUST be the placeholder-aware resolver, not the raw
+    // `resolveImportCli`. The default managed command is a template
+    // referencing `{venvPython}` (see DEFAULT_MANAGED_COMMAND), and
+    // `resolveImportCli` name-sniffs the first token as a real path - so on
+    // a fresh install it saw the literal "{venvPython}", matched neither a
+    // litert-lm nor a python name, and hard-errored. That made the Download
+    // button in Settings fail 100% of the time for every new user, while
+    // BackendController's own import path (which already used the
+    // placeholder-aware resolver) worked - so the bug was invisible on any
+    // machine whose settings.json had a hand-edited absolute-path command.
+    const cliResolution = resolveManagedCliForImport(
+      settingsStore.get().sidecar.managedCommand,
+      venvPaths
+    )
     // Fire-and-forget: progress/completion (including a resolution failure) is reported via the 'progress' event.
     void modelManager.download(modelId, cliResolution)
   })
