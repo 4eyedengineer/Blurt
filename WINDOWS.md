@@ -318,6 +318,19 @@ ignore, because the package ships a prebuilt N-API binary which loads correctly 
 installer is not code-signed, so a fresh install triggers a Windows SmartScreen warning. See the
 README's Troubleshooting section for what to click through.
 
+You do not need a Windows machine of your own for this. `.github/workflows/build-windows.yml` runs
+the same two commands on a `windows-latest` runner and uploads the installer as a build artifact. It
+runs on every push to `main` (so a release commit produces its installer without anyone remembering
+to trigger it) and can be started by hand from the Actions tab.
+
+That workflow also verifies the packaged output, because the ways this can go wrong are quiet rather
+than loud: it checks that the `win32-x64` `uiohook-napi.node` is present (push-to-talk silently fails
+to load without it), that `serve_gpu.py` sits beside `app.asar` where `gpuWrapperPath.ts` looks for it
+(the sidecar can never start otherwise), and that an installer was actually produced at all. Note the
+first of those specifically: `uiohook-napi` ships prebuilds for every platform, so checking that
+"a `uiohook-napi.node` exists" proves nothing - an earlier version of that check passed while only
+ever looking at the darwin and linux binaries.
+
 This has been run on a real Windows host and the resulting installer was verified
 end to end: boot to a ready backend on GPU, a second launch refused by the single-instance lock,
 and a clean shutdown with no orphaned sidecar process.
