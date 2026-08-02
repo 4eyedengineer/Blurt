@@ -16,7 +16,9 @@ name: Build Windows
 # running on demand or when a release branch moves.
 on:
   push:
-    branches: [macos-support]
+    # main is where releases are cut from, so a release commit should
+    # produce its installer without anyone remembering to trigger it.
+    branches: [main, macos-support]
   workflow_dispatch:
 
 jobs:
