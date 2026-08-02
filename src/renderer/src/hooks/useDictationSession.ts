@@ -15,6 +15,15 @@ export type DictationPhase =
   | 'cleaning'
   | 'ready'
   | 'transforming'
+  /**
+   * Capturing a spoken edit instruction ("delete the last sentence") rather
+   * than dictation. Same capture and transcription path as 'recording' - the
+   * difference is only what the resulting text is used for: it becomes the
+   * `command` argument to voiceEdit instead of the transcript being edited.
+   */
+  | 'command-recording'
+  /** Applying an edit instruction to the transcript - streams like 'transforming'. */
+  | 'editing'
 
 /** How long the inline word-diff view stays up after a cleanup pass before settling to the plain cleaned text. */
 const CLEANUP_REVEAL_MS = 2000
@@ -42,7 +51,17 @@ export interface UseDictationSession {
   streamPreview: string
   /** Non-null while the brief inline diff-reveal (raw -> cleaned, or pre- -> post-voice-edit) is showing; render this instead of `displayText` when set. */
   reveal: DiffToken[] | null
+  /**
+   * The spoken edit instruction as recognized so far - updates live while
+   * `phase === 'command-recording'` and settles to the final transcript when
+   * recording stops. The edit bar mirrors this into its input, so the user
+   * reads back what was actually heard and can correct it before applying.
+   * Empty when no spoken command has been captured.
+   */
+  spokenCommand: string
   toggleRecording: () => void
+  /** Starts/stops capturing a spoken edit instruction. No-op unless there is a transcript to edit. */
+  toggleCommandRecording: () => void
   applyTransform: (mode: TransformMode) => Promise<void>
   applyVoiceEdit: (command: string) => Promise<void>
   copyDisplayText: () => Promise<boolean>
@@ -67,6 +86,7 @@ export function useDictationSession(): UseDictationSession {
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [streamPreview, setStreamPreview] = useState('')
   const [reveal, setReveal] = useState<DiffToken[] | null>(null)
+  const [spokenCommand, setSpokenCommand] = useState('')
 
   const sessionIdRef = useRef<string | null>(null)
   const startTimeRef = useRef(0)
@@ -143,6 +163,7 @@ export function useDictationSession(): UseDictationSession {
     setEntryId(null)
     setStreamPreview('')
     setReveal(null)
+    setSpokenCommand('')
   }, [clearRevealTimer])
 
   const startRecording = useCallback(async () => {
@@ -257,6 +278,85 @@ export function useDictationSession(): UseDictationSession {
     }
   }, [phase, startRecording, stopRecording])
 
+  /**
+   * Captures a spoken edit instruction. Reuses the dictation capture and
+   * transcription path wholesale - same session API, same mic, same model -
+   * because an edit command is just a short dictation whose text happens to
+   * be an instruction rather than content.
+   *
+   * Deliberately does NOT call startNew(): the transcript being edited has
+   * to survive this, so none of the session state is reset. It also cannot
+   * overlap with dictation, since both use `sessionIdRef` and the one
+   * `useAudioCapture` instance - which is fine, as there is nothing to edit
+   * until a dictation has finished.
+   */
+  const startCommandRecording = useCallback(async () => {
+    setSessionError(null)
+    setSpokenCommand('')
+    setPhase('command-recording')
+
+    const sessionId = await window.api.dictation.startSession({
+      sampleRate: 16000,
+      vocabulary: settings.customVocabulary
+    })
+    sessionIdRef.current = sessionId
+
+    // Stream the partial transcript straight into `spokenCommand` so the
+    // edit bar fills in as the user speaks - the same live feedback the
+    // transcript panel gives during dictation, and the user's only
+    // confirmation the mic is actually hearing the instruction.
+    const unsubscribePartial = window.api.dictation.onPartialTranscript((sid, text) => {
+      if (sid === sessionId) setSpokenCommand(text)
+    })
+    const unsubscribeError = window.api.dictation.onSessionError((sid, error) => {
+      if (sid === sessionId) setSessionError(error.message)
+    })
+    unsubscribePartialRef.current = () => {
+      unsubscribePartial()
+      unsubscribeError()
+    }
+
+    try {
+      await audio.start({ deviceId: settings.inputDeviceId })
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      unsubscribePartialRef.current()
+      sessionIdRef.current = null
+      // Back to 'ready', not 'idle' - the transcript is still on screen and
+      // still editable by typing; only the spoken shortcut failed.
+      setPhase('ready')
+      setSessionError(`Microphone capture failed: ${reason}`)
+      void window.api.dictation.endSession(sessionId)
+    }
+  }, [audio, settings.customVocabulary, settings.inputDeviceId])
+
+  const stopCommandRecording = useCallback(async () => {
+    const sessionId = sessionIdRef.current
+    if (!sessionId) return
+    sessionIdRef.current = null
+
+    audio.stop()
+    setPhase('finalizing')
+
+    const finalCommand = await window.api.dictation.endSession(sessionId)
+    unsubscribePartialRef.current()
+    setPhase('ready')
+
+    // The command is handed to the edit bar rather than applied here. A
+    // misheard instruction rewrites the user's text with no way back, so
+    // the recognized wording is shown for confirmation first - and stays
+    // editable, so a near-miss can be corrected instead of re-spoken.
+    setSpokenCommand(finalCommand.trim())
+  }, [audio])
+
+  const toggleCommandRecording = useCallback(() => {
+    if (phase === 'command-recording') {
+      void stopCommandRecording()
+    } else if (phase === 'ready' && displayText) {
+      void startCommandRecording()
+    }
+  }, [phase, displayText, startCommandRecording, stopCommandRecording])
+
   const persistCurrent = useCallback(
     async (patch: Partial<Pick<DictationEntry, 'displayText' | 'displayMode'>>) => {
       if (!entryId) return
@@ -296,12 +396,22 @@ export function useDictationSession(): UseDictationSession {
     async (command: string) => {
       if (!displayText || !command.trim()) return
       const before = displayText
-      const edited = await window.api.dictation.voiceEdit(displayText, command)
+      // Streamed and phase-tracked for the same reason applyTransform is:
+      // this is a full model rewrite of the transcript and can take seconds.
+      // It used to run with neither, so the UI sat on 'ready' with the edit
+      // bar still live - no progress, and nothing stopping a second edit
+      // being fired at text the first one was still rewriting.
+      setPhase('editing')
+      const edited = await withStreamPreview((operationId) =>
+        window.api.dictation.voiceEdit(displayText, command, operationId)
+      )
       setDisplayText(edited)
+      setPhase('ready')
+      setSpokenCommand('')
       showReveal(diffWords(before, edited), VOICE_EDIT_REVEAL_MS)
       await persistCurrent({ displayText: edited })
     },
-    [displayText, persistCurrent, showReveal]
+    [displayText, persistCurrent, showReveal, withStreamPreview]
   )
 
   const copyDisplayText = useCallback(async () => {
@@ -345,7 +455,9 @@ export function useDictationSession(): UseDictationSession {
     micLevel: audio.level,
     streamPreview,
     reveal,
+    spokenCommand,
     toggleRecording,
+    toggleCommandRecording,
     applyTransform,
     applyVoiceEdit,
     copyDisplayText,

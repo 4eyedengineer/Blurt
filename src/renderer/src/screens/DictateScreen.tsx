@@ -9,12 +9,16 @@ import { DiffReveal } from '../components/DiffReveal'
 import './DictateScreen.css'
 
 const STATUS_LABEL: Record<UseDictationSession['phase'], string> = {
-  idle: 'Tap to start dictating',
+  // idle has no status label - the transcript placeholder already tells the
+  // user to press record, so a label here would just say the same thing twice.
+  idle: '',
   recording: 'Listening…',
   finalizing: 'Finishing up…',
   cleaning: 'Cleaning up…',
   ready: 'Ready',
-  transforming: 'Transforming…'
+  transforming: 'Transforming…',
+  'command-recording': 'Listening for an edit…',
+  editing: 'Applying edit…'
 }
 
 export function DictateScreen({ session }: { session: UseDictationSession }): React.JSX.Element {
@@ -30,7 +34,9 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
     micLevel,
     streamPreview,
     reveal,
+    spokenCommand,
     toggleRecording,
+    toggleCommandRecording,
     applyTransform,
     applyVoiceEdit,
     copyDisplayText,
@@ -38,29 +44,30 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
   } = session
 
   const recording = phase === 'recording'
+  /** Capturing a spoken edit instruction - the mic is live, but the transcript is not being replaced. */
+  const commandRecording = phase === 'command-recording'
   const streamingLive = phase === 'recording' || phase === 'finalizing'
-  const busy = phase === 'cleaning' || phase === 'transforming' || phase === 'finalizing'
-  // While streaming (live audio, or a cleanup/transform rewrite), render
+  const rewriting = phase === 'cleaning' || phase === 'transforming' || phase === 'editing'
+  const busy = rewriting || phase === 'finalizing'
+  // While streaming (live audio, or a cleanup/transform/edit rewrite), render
   // updates immediately with no transition on the text itself - only the
   // shimmer/caret below are animated.
   const shownText = streamingLive
     ? liveText
     : phase === 'cleaning'
       ? streamPreview || rawTranscript
-      : phase === 'transforming'
+      : phase === 'transforming' || phase === 'editing'
         ? streamPreview || displayText
         : displayText
-  const showCaret = streamingLive || phase === 'cleaning' || phase === 'transforming'
-  const placeholder = recording
-    ? 'Listening for speech…'
-    : 'Your dictation will appear here. Press the microphone to begin.'
+  const showCaret = streamingLive || rewriting
+  const placeholder = recording ? 'Listening for speech…' : 'Press record to start dictating.'
 
   return (
     <section className="dictate-screen">
       <header className="dictate-screen__header">
         <div>
           <h1>Dictate</h1>
-          <p className="dictate-screen__status">{STATUS_LABEL[phase]}</p>
+          {STATUS_LABEL[phase] && <p className="dictate-screen__status">{STATUS_LABEL[phase]}</p>}
         </div>
         {displayText && phase === 'ready' && (
           <button type="button" className="dictate-screen__new" onClick={startNew}>
@@ -70,10 +77,19 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
       </header>
 
       <div className="dictate-screen__record">
-        <RecordButton recording={recording} disabled={busy} onToggle={toggleRecording} />
+        {/* Disabled while a spoken edit is being captured: both share the one
+            audio capture and session id, so starting a dictation mid-command
+            would tear the command's session out from under it. */}
+        <RecordButton
+          recording={recording}
+          disabled={busy || commandRecording}
+          onToggle={toggleRecording}
+        />
       </div>
 
-      {recording && <MicLevelMeter level={micLevel} />}
+      {/* Shown for a spoken edit too - it is the same microphone, and the
+          same question of whether it is actually picking anything up. */}
+      {(recording || commandRecording) && <MicLevelMeter level={micLevel} />}
 
       {sessionError && <p className="dictate-screen__warning">{sessionError}</p>}
 
@@ -116,13 +132,16 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
 
       <TransformBar
         activeMode={displayMode}
-        disabled={!displayText || recording}
+        disabled={!displayText || recording || commandRecording}
         busy={busy}
         onTransform={(mode) => void applyTransform(mode)}
       />
 
       <VoiceEditBar
         disabled={!displayText || recording || busy}
+        recording={commandRecording}
+        spokenCommand={spokenCommand}
+        onToggleRecording={toggleCommandRecording}
         onApply={(cmd) => void applyVoiceEdit(cmd)}
       />
 

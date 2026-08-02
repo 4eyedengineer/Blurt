@@ -36,3 +36,26 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* Square, icon-only - narrower than the text buttons so the input keeps the
+   width. Sized off the input's own padding so the three controls stay the
+   same height as each other. */
+.voice-edit-bar__mic {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  width: 38px;
+  flex: 0 0 auto;
+}
+
+/* Recording is the one state here that must be unmistakable at a glance:
+   the mic is live and the user is being listened to. */
+.voice-edit-bar__mic--recording {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.voice-edit-bar__mic--recording:hover:not(:disabled) {
+  border-color: var(--color-danger);
+}
