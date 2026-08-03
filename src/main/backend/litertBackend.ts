@@ -12,7 +12,6 @@ import type {
 } from '../../shared/backend'
 import {
   buildCleanupRequest,
-  buildTranscriptionRequest,
   buildTransformRequest,
   buildVoiceEditRequest,
   buildWarmupRequest,
@@ -397,25 +396,90 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     onStreamText: (text: string) => void
   ): Promise<string> {
     const wavBase64 = pcm16ToWavBase64(samples, session.sampleRate)
-    const request = buildTranscriptionRequest({
-      model: this.options.modelId,
-      wavBase64,
-      vocabulary: session.vocabulary
-    })
+    // The one place audio becomes text, so routing it here moves every
+    // caller at once: mid-recording partial ticks, the final full-buffer
+    // pass, and the spoken edit command. Cleanup, transforms and voice edit
+    // are untouched and still run on the language model.
+    //
+    // No streaming to reproduce. The recogniser returns the window's whole
+    // transcript in one response rather than token by token, and every tick
+    // already replaces what was shown rather than appending to it (see this
+    // method's doc comment), so a single emit is the complete update. The
+    // throttled emitter stays only to keep `onStreamText`'s contract
+    // identical for callers.
+    //
+    // `stripModelPreamble` is deliberately not applied. It exists because a
+    // chat model asked to transcribe sometimes answers conversationally
+    // ("Sure, here is the transcription:"); a recogniser emits speech tokens
+    // and nothing else, so running it here could only ever damage a genuine
+    // transcript that happened to begin with a matching phrase.
+    const text = await this.enqueue(() => this.transcribeAudio(wavBase64))
     const throttled = new ThrottledTextEmitter({
       intervalMs: this.streamThrottleMs,
       emit: onStreamText
     })
-    const raw = await this.enqueue(() =>
-      this.chatCompletion(request, (accumulated) => throttled.push(stripModelPreamble(accumulated)))
-    )
-    const text = stripModelPreamble(raw)
-    // Guarantees the exact final (preamble-stripped, fully-settled) value is
-    // delivered synchronously, even if the last streamed chunk differed
-    // slightly (e.g. a preamble line only becomes strippable once the whole
-    // first line has arrived) or no chunk streamed at all (non-SSE fallback).
     throttled.flush(text)
     return text
+  }
+
+  /**
+   * Posts one audio window to the sidecar's speech-recognition route (see
+   * resources/serve_gpu.py's "Speech recognition" doc comment) and returns
+   * the transcript.
+   *
+   * Failures are mapped onto the same typed errors the chat path uses, so
+   * everything downstream - session error reporting, the status pill, the
+   * retry logic - treats a recogniser problem exactly like an engine
+   * problem. They are the same process, so in practice they usually are the
+   * same problem.
+   */
+  private async transcribeAudio(wavBase64: string): Promise<string> {
+    const baseUrl = this.options.getBaseUrl()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs)
+    try {
+      const res = await fetch(`${baseUrl}/blurt/transcribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wav: wavBase64 }),
+        signal: controller.signal
+      })
+      const payload = (await res.json().catch(() => null)) as {
+        text?: string
+        error?: string
+      } | null
+      if (!res.ok) {
+        throw new RequestFailedError(
+          payload?.error ?? `Speech recognition failed (HTTP ${res.status})`
+        )
+      }
+      if (typeof payload?.text !== 'string') {
+        throw new ParseErrorBackendError(
+          'Speech recognition returned a response with no transcript in it.'
+        )
+      }
+      return payload.text.trim()
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new TimeoutBackendError(
+          `Speech recognition timed out after ${this.requestTimeoutMs}ms`
+        )
+      }
+      if (
+        err instanceof RequestFailedError ||
+        err instanceof ParseErrorBackendError ||
+        err instanceof TimeoutBackendError
+      ) {
+        throw err
+      }
+      throw new SidecarUnreachableError(
+        `Could not reach the speech recogniser at ${baseUrl}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /**

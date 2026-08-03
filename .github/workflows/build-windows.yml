@@ -83,6 +83,11 @@ jobs:
           echo "--- extraResources (sidecar wrapper must sit beside app.asar) ---"
           test -f dist/win-unpacked/resources/serve_gpu.py || { echo "MISSING serve_gpu.py"; exit 1; }
           test -f dist/win-unpacked/resources/app.asar || { echo "MISSING app.asar"; exit 1; }
+          # asr.py is imported by serve_gpu.py as a plain `import asr`, which
+          # resolves via the script's own directory - so it has to be in the
+          # same directory, not merely present somewhere. Without it every
+          # dictation fails while the app otherwise starts perfectly.
+          test -f dist/win-unpacked/resources/asr.py || { echo "MISSING asr.py"; exit 1; }
 
           # Assert the WINDOWS binary specifically. uiohook-napi ships
           # prebuilds for every platform in its npm package, so simply

@@ -1,5 +1,56 @@
-import { existsSync } from 'fs'
-import { posix, win32 } from 'path'
+import { existsSync, readFileSync } from 'fs'
+// `join` (host-native) only for reading a real file inside an already
+// absolute venvDir. Path *construction* below deliberately uses the explicit
+// posix/win32 variants instead - see venvPathsFor.
+import { join, posix, win32 } from 'path'
+
+/**
+ * Everything pip-installed into the runtime venv, pinned, in the order they
+ * are installed and recorded.
+ *
+ * `litert-lm` runs the language model. The other three run the speech
+ * recogniser (see resources/asr.py): `ai-edge-litert` is the LiteRT
+ * interpreter that loads its `.tflite` graph, `tokenizers` turns the
+ * decoder's token ids back into text, and `numpy` does the mel front end.
+ * All four are pure wheels with prebuilt Windows binaries, so none of this
+ * asks the user's machine to compile anything - which was the main risk in
+ * adding a second inference runtime at all.
+ *
+ * `litert-lm` pulls in none of the other three itself (verified against a
+ * real provisioned venv), so they are named here rather than assumed.
+ *
+ * Every version is pinned to one verified working against a real Windows
+ * host with a discrete NVIDIA GPU (see WINDOWS.md's GPU section). Bumped
+ * deliberately when a newer one is verified, never automatically -
+ * `--upgrade` without a pin would silently change behaviour on some future
+ * relaunch.
+ *
+ * macOS is arm64 (Apple Silicon) only. Not a preference of this project's,
+ * an upstream packaging constraint: per PyPI, `litert-lm` itself ships a
+ * pure-Python wheel, but its engine dependency `litert-lm-api` publishes
+ * macOS wheels tagged only `macosx_12_0_arm64` - true of every release from
+ * 0.12.0 through 0.14.0, with no Intel/x86_64 or `universal2` build in any
+ * of them. On an Intel Mac the install step fails outright with pip's own
+ * "no matching distribution found". That is the correct outcome, not a bug
+ * to route around: it surfaces through the same pip-failure text the setup
+ * screen already shows for any other pip failure, rather than this code
+ * detecting Intel Macs itself and pre-empting pip with a parallel error
+ * path.
+ */
+export const RUNTIME_PIP_SPECS = [
+  'litert-lm==0.14.0',
+  'ai-edge-litert==2.1.6',
+  'tokenizers==0.23.1',
+  'numpy>=2.0'
+]
+
+/** Written into the venv once every package in RUNTIME_PIP_SPECS installed cleanly - see isVenvHealthy for what it is for. */
+export const RUNTIME_MARKER_FILENAME = '.blurt-runtime'
+
+/** Expected contents of RUNTIME_MARKER_FILENAME for this build. Compared exactly, so RUNTIME_PIP_SPECS' order is part of the contract. */
+export function runtimeMarkerContents(): string {
+  return RUNTIME_PIP_SPECS.join('\n')
+}
 
 /**
  * Resolves the location and health of the self-managed Python venv that
@@ -128,7 +179,29 @@ export function getRuntimeBaseDir(
   )
 }
 
-/** Whether both the interpreter and the `litert-lm` console-script exist - used to decide whether to (re)create the venv. */
+/**
+ * Whether this venv is usable as-is, or has to be provisioned again.
+ *
+ * The interpreter and the `litert-lm` script existing is necessary but not
+ * sufficient. A venv built by an older Blurt has both and is still missing
+ * whatever packages a newer Blurt added - `ai-edge-litert` and friends for
+ * the speech recogniser, most recently. Judged on file existence alone, such
+ * a venv passes, setup is skipped, and every dictation then fails on an
+ * import error inside the sidecar, on exactly the machines that have been
+ * running Blurt longest.
+ *
+ * So the marker written at the end of a successful install has to match the
+ * dependency set this build expects, byte for byte. Anything else - absent,
+ * stale, half-written - means provision again. That is cheap and safe (pip
+ * skips what is already satisfied), and it makes future dependency changes
+ * self-healing rather than a silent breakage nobody thinks to check for.
+ */
 export function isVenvHealthy(paths: VenvPaths): boolean {
-  return existsSync(paths.pythonExe) && existsSync(paths.litertLmExe)
+  if (!existsSync(paths.pythonExe) || !existsSync(paths.litertLmExe)) return false
+  try {
+    const marker = readFileSync(join(paths.venvDir, RUNTIME_MARKER_FILENAME), 'utf-8')
+    return marker.trim() === runtimeMarkerContents().trim()
+  } catch {
+    return false
+  }
 }

@@ -132,6 +132,29 @@ Set BLURT_EAGER_MODEL_ID=<alias> to have engine creation (and therefore
 the BLURT_EFFECTIVE_BACKEND report) happen eagerly at startup instead of
 lazily on the first request - see "Eager engine creation" above.
 
+## Speech recognition (POST /blurt/transcribe)
+
+Transcription does not go through the LLM at all any more - a small
+dedicated `.tflite` recogniser handles it, and Gemma keeps only the language
+work (cleanup, transforms, voice edit). See `asr.py`, which lives beside
+this file and is imported by name (both are copied into
+`process.resourcesPath` by electron-builder's `extraResources`, and Python
+puts a script's own directory on `sys.path`, so a plain `import asr` finds
+it in both a dev run and a packaged install).
+
+That recogniser is mounted on THIS server rather than run as a second
+sidecar process, by wrapping `OpenAIHandler.do_POST` - see
+`_install_asr_route`. Two models, one process: they share the parent
+watchdog below, the pid-file hygiene in `portGuard.ts`, the readiness
+probe, one port, and one lifecycle. A second process would have duplicated
+every one of those and given the Electron side two things to keep in
+agreement about whether dictation works.
+
+Set `BLURT_ASR_MODEL` and `BLURT_ASR_TOKENIZER` to the recogniser's
+`.tflite` and its `tokenizer.json`. With either unset or missing, the route
+answers 503 with a message rather than the process refusing to start - the
+LLM half still works, and the failure lands on the request that needs it.
+
 ## Parent watchdog (crash-safe cleanup)
 
 A clean Electron quit already kills this process (see `sidecar.ts`'s
@@ -293,6 +316,91 @@ def _server_init_with_eager_engine(self, *args, **kwargs):
 
 
 serve_util.LiteRTLMServer.__init__ = _server_init_with_eager_engine
+
+_ASR_MODEL_ENV = "BLURT_ASR_MODEL"
+_ASR_TOKENIZER_ENV = "BLURT_ASR_TOKENIZER"
+_ASR_PATH = "/blurt/transcribe"
+
+
+def _handle_transcribe(handler) -> None:
+  """Serves POST /blurt/transcribe: {"wav": "<base64>"} -> {"text": "..."}.
+
+  Mounted on the LLM's own server rather than run as a second sidecar. The
+  recogniser and the language model are two models but one process, so they
+  share this file's parent watchdog, the pid-file hygiene in portGuard.ts,
+  the readiness probe, one port and one lifecycle. A second sidecar would
+  have duplicated every one of those, and given the Electron side two
+  processes to keep in agreement about whether dictation works.
+
+  Errors are returned as JSON with a non-2xx status rather than raised: this
+  runs on the server's request thread, and an exception here would surface
+  to the app as a dropped connection, which reads as "the engine died"
+  rather than "transcription failed".
+  """
+  import base64  # pylint: disable=import-outside-toplevel
+  import json  # pylint: disable=import-outside-toplevel
+
+  def respond(status: int, payload: dict) -> None:
+    body = json.dumps(payload).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+  model_path = os.environ.get(_ASR_MODEL_ENV, "").strip()
+  tokenizer_path = os.environ.get(_ASR_TOKENIZER_ENV, "").strip()
+  if not model_path or not tokenizer_path:
+    respond(503, {"error": "No speech recognition model is configured."})
+    return
+  if not os.path.exists(model_path) or not os.path.exists(tokenizer_path):
+    respond(503, {"error": "The speech recognition model is not installed."})
+    return
+
+  try:
+    length = int(handler.headers.get("Content-Length", 0))
+    request = json.loads(handler.rfile.read(length) or b"{}")
+    wav_bytes = base64.b64decode(request["wav"])
+  except Exception as err:  # pylint: disable=broad-exception-caught
+    respond(400, {"error": f"Malformed transcription request: {err}"})
+    return
+
+  try:
+    import asr  # pylint: disable=import-outside-toplevel
+
+    text = asr.transcribe_wav(model_path, tokenizer_path, wav_bytes)
+  except Exception as err:  # pylint: disable=broad-exception-caught
+    sys.stderr.write(f"[serve_gpu] transcription failed: {err!r}\n")
+    sys.stderr.flush()
+    respond(500, {"error": f"Transcription failed: {err}"})
+    return
+
+  respond(200, {"text": text})
+
+
+def _install_asr_route() -> None:
+  """Adds `_ASR_PATH` to OpenAIHandler's POST routing.
+
+  `do_POST` builds its router dict fresh per request and 404s anything not
+  in it, so there is no table to register into - the method itself is
+  wrapped, and anything that is not our path is handed to the original
+  untouched.
+  """
+  from litert_lm_cli.commands import openai_handler  # pylint: disable=import-outside-toplevel
+
+  original_do_post = openai_handler.OpenAIHandler.do_POST
+
+  def do_post_with_asr(self):
+    path_without_query, *_ = self.path.split("?", 1)
+    if path_without_query == _ASR_PATH:
+      _handle_transcribe(self)
+      return
+    original_do_post(self)
+
+  openai_handler.OpenAIHandler.do_POST = do_post_with_asr
+
+
+_install_asr_route()
 
 _PARENT_PID_ENV = "BLURT_PARENT_PID"
 

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   buildCleanupRequest,
   buildSilentWavBase64,
-  buildTranscriptionRequest,
   buildTransformRequest,
   buildVoiceEditRequest,
   buildWarmupRequest,
@@ -20,28 +19,6 @@ import {
 } from './litertWire'
 
 describe('request builders', () => {
-  it('builds a transcription request with an input_audio content part', () => {
-    const req = buildTranscriptionRequest({ model: 'gemma-4-e2b', wavBase64: 'QUJD' })
-    expect(req.model).toBe('gemma-4-e2b')
-    expect(req.stream).toBe(true)
-    expect(Array.isArray(req.messages[0].content)).toBe(true)
-    const parts = req.messages[0].content as Array<Record<string, unknown>>
-    const audioPart = parts.find((p) => p.type === 'input_audio')
-    expect(audioPart).toMatchObject({ input_audio: { data: 'QUJD', format: 'wav' } })
-  })
-
-  it('includes a vocabulary hint when custom vocabulary is provided', () => {
-    const req = buildTranscriptionRequest({
-      model: 'gemma-4-e2b',
-      wavBase64: 'QUJD',
-      vocabulary: ['Kubernetes', 'Serendipity']
-    })
-    const parts = req.messages[0].content as Array<{ type: string; text?: string }>
-    const textPart = parts.find((p) => p.type === 'text')
-    expect(textPart?.text).toContain('Kubernetes')
-    expect(textPart?.text).toContain('Serendipity')
-  })
-
   it('omits the vocabulary hint when there is no custom vocabulary', () => {
     const req = buildCleanupRequest({ model: 'gemma-4-e2b', text: 'hello' })
     const system = req.messages[0]
