@@ -57,6 +57,36 @@ describe('parseGpuRegistryOutput', () => {
       { name: 'NVIDIA GeForce RTX Laptop GPU', dedicatedVramBytes: 6442450944 }
     ])
   })
+
+  /**
+   * The exact stdout captured from a run that PowerShell exited 1 on, having
+   * written nothing to stderr but CLIXML progress records. Both adapters are
+   * present and correct, which is why the caller now parses stdout before
+   * looking at the exit code rather than discarding it - see the `close`
+   * handler in probeGpusWindows.
+   */
+  it('parses the output of a run that exited non-zero, since the adapters are still there', () => {
+    const output =
+      'Intel(R) UHD Graphics :: qwMemorySize=\r\n' +
+      'NVIDIA GeForce RTX 3060 Laptop GPU :: qwMemorySize=6442450944\r\n'
+    expect(parseGpuRegistryOutput(output)).toEqual([
+      { name: 'Intel(R) UHD Graphics', dedicatedVramBytes: null },
+      { name: 'NVIDIA GeForce RTX 3060 Laptop GPU', dedicatedVramBytes: 6442450944 }
+    ])
+  })
+
+  /**
+   * PowerShell serialises its progress stream as CLIXML when stderr is
+   * redirected, and on the observed failing run that XML was the only thing
+   * on stderr. If any of it ever reached stdout it must not be mistaken for
+   * an adapter.
+   */
+  it('does not mistake CLIXML progress noise for an adapter line', () => {
+    const output =
+      '#< CLIXML\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">' +
+      '<Obj S="progress" RefId="0"><MS><AV>Preparing modules for first use.</AV></MS></Obj></Objs>'
+    expect(parseGpuRegistryOutput(output)).toEqual([])
+  })
 })
 
 describe('probeHardware', () => {

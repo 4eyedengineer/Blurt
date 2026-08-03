@@ -2,6 +2,7 @@ import { spawn } from 'child_process'
 import { statfsSync } from 'fs'
 import { totalmem } from 'os'
 import type { GpuInfo, HardwareProbeResult } from '../../shared/hardware'
+import { tailOfOutput } from '../backend/modelManager'
 import { log } from '../log'
 
 /**
@@ -106,6 +107,16 @@ function probeGpusWindows(): Promise<GpuInfo[]> {
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf-8')
     })
+    // stderr was piped and then never read, so every failure was reported as
+    // a bare exit code with the reason discarded - observed 25 times on a
+    // real machine with no way to find out why. An unread pipe is also a
+    // latent hang: a child that writes more than the buffer holds blocks on
+    // the write until someone drains it, and only the timeout would have
+    // saved us.
+    let stderr = ''
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf-8')
+    })
     child.on('error', (err) => {
       clearTimeout(timer)
       log.warn(`hardware: gpu probe failed to run: ${err.message}`)
@@ -113,12 +124,34 @@ function probeGpusWindows(): Promise<GpuInfo[]> {
     })
     child.on('close', (code) => {
       clearTimeout(timer)
+      // Parsed before the exit code is consulted, because a non-zero exit
+      // here does not mean the probe failed.
+      //
+      // Observed on a real machine: this script prints both adapters
+      // correctly ("NVIDIA GeForce RTX 3060 Laptop GPU ::
+      // qwMemorySize=6442450944") and PowerShell still exits 1, having
+      // written nothing to stderr but CLIXML progress records ("Preparing
+      // modules for first use"). Treating that as a failure discarded a
+      // perfectly good adapter list on every single launch - 25 times in one
+      // log - and left Settings unable to say anything about VRAM on a
+      // machine with 6 GB of it.
+      //
+      // So the exit code is demoted to what it actually is: a hint worth
+      // logging, not a verdict. What decides the outcome is whether any
+      // adapter was parsed.
+      const gpus = parseGpuRegistryOutput(stdout)
       if (code !== 0) {
-        log.warn(`hardware: gpu probe exited with code ${code}`)
-        finish([])
-        return
+        // The tail, not the head: a PowerShell failure puts the exception
+        // last, so truncating from the front discards the only useful part
+        // (the same mistake that hid a model-import failure - see
+        // tailOfOutput's doc comment).
+        const reason = stderr.trim() ? ` - ${tailOfOutput(stderr)}` : ' (no stderr output)'
+        const outcome = gpus.length
+          ? `using the ${gpus.length} adapter(s) it printed anyway`
+          : 'and printed no usable adapter lines'
+        log.warn(`hardware: gpu probe exited with code ${code} ${outcome}${reason}`)
       }
-      finish(parseGpuRegistryOutput(stdout))
+      finish(gpus)
     })
   })
 }
