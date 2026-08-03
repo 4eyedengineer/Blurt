@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events'
 import { join } from 'path'
 import type { BackendStatus, InferenceBackend } from '../../shared/backend'
-import type { Accelerator } from '../../shared/types'
+import type { Accelerator, Settings, SidecarMode } from '../../shared/types'
 import { getCatalogEntry } from '../../shared/models'
 import type { SettingsStore } from '../store/settingsStore'
 import type { ModelManager } from './modelManager'
@@ -48,6 +48,28 @@ class UnavailableBackend implements InferenceBackend {
   async voiceEdit(): Promise<string> {
     throw new Error(this.message)
   }
+}
+
+/**
+ * The short sentence a user sees when the backend is unusable, in place of
+ * the underlying engine failure (which goes to the log and the status pill's
+ * hover title - see `BackendStatus.message` vs `.detail`).
+ *
+ * Every one of these failures ends in the same place from the user's side:
+ * the record button is disabled and dictation cannot run. What differs, and
+ * all that is worth saying, is which of three things to do about it - install
+ * a model, restart, or go look at the engine they pointed us at. A stderr
+ * tail or an import traceback answers none of those questions, and putting
+ * one on screen for every failed action was what made the app feel like it
+ * was shouting.
+ *
+ * Pure and exported for its unit tests: the installed-model lookup happens in
+ * `BackendController.describeFailure`, which is the only caller.
+ */
+export function describeBackendFailure(mode: SidecarMode, modelInstalled: boolean): string {
+  if (mode === 'external') return 'Cannot reach the engine.'
+  if (!modelInstalled) return 'No model installed.'
+  return 'The model could not be loaded.'
 }
 
 /**
@@ -230,14 +252,23 @@ export class BackendController extends EventEmitter {
         // running, so forget it rather than carry it into the next status.
         if (state !== 'ready') this.effectiveAccelerator = undefined
         if (state === 'ready') this.setStatus({ state: 'ready' })
-        else if (state === 'error') this.setStatus({ state: 'error', message })
-        else if (state === 'starting' || state === 'restarting') {
+        else if (state === 'error') {
+          this.setStatus({
+            state: 'error',
+            message: this.describeFailure(settings),
+            detail: message
+          })
+        } else if (state === 'starting' || state === 'restarting') {
           this.setStatus({ state: 'starting', message })
         }
       })
       sidecar.on('fatal', (err: Error) => {
         if (generation !== this.generation) return
-        this.setStatus({ state: 'error', message: err.message })
+        this.setStatus({
+          state: 'error',
+          message: this.describeFailure(settings),
+          detail: err.message
+        })
       })
       sidecar.on('effective-accelerator', (accelerator: Accelerator) => {
         if (generation !== this.generation) return
@@ -292,7 +323,7 @@ export class BackendController extends EventEmitter {
       // cold-start cost (see LitertBackend.warmup doc comment).
       void backend.warmup()
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const detail = err instanceof Error ? err.message : String(err)
       // Stop before the generation check, not after. This used to `return`
       // first when superseded, which skipped both stops - so a rebuild that
       // failed while a newer one was already running leaked the sidecar it
@@ -303,14 +334,26 @@ export class BackendController extends EventEmitter {
       // declaration) - the early return quietly defeated it.
       sidecar?.stop()
       if (generation !== this.generation) {
-        log.warn(`backend: superseded rebuild failed and was discarded: ${message}`)
+        log.warn(`backend: superseded rebuild failed and was discarded: ${detail}`)
         return
       }
-      log.error(`backend: rebuild failed: ${message}`)
-      this.setStatus({ state: 'error', message })
+      log.error(`backend: rebuild failed: ${detail}`)
+      const message = this.describeFailure(settings)
+      this.setStatus({ state: 'error', message, detail })
+      // The short sentence, not `detail`: this is what `startSession` and
+      // friends reject with, and those rejections are shown to the user as
+      // session errors.
       this.setBackend(new UnavailableBackend(message))
       previousSidecar?.stop()
     }
+  }
+
+  /** See `describeBackendFailure` - this only supplies the installed-model lookup. */
+  private describeFailure(settings: Settings): string {
+    return describeBackendFailure(
+      settings.sidecar.mode,
+      this.modelManager.getInstalledModelPath(settings.modelId) !== null
+    )
   }
 
   private setBackend(backend: InferenceBackend): void {

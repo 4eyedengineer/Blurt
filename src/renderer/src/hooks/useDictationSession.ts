@@ -317,9 +317,27 @@ export function useDictationSession(): UseDictationSession {
     setLiveText(finalRaw)
     setPhase('cleaning')
 
-    const cleaned = await withStreamPreview((operationId) =>
-      window.api.dictation.cleanup(finalRaw, operationId)
-    )
+    // Same wedge as the two guards above, at the last step that can hit it:
+    // unguarded, an engine that dies between transcription and cleanup left
+    // the UI on "Cleaning up…" for ever with the words already captured.
+    //
+    // The raw transcript is shown as-is rather than passed off as cleaned -
+    // the user's words are the valuable part and they are already in hand,
+    // but text that never went through cleanup must not be presented as if
+    // it had. Not filed into history for the same reason.
+    let cleaned: string
+    try {
+      cleaned = await withStreamPreview((operationId) =>
+        window.api.dictation.cleanup(finalRaw, operationId)
+      )
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      setDisplayText(finalRaw)
+      setStats(computeStats(finalRaw, durationMs))
+      setPhase('ready')
+      setSessionError(reason)
+      return
+    }
     setCleanedText(cleaned)
     setDisplayText(cleaned)
     setDisplayMode('none')
@@ -482,9 +500,20 @@ export function useDictationSession(): UseDictationSession {
       const source = cleanedText || displayText
       if (!source) return
       setPhase('transforming')
-      const transformed = await withStreamPreview((operationId) =>
-        window.api.dictation.transform(source, mode, operationId)
-      )
+      // Guarded like every other model call - unguarded this left the UI on
+      // "Transforming…" with the transcript still on screen but every
+      // control disabled. Back to 'ready' with the text untouched: a
+      // transform that failed changed nothing.
+      let transformed: string
+      try {
+        transformed = await withStreamPreview((operationId) =>
+          window.api.dictation.transform(source, mode, operationId)
+        )
+      } catch (err) {
+        setPhase('ready')
+        setSessionError(err instanceof Error ? err.message : String(err))
+        return
+      }
       setDisplayText(transformed)
       setDisplayMode(mode)
       // A transform replaces displayText - if the panel was pinned on the
@@ -507,9 +536,19 @@ export function useDictationSession(): UseDictationSession {
       // bar still live - no progress, and nothing stopping a second edit
       // being fired at text the first one was still rewriting.
       setPhase('editing')
-      const edited = await withStreamPreview((operationId) =>
-        window.api.dictation.voiceEdit(displayText, command, operationId)
-      )
+      // See applyTransform - same guard, same reasoning. The spoken command
+      // is deliberately left in place so a failed edit can be retried
+      // without saying it again.
+      let edited: string
+      try {
+        edited = await withStreamPreview((operationId) =>
+          window.api.dictation.voiceEdit(displayText, command, operationId)
+        )
+      } catch (err) {
+        setPhase('ready')
+        setSessionError(err instanceof Error ? err.message : String(err))
+        return
+      }
       setDisplayText(edited)
       // See the same setShowingRaw(false) in applyTransform - a voice edit
       // replaces displayText too, and the reveal below is a diff of that

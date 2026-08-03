@@ -16,7 +16,11 @@ function acceleratorSuffix(status: BackendStatus): string {
 
 export function StatusPill({ status }: { status: BackendStatus }): React.JSX.Element {
   const label = `${LABELS[status.state]}${acceleratorSuffix(status)}`
-  const title = status.message ?? label
+  // The engine's own words on hover, the short reason otherwise. This is the
+  // one place `detail` is reachable from the UI at all - everywhere else
+  // shows `message` (see BackendStatus), so a hover is the escape hatch for
+  // anyone actually debugging rather than something every user is shown.
+  const title = status.detail ?? status.message ?? label
   return (
     <div className={`status-pill status-pill--${status.state}`} title={title}>
       <span className="status-pill__dot" />

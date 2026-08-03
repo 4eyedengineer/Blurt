@@ -70,8 +70,21 @@ export type BackendStatusState = 'starting' | 'ready' | 'error'
 
 export interface BackendStatus {
   state: BackendStatusState
-  /** Human-readable detail, set when state is 'error' (or transiently while retrying). */
+  /**
+   * Short, user-facing reason, set when state is 'error' (or transiently
+   * while retrying). A few words - this is rendered inline on the Dictate
+   * screen beside a disabled record button, where the only question worth
+   * answering is "why can't I record". Engine diagnostics belong in
+   * `detail`, not here: a paragraph about import failures or sidecar exit
+   * codes is noise to someone who just needs to know a model isn't loaded.
+   */
   message?: string
+  /**
+   * The underlying failure behind `message` - an engine stderr tail, a
+   * failed import, a sidecar that exited. Written to the log and offered as
+   * the status pill's hover title, never rendered inline.
+   */
+  detail?: string
   /**
    * The accelerator a managed sidecar's engine actually ended up running
    * on, once known - parsed from `serve_gpu.py`'s `BLURT_EFFECTIVE_BACKEND`

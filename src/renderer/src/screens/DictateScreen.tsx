@@ -49,6 +49,14 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
   } = session
 
   const backendStatus = useBackendStatus()
+  /**
+   * Nothing that reaches the model is offered unless the engine is actually
+   * serving. Pressing record with no model used to be allowed, fail, and
+   * report why - which meant the app's answer to "you can't do this" was a
+   * dead button plus an error message, when a dead button on its own says
+   * the same thing without the noise.
+   */
+  const backendReady = backendStatus.state === 'ready'
 
   const recording = phase === 'recording'
   /** Capturing a spoken edit instruction - the mic is live, but the transcript is not being replaced. */
@@ -101,7 +109,7 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
             would tear the command's session out from under it. */}
         <RecordButton
           recording={recording}
-          disabled={busy || commandRecording}
+          disabled={busy || commandRecording || (!backendReady && !recording)}
           onToggle={toggleRecording}
         />
       </div>
@@ -111,20 +119,20 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
       {(recording || commandRecording) && <MicLevelMeter level={micLevel} />}
 
       {/*
-        Why the backend is unusable, said here rather than only in the
-        sidebar. The status pill has room for one word - it said "Error" and
-        nothing else, with the actual reason reachable only by hovering it,
-        on a screen where the user has just pressed record and is waiting
-        for something to happen. The reason is the useful part, and this is
-        where they are looking.
+        One short sentence saying why the button above is dead - "No model
+        installed.", not the engine's account of how it failed (that is in
+        `detail`, on the status pill's hover title and in the log).
 
-        Suppressed once a dictation is under way: mid-recording the backend
-        status is either stale or about to be superseded by a real
-        sessionError, and two contradictory red messages is worse than one.
+        Suppressed once a dictation is under way, and once a sessionError is
+        already up: mid-recording the backend status is either stale or about
+        to be superseded, and a failed call rejects with this same sentence -
+        so both would render, word for word identical, one above the other.
       */}
-      {backendStatus.state === 'error' && backendStatus.message && !recording && !busy && (
-        <p className="dictate-screen__warning">{backendStatus.message}</p>
-      )}
+      {backendStatus.state === 'error' &&
+        backendStatus.message &&
+        !recording &&
+        !busy &&
+        !sessionError && <p className="dictate-screen__warning">{backendStatus.message}</p>}
 
       {sessionError && <p className="dictate-screen__warning">{sessionError}</p>}
 
@@ -193,15 +201,17 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
         </div>
       </div>
 
+      {/* Both reach the model, so both follow the record button: unusable
+          engine, unusable control. */}
       <TransformBar
         activeMode={displayMode}
-        disabled={!displayText || recording || commandRecording}
+        disabled={!displayText || recording || commandRecording || !backendReady}
         busy={busy}
         onTransform={(mode) => void applyTransform(mode)}
       />
 
       <VoiceEditBar
-        disabled={!displayText || recording || busy}
+        disabled={!displayText || recording || busy || !backendReady}
         recording={commandRecording}
         spokenCommand={spokenCommand}
         onToggleRecording={toggleCommandRecording}
