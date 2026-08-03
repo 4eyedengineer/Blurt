@@ -8,30 +8,49 @@ Blurt used to transcribe by handing a WAV to Gemma 4 E2B - a 2.5 GB
 multimodal chat model - and asking it to write down what it heard. That
 works, but it is the wrong tool twice over.
 
-Measured on this project against 6 LibriSpeech clips (169 reference words,
-CPU, one machine, same audio and same scorer for both):
+Measured on this project against 25 LibriSpeech clips (463 reference words,
+one Windows machine, same audio and same scorer throughout; the recognisers
+on CPU, Gemma on its GPU):
 
-    Model                                Size     WER
-    whisper-acft tiny.en (this file)      61 MB   4.14%
-    Gemma 4 E2B                        2,588 MB   6.51%
+    Model                    Size      WER     3s window
+    whisper-acft tiny.en     61 MB   10.37%       442ms
+    whisper-acft base.en    103 MB    6.26%       651ms
+    Gemma 4 E2B           2,588 MB    6.48%           -
+    whisper-acft small.en   289 MB    3.46%      2157ms
 
-The smaller model was also more accurate. More importantly the two fail
-differently: Gemma's errors stay fluent ("similes drawn from eating" came
-back as "his drawn from eating"), because a language model asked to
-transcribe will happily finish a sentence it only half heard. A recogniser
-has no such instinct - its errors are words it genuinely could not make out,
-usually unfamiliar proper nouns, which read as mistakes rather than as
-things you said.
+An earlier 6-clip run put tiny.en at 4.14% and appeared to beat Gemma
+outright. It did not survive a larger sample, and the ordering above is the
+one to trust: on this task the small model is not a free win, and picking
+one is a real trade between accuracy and how fast a window can be read.
 
-This also matters for the live transcript. Blurt re-transcribes a rolling
-window every ~1.5s while you speak, so one dictation costs many transcription
-calls (3 to 14 in observed real sessions). Each was a call into the 2.5 GB
-model; each is now a ~0.16s encoder pass.
+The two families also fail differently, which matters as much as the rate.
+Gemma's errors stay fluent - "similes drawn from eating" came back as "his
+drawn from eating" - because a language model asked to transcribe will
+happily finish a sentence it only half heard. A recogniser has no such
+instinct: its errors are words it genuinely could not make out, usually
+unfamiliar proper nouns, which read as mistakes rather than as things you
+said.
+
+So Blurt runs two of them, because the live transcript and the final text
+want opposite things. A dictation costs many transcription calls (3 to 14 in
+observed real sessions) and one final pass. Every tick's cost is paid again
+in how often the words on screen refresh, while the final pass happens once
+and its output is what gets pasted and saved.
+
+    live ticks   base.en    651ms per window -> ~800ms cadence
+    final pass   small.en   3.46% WER, roughly half Gemma's error rate
 
 Gemma keeps everything downstream of the words: cleanup, transforms and
 voice edit. Only transcription moves. This is the same split Google's own
 Eloquent app uses - a small speech expert feeding a Gemma that does the
 language work.
+
+The GPU is not an option here, and not for want of trying: the WebGPU
+accelerator that ships with ai-edge-litert registers fine on Windows and
+then fails to compile these graphs, identically across every GpuOptions
+variant (default, enforce_f32, allow_src_quantized_fc_conv_ops, and both
+together). Both recognisers run on CPU via XNNPACK, which at least leaves
+the GPU entirely to Gemma.
 
 ## What the model file actually wants
 
@@ -80,7 +99,14 @@ N_MELS = 80
 MAX_NEW_TOKENS = 200
 
 _LOCK = threading.Lock()
-_STATE: dict[str, object] = {"interpreter": None, "tokenizer": None, "ids": None, "frames": 0}
+
+#: Loaded interpreters, keyed by model path, so more than one recogniser can
+#: be resident at once. Blurt runs two: a smaller one for the live transcript,
+#: where a tick's cost sets the cadence, and a larger, more accurate one for
+#: the single final pass, whose output is what gets pasted and saved. Which is
+#: which is decided by the caller - this module only caches whatever it is
+#: given, so the two roles cost one load each rather than one per request.
+_MODELS: dict[str, dict] = {}
 
 
 def _hz_to_mel(freq):
@@ -275,26 +301,19 @@ def transcribe(state: dict, pcm: np.ndarray) -> str:
 
 
 def transcribe_wav(model_path: str, tokenizer_path: str, wav_bytes: bytes) -> str:
-  """Thread-safe entry point: WAV bytes in, text out.
+  """Thread-safe entry point: WAV bytes in, text out, using the recogniser at
+  `model_path`.
 
-  Loads on first use so a Blurt install that has not downloaded the
-  recogniser yet still starts the LLM sidecar normally - the cost of a
-  missing model lands on the request that needs it, with a real error,
-  rather than preventing the process from coming up at all.
+  Loads on first use, and only the models actually asked for - a session
+  that never reaches its final pass never pays to load the larger model.
+  Deferring the load this way also means a Blurt install that has not
+  downloaded a recogniser yet still starts the LLM sidecar normally: the
+  cost of a missing model lands on the request that needs it, with a real
+  error, rather than preventing the process from coming up at all.
   """
   pcm = decode_wav(wav_bytes)
   with _LOCK:
-    if _STATE["interpreter"] is None:
-      _STATE["interpreter"] = load(model_path, tokenizer_path)
-    return transcribe(_STATE["interpreter"], pcm)
-
-
-def window_seconds(model_path: str, tokenizer_path: str) -> float:
-  """The audio window this recogniser accepts, in seconds. Anything longer is
-  truncated by `log_mel`, so the caller has to know it - see
-  MAX_TRANSCRIBE_WINDOW_MS on the Electron side.
-  """
-  with _LOCK:
-    if _STATE["interpreter"] is None:
-      _STATE["interpreter"] = load(model_path, tokenizer_path)
-    return _STATE["interpreter"]["frames"] * HOP / SAMPLE_RATE
+    state = _MODELS.get(model_path)
+    if state is None:
+      state = _MODELS[model_path] = load(model_path, tokenizer_path)
+    return transcribe(state, pcm)

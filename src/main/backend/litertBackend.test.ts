@@ -100,19 +100,18 @@ describe('LitertBackend - endSession reusing an in-flight partial tick', () => {
   })
 
   /**
-   * Regression test for the "frozen transcript" bug: a mid-recording partial
-   * tick used to have its streamed output silently discarded (via a
-   * `!session.ended` guard) the moment `endSession` was called while it was
-   * still in flight, and `endSession` would then always kick off a second,
-   * fully redundant re-transcription of the exact same audio from scratch -
-   * so for a short recording (often exactly one tick in flight when the
-   * user stops) the live transcript showed nothing at all until that second
-   * request completed, doubling latency and making the streaming feature
-   * look completely broken. Fixed by having `endSession` await and reuse
-   * the in-flight tick's own promise when no new audio arrived after it
-   * took its buffer snapshot, and by no longer suppressing its stream.
+   * endSession once reused an in-flight tick's result for short recordings,
+   * to avoid a second identical request. That rested on the tick and the
+   * final pass producing the same thing, which stopped being true when they
+   * moved to different models: ticks run on the smaller recogniser, the
+   * final pass on the larger one (see resources/asr.py).
+   *
+   * So a short session must now still make its own final request, flagged
+   * `final: true`. Reusing the tick would quietly return the weaker model's
+   * transcript - 6.26% WER against 3.46% - for exactly the short recordings
+   * where the saving looked most attractive.
    */
-  it('reuses the in-flight tick result (single fetch, no gap) when no new audio arrived after it started', async () => {
+  it('runs its own final pass on the larger model rather than reusing an in-flight tick', async () => {
     fetchMock.mockResolvedValue(makeTranscriptResponse('The history'))
 
     const partials: string[] = []
@@ -138,8 +137,19 @@ describe('LitertBackend - endSession reusing an in-flight partial tick', () => {
 
     expect(final).toBe('The history')
     expect(partials).toContain('The history')
-    // The whole point of the fix: exactly one HTTP request total, not two.
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // The tick, then a distinct final request - not one reused for both.
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+    const finals = fetchMock.mock.calls.filter(
+      (c) => JSON.parse((c[1] as RequestInit).body as string).final === true
+    )
+    expect(finals).toHaveLength(1)
+    // ...and the ticks must NOT be flagged final, or every one of them would
+    // pay the larger model's cost and the cadence would collapse.
+    const ticks = fetchMock.mock.calls.filter(
+      (c) => JSON.parse((c[1] as RequestInit).body as string).final !== true
+    )
+    expect(ticks.length).toBeGreaterThanOrEqual(1)
   })
 
   it('still emits the in-flight tick even though the session is already ended (no silent suppression)', async () => {

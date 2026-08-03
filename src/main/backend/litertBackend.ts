@@ -423,7 +423,9 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   private async transcribeSamplesStreaming(
     session: LitertSession,
     samples: Int16Array,
-    onStreamText: (text: string) => void
+    onStreamText: (text: string) => void,
+    /** True for `endSession`'s one full-buffer pass, which uses the larger, more accurate recogniser - see resources/asr.py. */
+    isFinal = false
   ): Promise<string> {
     const wavBase64 = pcm16ToWavBase64(samples, session.sampleRate)
     // The one place audio becomes text, so routing it here moves every
@@ -443,7 +445,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     // ("Sure, here is the transcription:"); a recogniser emits speech tokens
     // and nothing else, so running it here could only ever damage a genuine
     // transcript that happened to begin with a matching phrase.
-    const text = await this.enqueue(() => this.transcribeAudio(wavBase64))
+    const text = await this.enqueue(() => this.transcribeAudio(wavBase64, isFinal))
     const throttled = new ThrottledTextEmitter({
       intervalMs: this.streamThrottleMs,
       emit: onStreamText
@@ -463,7 +465,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
    * problem. They are the same process, so in practice they usually are the
    * same problem.
    */
-  private async transcribeAudio(wavBase64: string): Promise<string> {
+  private async transcribeAudio(wavBase64: string, isFinal: boolean): Promise<string> {
     const baseUrl = this.options.getBaseUrl()
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs)
@@ -471,7 +473,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       const res = await fetch(`${baseUrl}/blurt/transcribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wav: wavBase64 }),
+        body: JSON.stringify({ wav: wavBase64, final: isFinal }),
         signal: controller.signal
       })
       const payload = (await res.json().catch(() => null)) as {
@@ -678,20 +680,20 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     // even though the sidecar and the throttled-emit plumbing were working
     // correctly the whole time (see litertBackend's onPartialTranscript
     // proof harnesses referenced in the fix's commit).
-    if (
-      session.committedAudioMs === 0 &&
-      session.partialInFlight &&
-      session.partialPromise &&
-      session.partialSnapshotChunkCount === session.chunks.length
-    ) {
-      void this.maybeDumpDebugWav(concatInt16(session.chunks), session.sampleRate)
-      try {
-        return await session.partialPromise
-      } catch (err) {
-        this.emitError(sessionId, err)
-        return session.lastTranscript
-      }
-    }
+    //
+    // REMOVED, and deliberately not restored: that reuse rested on the
+    // in-flight tick's result being what a fresh final pass would have
+    // produced. It no longer is. Ticks run on the smaller, faster recogniser
+    // and the final pass runs on the larger, more accurate one (see
+    // resources/asr.py), so reusing a tick would silently hand back the
+    // weaker model's transcript - measured at 6.26% WER against the final
+    // model's 3.46% - for exactly the short recordings where the saving
+    // looked most attractive. The redundancy the optimization removed was
+    // real; the redundancy is gone, so the optimization is too.
+    //
+    // The cost is that a short dictation now waits for one full pass on the
+    // larger model rather than reusing a tick already in flight. That is the
+    // price of the accuracy the final pass exists to provide.
 
     // Otherwise (session has grown past one window so a full pass is needed
     // for accuracy regardless, no tick in flight, or more audio arrived
@@ -731,10 +733,15 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       // already marked `ended` so this is unambiguously the last update the
       // renderer will see for it, rather than needing a separate IPC event
       // just for "the final one is streaming too".
-      return await this.transcribeSamplesStreaming(session, samples, (text) => {
-        session.lastTranscript = text
-        this.emitter.emit('partial', session.id, text)
-      })
+      return await this.transcribeSamplesStreaming(
+        session,
+        samples,
+        (text) => {
+          session.lastTranscript = text
+          this.emitter.emit('partial', session.id, text)
+        },
+        true
+      )
     } catch (err) {
       this.emitError(sessionId, err)
       return session.lastTranscript

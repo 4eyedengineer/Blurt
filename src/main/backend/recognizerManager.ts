@@ -22,33 +22,55 @@ import { log } from '../log'
  * which is what dictation is. Apache-2.0 and ungated, so the unauthenticated
  * HuggingFace fetches below (Blurt has no HF token handling at all) work.
  *
- * `tiny.en` at the 30s window, measured on this project against 6
- * LibriSpeech clips: 4.14% WER, versus 6.51% for Gemma 4 E2B on the same
- * audio and scorer. 61 MB against 2,588 MB.
+ * Two sizes, because a mid-recording tick and the one final pass want
+ * opposite things. Measured on 25 LibriSpeech clips (463 reference words) on
+ * a real Windows machine, CPU:
  *
- * The 30s build rather than 5s/10s: those hard-truncate anything longer,
+ *     tiny.en    61 MB   10.37% WER    442ms per 3s window
+ *     base.en   103 MB    6.26% WER    651ms
+ *     small.en  289 MB    3.46% WER   2157ms
+ *     (Gemma 4 E2B, 2,588 MB, for reference: 6.48%)
+ *
+ * `base.en` drives the live transcript: its window cost is paid again every
+ * tick, and at 651ms it keeps the on-screen cadence near 800ms. `small.en`
+ * runs the single final pass, whose output is what gets pasted and saved -
+ * roughly half Gemma's error rate, and its 2157ms is paid once.
+ *
+ * `tiny.en` was shipped briefly on the strength of a 6-clip run that put it
+ * at 4.14%. A 25-clip run put it at 10.37%, worse than the Gemma path it
+ * replaced. Kept here as a warning about the sample size, not as an option.
+ *
+ * The 30s builds rather than 5s/10s: those hard-truncate anything longer,
  * and truncation is silent - a 12s clip through the 10s build simply loses
  * its ending, which measured as 18.8% WER purely from the missing words.
- * English-only, which `tiny.en` is; the multilingual `tiny` build is the
- * same size if that ever needs revisiting.
+ * English-only; the multilingual builds are the same sizes if that ever
+ * needs revisiting.
  */
 export const RECOGNIZER_REPO = 'litert-community/whisper-acft'
-export const RECOGNIZER_FILE = 'tiny.en/acft_whisper_tiny.en_30s_drq.tflite'
+/** Drives the live transcript - see the table above. */
+export const RECOGNIZER_LIVE_FILE = 'base.en/acft_whisper_base.en_30s_drq.tflite'
+/** Runs the single final pass, whose output is pasted and saved. */
+export const RECOGNIZER_FINAL_FILE = 'small.en/acft_whisper_small.en_30s_drq.tflite'
 
 /**
  * The decoder emits Whisper token ids, so it needs Whisper's own vocabulary
  * to become text. It comes from the matching `openai/whisper-*` repo rather
  * than from the recogniser's, which ships weights only.
  *
- * The `.en` builds have a vocab of 51864 against the multilingual 51865, so
- * this must match the weights exactly: the wrong one shifts every id past
- * the mismatch and produces fluent-looking nonsense rather than an error.
+ * One tokenizer serves both models: every English Whisper build shares the
+ * same 51864-token vocabulary regardless of size. It does have to match the
+ * *language* build though - the multilingual vocabulary is 51865, and the
+ * wrong one shifts every id past the mismatch and produces fluent-looking
+ * nonsense rather than an error.
  */
 export const TOKENIZER_REPO = 'openai/whisper-tiny.en'
 export const TOKENIZER_FILE = 'tokenizer.json'
 
 export interface RecognizerPaths {
+  /** The fast recogniser behind the live transcript. */
   modelPath: string
+  /** The accurate recogniser behind the final pass. */
+  finalModelPath: string
   tokenizerPath: string
 }
 
@@ -78,15 +100,16 @@ export class RecognizerManager extends EventEmitter {
 
   getPaths(): RecognizerPaths {
     return {
-      modelPath: join(this.dir, 'recognizer.tflite'),
+      modelPath: join(this.dir, 'recognizer-live.tflite'),
+      finalModelPath: join(this.dir, 'recognizer-final.tflite'),
       tokenizerPath: join(this.dir, 'tokenizer.json')
     }
   }
 
-  /** Both files present. Neither is useful alone, so this is deliberately all-or-nothing. */
+  /** All three files present. None is useful alone, so this is deliberately all-or-nothing. */
   isInstalled(): boolean {
-    const { modelPath, tokenizerPath } = this.getPaths()
-    return existsSync(modelPath) && existsSync(tokenizerPath)
+    const { modelPath, finalModelPath, tokenizerPath } = this.getPaths()
+    return existsSync(modelPath) && existsSync(finalModelPath) && existsSync(tokenizerPath)
   }
 
   getStatus(): RecognizerStatus {
@@ -124,11 +147,18 @@ export class RecognizerManager extends EventEmitter {
     log.info('recognizer: downloading speech recognition model')
     this.setStatus({ state: 'downloading', receivedBytes: 0, totalBytes: null })
     try {
-      // Weights first: they are the large one, so a failure happens before
-      // the small file is written and the all-or-nothing isInstalled() check
-      // cannot see a half-install as complete.
+      // Weights before the tokenizer, and the largest weights first: each
+      // file is only renamed into place once complete, so a failure part way
+      // through leaves the remaining files absent and the all-or-nothing
+      // isInstalled() check cannot mistake a partial install for a finished
+      // one.
       await this.downloadFile(
-        `https://huggingface.co/${RECOGNIZER_REPO}/resolve/main/${RECOGNIZER_FILE}`,
+        `https://huggingface.co/${RECOGNIZER_REPO}/resolve/main/${RECOGNIZER_FINAL_FILE}`,
+        paths.finalModelPath,
+        true
+      )
+      await this.downloadFile(
+        `https://huggingface.co/${RECOGNIZER_REPO}/resolve/main/${RECOGNIZER_LIVE_FILE}`,
         paths.modelPath,
         true
       )

@@ -290,6 +290,7 @@ export class BackendController extends EventEmitter {
           // the case an 'external' sidecar is in, and the route answers 503
           // with a clear message rather than the process failing to start.
           BLURT_ASR_MODEL: recognizer?.modelPath ?? '',
+          BLURT_ASR_FINAL_MODEL: recognizer?.finalModelPath ?? '',
           BLURT_ASR_TOKENIZER: recognizer?.tokenizerPath ?? ''
         }
       })

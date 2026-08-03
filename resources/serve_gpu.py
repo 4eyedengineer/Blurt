@@ -150,10 +150,16 @@ probe, one port, and one lifecycle. A second process would have duplicated
 every one of those and given the Electron side two things to keep in
 agreement about whether dictation works.
 
-Set `BLURT_ASR_MODEL` and `BLURT_ASR_TOKENIZER` to the recogniser's
-`.tflite` and its `tokenizer.json`. With either unset or missing, the route
-answers 503 with a message rather than the process refusing to start - the
-LLM half still works, and the failure lands on the request that needs it.
+There are two recognisers, because a mid-recording tick and the one final
+pass want opposite things - see `asr.py`. `BLURT_ASR_MODEL` is the fast one
+that drives the live transcript; `BLURT_ASR_FINAL_MODEL` is the accurate one
+used when a request asks for `"final": true`, and defaults to the live model
+if unset. `BLURT_ASR_TOKENIZER` is shared: both are the same Whisper family
+and the same vocabulary, so one `tokenizer.json` serves both.
+
+With the model or tokenizer unset or missing, the route answers 503 with a
+message rather than the process refusing to start - the LLM half still
+works, and the failure lands on the request that needs it.
 
 ## Parent watchdog (crash-safe cleanup)
 
@@ -318,6 +324,7 @@ def _server_init_with_eager_engine(self, *args, **kwargs):
 serve_util.LiteRTLMServer.__init__ = _server_init_with_eager_engine
 
 _ASR_MODEL_ENV = "BLURT_ASR_MODEL"
+_ASR_FINAL_MODEL_ENV = "BLURT_ASR_FINAL_MODEL"
 _ASR_TOKENIZER_ENV = "BLURT_ASR_TOKENIZER"
 _ASR_PATH = "/blurt/transcribe"
 
@@ -348,21 +355,32 @@ def _handle_transcribe(handler) -> None:
     handler.end_headers()
     handler.wfile.write(body)
 
-  model_path = os.environ.get(_ASR_MODEL_ENV, "").strip()
+  try:
+    length = int(handler.headers.get("Content-Length", 0))
+    request = json.loads(handler.rfile.read(length) or b"{}")
+    wav_bytes = base64.b64decode(request["wav"])
+    # `"final": true` asks for the larger, slower, more accurate recogniser -
+    # see asr.py's doc comment for why there are two. Absent or false means
+    # a mid-recording tick, where cost sets the on-screen cadence.
+    want_final = bool(request.get("final"))
+  except Exception as err:  # pylint: disable=broad-exception-caught
+    respond(400, {"error": f"Malformed transcription request: {err}"})
+    return
+
+  live_path = os.environ.get(_ASR_MODEL_ENV, "").strip()
+  # Falling back to the live model when no final one is configured is a
+  # deliberate configuration default, not a silent downgrade: it keeps a
+  # hand-run or single-model setup working, and Blurt itself always sets
+  # both (see BackendController.rebuild).
+  final_path = os.environ.get(_ASR_FINAL_MODEL_ENV, "").strip() or live_path
+  model_path = final_path if want_final else live_path
   tokenizer_path = os.environ.get(_ASR_TOKENIZER_ENV, "").strip()
+
   if not model_path or not tokenizer_path:
     respond(503, {"error": "No speech recognition model is configured."})
     return
   if not os.path.exists(model_path) or not os.path.exists(tokenizer_path):
     respond(503, {"error": "The speech recognition model is not installed."})
-    return
-
-  try:
-    length = int(handler.headers.get("Content-Length", 0))
-    request = json.loads(handler.rfile.read(length) or b"{}")
-    wav_bytes = base64.b64decode(request["wav"])
-  except Exception as err:  # pylint: disable=broad-exception-caught
-    respond(400, {"error": f"Malformed transcription request: {err}"})
     return
 
   try:

@@ -44,23 +44,27 @@ describe('RecognizerManager', () => {
 
   it('downloads both files and reports ready', async () => {
     fetchMock.mockImplementation(async (url: string) =>
-      bodyResponse(url.includes('tokenizer') ? '{"vocab":1}' : 'WEIGHTS')
+      bodyResponse(
+        url.includes('tokenizer') ? '{"vocab":1}' : url.includes('small.en') ? 'FINAL' : 'LIVE'
+      )
     )
     const manager = new RecognizerManager(dir)
     expect(manager.isInstalled()).toBe(false)
 
     const paths = await manager.ensureDownloaded()
 
-    expect(readFileSync(paths.modelPath, 'utf-8')).toBe('WEIGHTS')
+    expect(readFileSync(paths.modelPath, 'utf-8')).toBe('LIVE')
+    expect(readFileSync(paths.finalModelPath, 'utf-8')).toBe('FINAL')
     expect(readFileSync(paths.tokenizerPath, 'utf-8')).toBe('{"vocab":1}')
     expect(manager.isInstalled()).toBe(true)
     expect(manager.getStatus().state).toBe('ready')
   })
 
-  it('does not download again when both files are already there', async () => {
+  it('does not download again when every file is already there', async () => {
     const manager = new RecognizerManager(dir)
     const paths = manager.getPaths()
-    writeFileSync(paths.modelPath, 'WEIGHTS')
+    writeFileSync(paths.modelPath, 'LIVE')
+    writeFileSync(paths.finalModelPath, 'FINAL')
     writeFileSync(paths.tokenizerPath, '{}')
 
     await manager.ensureDownloaded()
@@ -112,20 +116,20 @@ describe('RecognizerManager', () => {
   /** Two callers (a rebuild and a retry) must share one download, not race on the same .part file. */
   it('shares a single in-flight download between concurrent callers', async () => {
     fetchMock.mockImplementation(async (url: string) =>
-      bodyResponse(url.includes('tokenizer') ? '{}' : 'WEIGHTS')
+      bodyResponse(url.includes('tokenizer') ? '{}' : url.includes('small.en') ? 'FINAL' : 'LIVE')
     )
     const manager = new RecognizerManager(dir)
 
     const [a, b] = await Promise.all([manager.ensureDownloaded(), manager.ensureDownloaded()])
 
     expect(a).toEqual(b)
-    // Two files, fetched once each - not four fetches.
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    // Three files, fetched once each - not six.
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('reports download progress for the weights', async () => {
     fetchMock.mockImplementation(async (url: string) =>
-      bodyResponse(url.includes('tokenizer') ? '{}' : 'WEIGHTS')
+      bodyResponse(url.includes('tokenizer') ? '{}' : url.includes('small.en') ? 'FINAL' : 'LIVE')
     )
     const manager = new RecognizerManager(dir)
     const states: string[] = []
