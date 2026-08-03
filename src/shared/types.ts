@@ -86,7 +86,7 @@ export interface SidecarSettings {
 export const DEFAULT_MANAGED_COMMAND =
   '"{venvPython}" "{wrapperPath}" serve --host 127.0.0.1 --port {port} --verbose'
 
-const DEFAULT_SIDECAR_SETTINGS: SidecarSettings = {
+export const DEFAULT_SIDECAR_SETTINGS: SidecarSettings = {
   mode: 'managed',
   managedCommand: DEFAULT_MANAGED_COMMAND,
   externalUrl: 'http://127.0.0.1:9379',
@@ -148,6 +148,22 @@ export interface PushToTalkSettings {
   key: PushToTalkKeyId
   /** Whether to simulate the platform paste keystroke (Ctrl+V, or Cmd+V on darwin) into the previously-focused app after cleanup, in addition to always copying to the clipboard. */
   autoPaste: boolean
+  /**
+   * Whether a single trailing space is appended to the dictated text before
+   * it goes to the clipboard.
+   *
+   * Dictating twice into the same field runs the two together
+   * ("hello worldand then this") because nothing in a transcript ends with
+   * whitespace - cleanup strips it, and the caret lands flush against the
+   * last character. A space is what the user would have typed themselves
+   * between two sentences, so Blurt types it for them.
+   *
+   * Applies to the clipboard write, not just the paste injection: the same
+   * run-together happens when auto-paste is off and the user pastes by hand.
+   * Only the copied text is affected - history stores the transcript
+   * unpadded (see OverlayController.recordHistory).
+   */
+  trailingSpace: boolean
 }
 
 /**
@@ -176,10 +192,11 @@ export interface PushToTalkSettings {
  * selectable in Settings for anyone who prefers it, with the tradeoff
  * spelled out there.
  */
-const DEFAULT_PUSH_TO_TALK_SETTINGS: PushToTalkSettings = {
+export const DEFAULT_PUSH_TO_TALK_SETTINGS: PushToTalkSettings = {
   enabled: true,
   key: 'ControlRight',
-  autoPaste: true
+  autoPaste: true,
+  trailingSpace: true
 }
 
 /**

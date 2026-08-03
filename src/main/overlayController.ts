@@ -116,8 +116,13 @@ export class OverlayController {
       this.scheduleHide(CANCEL_HIDE_MS)
       return
     }
-    const { autoPaste } = this.settingsStore.get().pushToTalk
-    const outcome = await copyAndPaste(clipboard, payload.cleanedText, autoPaste)
+    const { autoPaste, trailingSpace } = this.settingsStore.get().pushToTalk
+    // Padded for the clipboard only - `recordHistory` below deliberately
+    // files `payload.cleanedText`, so the stored transcript never carries a
+    // space that exists purely to separate it from the next one. trimEnd
+    // first so this can only ever add the one space, never a second.
+    const textToCopy = trailingSpace ? `${payload.cleanedText.trimEnd()} ` : payload.cleanedText
+    const outcome = await copyAndPaste(clipboard, textToCopy, autoPaste)
     this.send(IPC.overlay.pasteStatus, outcome)
     this.recordHistory(payload)
     this.scheduleHide(AUTO_HIDE_MS)

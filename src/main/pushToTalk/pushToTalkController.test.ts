@@ -68,9 +68,7 @@ describe('PushToTalkController - availability', () => {
       reason: 'ERR_DLOPEN_FAILED: GLIBC_2.34 not found'
     })
     // Should not throw even though there's no real hook underneath.
-    expect(() =>
-      controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
-    ).not.toThrow()
+    expect(() => controller.applySettings({ enabled: true, key: 'AltRight' })).not.toThrow()
   })
 
   it('reports available when the loader succeeds', () => {
@@ -84,7 +82,7 @@ describe('PushToTalkController - hold gesture detection', () => {
   it('emits hold-start on keydown and hold-end on keyup for a real hold', () => {
     const { instance, emitter } = fakeUiohook()
     const controller = new PushToTalkController('AltRight', { load: loadOk(instance) })
-    controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+    controller.applySettings({ enabled: true, key: 'AltRight' })
 
     const events: string[] = []
     controller.on('hold-start', () => events.push('hold-start'))
@@ -107,7 +105,7 @@ describe('PushToTalkController - hold gesture detection', () => {
   it('ignores keys other than the configured one', () => {
     const { instance, emitter } = fakeUiohook()
     const controller = new PushToTalkController('AltRight', { load: loadOk(instance) })
-    controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+    controller.applySettings({ enabled: true, key: 'AltRight' })
 
     const events: string[] = []
     controller.on('hold-start', () => events.push('hold-start'))
@@ -120,7 +118,7 @@ describe('PushToTalkController - hold gesture detection', () => {
   it('does nothing while disabled', () => {
     const { instance, emitter, started } = fakeUiohook()
     const controller = new PushToTalkController('AltRight', { load: loadOk(instance) })
-    controller.applySettings({ enabled: false, key: 'AltRight', autoPaste: true })
+    controller.applySettings({ enabled: false, key: 'AltRight' })
 
     const events: string[] = []
     controller.on('hold-start', () => events.push('hold-start'))
@@ -134,10 +132,10 @@ describe('PushToTalkController - hold gesture detection', () => {
     const { instance, started } = fakeUiohook()
     const controller = new PushToTalkController('AltRight', { load: loadOk(instance) })
 
-    controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
-    controller.applySettings({ enabled: true, key: 'ControlRight', autoPaste: true }) // key change, still enabled
-    controller.applySettings({ enabled: false, key: 'ControlRight', autoPaste: true })
-    controller.applySettings({ enabled: false, key: 'ControlRight', autoPaste: true }) // already off
+    controller.applySettings({ enabled: true, key: 'AltRight' })
+    controller.applySettings({ enabled: true, key: 'ControlRight' }) // key change, still enabled
+    controller.applySettings({ enabled: false, key: 'ControlRight' })
+    controller.applySettings({ enabled: false, key: 'ControlRight' }) // already off
 
     expect(started).toEqual([true, false])
   })
@@ -145,8 +143,8 @@ describe('PushToTalkController - hold gesture detection', () => {
   it('switches the active key without needing hold-start/hold-end to be re-wired', () => {
     const { instance, emitter } = fakeUiohook()
     const controller = new PushToTalkController('AltRight', { load: loadOk(instance) })
-    controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
-    controller.applySettings({ enabled: true, key: 'F9', autoPaste: true })
+    controller.applySettings({ enabled: true, key: 'AltRight' })
+    controller.applySettings({ enabled: true, key: 'F9' })
 
     const events: string[] = []
     controller.on('hold-start', () => events.push('hold-start'))
@@ -199,7 +197,7 @@ describe('PushToTalkController - macOS Accessibility gating', () => {
         load: loadOk(instance),
         checkAccessibilityGranted: () => false
       })
-      controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+      controller.applySettings({ enabled: true, key: 'AltRight' })
 
       expect(started).toEqual([]) // uIOhook.start() was never called
       expect(controller.getAccessibilityStatus()).toBe(false)
@@ -213,7 +211,7 @@ describe('PushToTalkController - macOS Accessibility gating', () => {
         load: loadOk(instance),
         checkAccessibilityGranted: () => true
       })
-      controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+      controller.applySettings({ enabled: true, key: 'AltRight' })
 
       expect(started).toEqual([true])
       expect(controller.getAccessibilityStatus()).toBe(true)
@@ -228,7 +226,7 @@ describe('PushToTalkController - macOS Accessibility gating', () => {
         load: loadOk(instance),
         checkAccessibilityGranted: () => granted
       })
-      controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+      controller.applySettings({ enabled: true, key: 'AltRight' })
       expect(started).toEqual([]) // refused - not granted yet
 
       granted = true // user granted it in System Settings, in between
@@ -246,7 +244,7 @@ describe('PushToTalkController - macOS Accessibility gating', () => {
         load: loadOk(instance),
         checkAccessibilityGranted: () => true
       })
-      controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+      controller.applySettings({ enabled: true, key: 'AltRight' })
       expect(started).toEqual([true])
 
       controller.recheckAccessibility()
@@ -258,7 +256,7 @@ describe('PushToTalkController - macOS Accessibility gating', () => {
     withPlatform('linux', () => {
       const { instance, started } = fakeUiohook()
       const controller = new PushToTalkController('AltRight', { load: loadOk(instance) })
-      controller.applySettings({ enabled: true, key: 'AltRight', autoPaste: true })
+      controller.applySettings({ enabled: true, key: 'AltRight' })
       expect(started).toEqual([true]) // started normally - no darwin gating applies
 
       const result = controller.recheckAccessibility()

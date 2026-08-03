@@ -194,7 +194,14 @@ export class PushToTalkController extends EventEmitter {
   }
 
   /** Applies fresh settings, starting/stopping the underlying OS-level hook as needed. */
-  applySettings(settings: PushToTalkSettings): void {
+  /**
+   * Takes only the two fields it acts on rather than the whole
+   * `PushToTalkSettings`. What happens to the dictated text afterwards -
+   * auto-paste, trailing space - is the overlay controller's business, and
+   * asking for those here meant every new field in that interface broke this
+   * signature and every one of its call sites for no behavioural reason.
+   */
+  applySettings(settings: Pick<PushToTalkSettings, 'enabled' | 'key'>): void {
     this.keyId = settings.key
     const nextEnabled = settings.enabled && this.availability.available
     if (nextEnabled && !this.hookRunning) {

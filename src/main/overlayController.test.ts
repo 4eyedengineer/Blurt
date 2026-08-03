@@ -31,7 +31,12 @@ interface ResultPayload {
  * IPC.overlay.result so a test can deliver a result payload exactly the way
  * the overlay renderer does.
  */
-function makeController(): {
+function makeController(
+  pushToTalkSettings: { autoPaste: boolean; trailingSpace: boolean } = {
+    autoPaste: true,
+    trailingSpace: false
+  }
+): {
   deliverResult: (payload: ResultPayload) => Promise<void>
   historySaves: unknown[]
   historyChangedCount: () => number
@@ -56,7 +61,7 @@ function makeController(): {
   new OverlayController(
     pushToTalk as never,
     () => null,
-    { get: () => ({ pushToTalk: { autoPaste: true } }) } as never,
+    { get: () => ({ pushToTalk: pushToTalkSettings }) } as never,
     historyStore as never,
     () => {
       historyChanged++
@@ -137,6 +142,64 @@ describe('OverlayController - a hold that captured no speech is inert', () => {
       error: 'Microphone capture failed: NotAllowedError'
     })
 
+    expect(copyAndPaste).not.toHaveBeenCalled()
+    expect(historySaves).toEqual([])
+  })
+})
+
+/**
+ * Dictating twice into the same field used to run the two together, because
+ * nothing in a cleaned transcript ends in whitespace and the caret lands
+ * flush against the last character. See PushToTalkSettings.trailingSpace.
+ */
+describe('OverlayController - trailing space', () => {
+  beforeEach(() => {
+    copyAndPaste.mockReset()
+    copyAndPaste.mockResolvedValue({ copied: true, pasted: true, message: null })
+  })
+
+  const withSpace = { autoPaste: true, trailingSpace: true }
+
+  it('appends one space to the copied text when enabled', async () => {
+    const { deliverResult } = makeController(withSpace)
+    await deliverResult({ rawTranscript: 'hi', cleanedText: 'Hello there.', durationMs: 1200 })
+    expect(copyAndPaste.mock.calls[0][1]).toBe('Hello there. ')
+  })
+
+  it('appends exactly one, however the transcript already ended', async () => {
+    for (const cleanedText of ['Hello there. ', 'Hello there.\n', 'Hello there.\t  ']) {
+      copyAndPaste.mockClear()
+      const { deliverResult } = makeController(withSpace)
+      await deliverResult({ rawTranscript: 'hi', cleanedText, durationMs: 1200 })
+      expect(copyAndPaste.mock.calls[0][1]).toBe('Hello there. ')
+    }
+  })
+
+  it('leaves the text alone when disabled', async () => {
+    const { deliverResult } = makeController({ autoPaste: true, trailingSpace: false })
+    await deliverResult({ rawTranscript: 'hi', cleanedText: 'Hello there.', durationMs: 1200 })
+    expect(copyAndPaste.mock.calls[0][1]).toBe('Hello there.')
+  })
+
+  /**
+   * The space exists to separate this dictation from the next one in some
+   * other app's text field. Storing it would put it in front of the user
+   * every time they read the entry back, copy it, or transform it.
+   */
+  it('never reaches history', async () => {
+    const { deliverResult, historySaves } = makeController(withSpace)
+    await deliverResult({ rawTranscript: 'hi', cleanedText: 'Hello there.', durationMs: 1200 })
+    expect(historySaves[0]).toMatchObject({
+      cleanedText: 'Hello there.',
+      displayText: 'Hello there.'
+    })
+  })
+
+  it('still leaves a no-speech hold entirely inert', async () => {
+    const { deliverResult, historySaves } = makeController(withSpace)
+    await deliverResult({ rawTranscript: '', cleanedText: '   ', durationMs: 1200 })
+    // The blank-result guard runs before the padding, so this can never
+    // become a lone space written over the user's clipboard.
     expect(copyAndPaste).not.toHaveBeenCalled()
     expect(historySaves).toEqual([])
   })

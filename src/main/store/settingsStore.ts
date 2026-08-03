@@ -1,5 +1,10 @@
 import { join } from 'path'
-import { DEFAULT_SETTINGS, type Settings } from '../../shared/types'
+import {
+  DEFAULT_PUSH_TO_TALK_SETTINGS,
+  DEFAULT_SETTINGS,
+  DEFAULT_SIDECAR_SETTINGS,
+  type Settings
+} from '../../shared/types'
 import { JsonStore } from './jsonStore'
 import { log } from '../log'
 
@@ -30,11 +35,28 @@ export class SettingsStore {
       }
       this.warnedLegacyBackend = true
     }
-    return settings
+    // JsonStore fills in missing defaults one level deep only, so a nested
+    // object present in settings.json replaces its default wholesale. Every
+    // key added to `pushToTalk` or `sidecar` after a user's settings.json was
+    // written therefore arrives as `undefined` for exactly the people who
+    // have been using Blurt longest, while reading correctly on a fresh
+    // install - so a new boolean silently defaults to off for them no matter
+    // what DEFAULT_SETTINGS says.
+    //
+    // Filling the gaps here rather than rewriting settings.json: the user's
+    // own values still win (they are spread last), nothing on disk is
+    // touched, and a key they never set is simply treated as unset.
+    return {
+      ...settings,
+      sidecar: { ...DEFAULT_SIDECAR_SETTINGS, ...settings.sidecar },
+      pushToTalk: { ...DEFAULT_PUSH_TO_TALK_SETTINGS, ...settings.pushToTalk }
+    }
   }
 
   update(patch: Partial<Settings>): Settings {
-    const next = { ...this.store.read(), ...patch }
+    // Via get(), not the raw store, so a write never persists a nested
+    // object still missing the defaults get() just filled in.
+    const next = { ...this.get(), ...patch }
     this.store.write(next)
     return next
   }

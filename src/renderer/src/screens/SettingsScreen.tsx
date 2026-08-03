@@ -558,6 +558,14 @@ export function SettingsScreen(): React.JSX.Element {
             void update({ pushToTalk: { ...settings.pushToTalk, autoPaste: checked } })
           }
         />
+
+        <SettingRow
+          label="End with a space"
+          checked={settings.pushToTalk.trailingSpace}
+          onChange={(checked) =>
+            void update({ pushToTalk: { ...settings.pushToTalk, trailingSpace: checked } })
+          }
+        />
       </div>
 
       <div className="settings-screen__group">
