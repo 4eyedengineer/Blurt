@@ -268,3 +268,53 @@ describe('computeRms', () => {
     expect(computeRms(samples)).toBeCloseTo(32767, 0)
   })
 })
+
+/**
+ * The cleanup prompt's job changed when transcription moved to a dedicated
+ * recogniser: it is now handed already-punctuated text, not raw ASR. These
+ * pin the properties that keeps honest, because the failure they guard
+ * against is silent - the model quietly "improving" a user's wording, which
+ * looks like a working feature until you compare it against what was said.
+ */
+describe('cleanup prompt after the recogniser change', () => {
+  const system = (): string =>
+    String(buildCleanupRequest({ model: 'e2b', text: 'x' }).messages[0].content)
+
+  it('does not tell the model its input is unpunctuated, which stopped being true', () => {
+    // The old opening line - "You are given raw, unpunctuated speech-to-text
+    // output" - is the false premise that produced the rewording. Matching
+    // the bare phrase is too blunt: the current prompt says the input is
+    // *not* raw unpunctuated output, which is the correction, so what has to
+    // be absent is the affirmative claim.
+    expect(system()).not.toMatch(/given raw,? unpunctuated/i)
+    expect(system()).toMatch(/NOT raw unpunctuated/)
+  })
+
+  it('states that the input is already punctuated', () => {
+    expect(system()).toMatch(/already/i)
+    expect(system()).toMatch(/punctuation/i)
+  })
+
+  /**
+   * The load-bearing line. Asked to "rewrite" text with no defects in it, a
+   * model finds something to change; explicitly permitting a no-op is what
+   * makes leaving it alone an acceptable answer.
+   */
+  it('gives the model permission to return the text unchanged', () => {
+    expect(system()).toMatch(/unchanged/i)
+    expect(system()).toMatch(/verbatim/i)
+  })
+
+  it('forbids each rewording actually observed in real dictations', () => {
+    const s = system()
+    expect(s).toMatch(/contraction/i) // "It's" -> "It is"
+    expect(s).toMatch(/synonym/i) // "as" -> "because"
+    expect(s).toMatch(/hedge|qualifier/i) // dropped "really", "sort of"
+  })
+
+  it('still asks for the disfluency removal that is the actual job', () => {
+    const s = system()
+    expect(s).toMatch(/filler/i)
+    expect(s).toMatch(/false start/i)
+  })
+})

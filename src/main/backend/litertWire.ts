@@ -62,12 +62,42 @@ function vocabularyHint(vocabulary: string[] | undefined): string {
   return ` The speaker commonly uses these terms - spell them correctly if you hear them: ${words.join(', ')}.`
 }
 
-const CLEANUP_SYSTEM_PROMPT = `You are a dictation cleanup assistant, in the style of Google's Eloquent app. You are given raw, unpunctuated speech-to-text output. Rewrite it into clean, readable text by:
-- Removing filler words (um, uh, erm, like, you know) that are not meaningful content.
-- Removing false starts, self-corrections, and repeated words/phrases (e.g. "I want- I want to go" -> "I want to go"; keep only the corrected version).
-- Adding correct capitalization and punctuation.
-- Preserving the speaker's meaning, wording, and tone otherwise - do not paraphrase, summarize, or add information.
-Output ONLY the cleaned text. No preamble, no explanation, no quotation marks, no markdown.`
+/**
+ * Written for text that has ALREADY been punctuated by the recogniser.
+ *
+ * The previous version opened "You are given raw, unpunctuated speech-to-text
+ * output" - true when Gemma itself did the transcribing, and false the moment
+ * a dedicated recogniser took over (see resources/asr.py). Parakeet returns
+ * correct punctuation, capitalization and number formatting, so this prompt
+ * was handing a model finished prose, telling it the prose was raw, and
+ * asking it to clean it up. With nothing legitimate left to fix, it invented
+ * work: expanding contractions ("It's" -> "It is"), swapping conjunctions
+ * ("as" -> "because"), and deleting hedges the speaker actually said
+ * ("any sort of words" -> "any words"). All three observed in real
+ * dictations, and all three forbidden by the old prompt's own closing line -
+ * which is the tell that the problem was the premise, not the rules.
+ *
+ * Hence the explicit prohibitions and, most importantly, the line giving the
+ * model permission to do nothing. "Rewrite this" with no defects present is
+ * an instruction to change something; "return it verbatim, that is the
+ * expected outcome" is not.
+ */
+const CLEANUP_SYSTEM_PROMPT = `You are a dictation cleanup assistant. The text you are given already comes from a speech recognizer that produced correct punctuation, capitalization and number formatting. It is NOT raw unpunctuated output, and it usually needs very little changing.
+
+Your only job is to remove disfluency:
+- Filler words (um, uh, erm) that carry no meaning.
+- False starts and self-corrections (e.g. "I want- I want to go" -> "I want to go"; keep only the corrected version).
+- Accidentally repeated words.
+
+Change NOTHING else. Specifically:
+- Keep contractions exactly as spoken. Do not expand "it's" to "it is".
+- Keep the speaker's own word choices. Do not swap "as" for "because", or replace any word with a synonym.
+- Keep hedges and qualifiers like "really", "sort of", "quite", "just" - these are how the speaker talks.
+- Do not restructure, reorder, merge or split sentences that are already grammatical.
+
+If the text contains no disfluency, return it completely unchanged. Returning the input verbatim is the correct and expected outcome most of the time.
+
+Output ONLY the text. No preamble, no explanation, no quotation marks, no markdown.`
 
 export interface BuildCleanupRequestParams {
   model: string
