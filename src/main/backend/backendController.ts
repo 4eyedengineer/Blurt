@@ -211,6 +211,23 @@ export class BackendController extends EventEmitter {
         return
       }
 
+      // `start()` resolving is not the same claim as "a sidecar is serving".
+      // Reporting 'ready' straight off the back of it means the status pill
+      // asserts a running engine on the strength of a function having
+      // returned, and a rebuild has been observed reaching this line, and
+      // logging "backend: ready", having spawned nothing at all - no spawn
+      // line, no listening port, ~4ms end to end. Whatever produced that,
+      // the honest status is not 'ready'.
+      //
+      // So ask the sidecar itself. Anything other than 'ready' here is a
+      // contradiction between two things that must agree, and it becomes a
+      // loud failure rather than a quiet lie to the user.
+      if (sidecar.getState() !== 'ready') {
+        throw new Error(
+          `Sidecar reported "${sidecar.getState()}" after start() resolved - refusing to report the backend as ready.`
+        )
+      }
+
       this.sidecar = sidecar
       const startedSidecar = sidecar
       // The server has no idea what our internal ModelId ("gemma-4-e2b")
@@ -232,12 +249,23 @@ export class BackendController extends EventEmitter {
       // cold-start cost (see LitertBackend.warmup doc comment).
       void backend.warmup()
     } catch (err) {
-      if (generation !== this.generation) return
       const message = err instanceof Error ? err.message : String(err)
+      // Stop before the generation check, not after. This used to `return`
+      // first when superseded, which skipped both stops - so a rebuild that
+      // failed while a newer one was already running leaked the sidecar it
+      // had built, along with its spawned child and restart timers. The
+      // newer rebuild cannot clean it up either: it only knows about the
+      // `this.sidecar` it replaced, which is a different object. That is
+      // exactly what hoisting `sidecar` out of the try was for (see its
+      // declaration) - the early return quietly defeated it.
+      sidecar?.stop()
+      if (generation !== this.generation) {
+        log.warn(`backend: superseded rebuild failed and was discarded: ${message}`)
+        return
+      }
       log.error(`backend: rebuild failed: ${message}`)
       this.setStatus({ state: 'error', message })
       this.setBackend(new UnavailableBackend(message))
-      sidecar?.stop()
       previousSidecar?.stop()
     }
   }
