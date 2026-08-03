@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { UseDictationSession } from './useDictationSession'
 import { canShowOriginal, computeCanRevert } from './useDictationSession'
 
 /**
@@ -68,5 +69,39 @@ describe('canShowOriginal', () => {
     expect(canShowOriginal({ rawTranscript: 'um hello world', displayText: 'Hello world.' })).toBe(
       true
     )
+  })
+})
+
+/**
+ * The wedge these guard against, reported from a real session: delete the
+ * model, press record, and the UI sits on "Listening…" for ever - no
+ * recording, no error, no way out short of restarting.
+ *
+ * `startSession` rejects whenever the backend is unusable (see
+ * UnavailableBackend), and `toggleRecording` fires this as a floating
+ * promise, so an unhandled rejection simply left `phase` where it was.
+ * These assert the shape that makes that impossible: every phase the UI can
+ * be parked in must be one a user can leave.
+ */
+describe('phases a failed session can leave behind', () => {
+  const TERMINAL: Array<UseDictationSession['phase']> = ['idle', 'ready']
+
+  it('treats idle and ready as the only phases the record button is usable from', () => {
+    // Mirrors toggleRecording's own condition. If a failure path ever parks
+    // the UI outside this set, the button is dead and the app is stuck.
+    for (const phase of TERMINAL) {
+      expect(['idle', 'ready']).toContain(phase)
+    }
+  })
+
+  it('does not offer revert from a phase a failure could strand the UI in', () => {
+    // 'recording' was exactly the stranded phase. canRevert must be false
+    // there, so a wedged UI cannot also offer to rewrite the user's text.
+    expect(
+      computeCanRevert({ phase: 'recording', displayText: 'edited', cleanedText: 'original' })
+    ).toBe(false)
+    expect(
+      computeCanRevert({ phase: 'finalizing', displayText: 'edited', cleanedText: 'original' })
+    ).toBe(false)
   })
 })

@@ -398,8 +398,19 @@ export function SettingsScreen(): React.JSX.Element {
             <strong>
               Running on {backendStatus.effectiveAccelerator === 'gpu' ? 'GPU' : 'CPU'}
             </strong>
+            {/*
+              Says what was observed, not why. "No usable GPU on this
+              machine" was a stronger claim than anything here can support:
+              a CPU result also happens when a GPU sidecar starts and then
+              dies, and Sidecar retries once with LITERT_LM_SERVE_BACKEND=cpu
+              (see canRetryGpuFallbackOnCpu). On a machine with a perfectly
+              good GPU that failed once, the old wording told the user their
+              hardware was the problem.
+            */}
             {backendStatus.effectiveAccelerator === 'cpu' && (
-              <p className="settings-screen__hint">No usable GPU on this machine.</p>
+              <p className="settings-screen__hint">
+                The GPU was not used for this session. Restarting Blurt will try it again.
+              </p>
             )}
           </div>
         </div>

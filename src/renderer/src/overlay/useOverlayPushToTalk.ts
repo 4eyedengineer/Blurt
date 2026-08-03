@@ -70,8 +70,35 @@ export function useOverlayPushToTalk(): UseOverlayPushToTalk {
     // Read fresh every hold rather than caching: the overlay window has no
     // SettingsProvider, and this is a main-process memory read, so keeping
     // it current costs nothing and can never act on a stale device.
-    const { inputDeviceId } = await window.api.settings.get()
-    const sessionId = await window.api.dictation.startSession({ sampleRate: 16000 })
+    // Guarded for the reason `stop`'s doc comment gives just below: the pill
+    // is already on screen by this point, and it is only ever taken down in
+    // response to a result. An unusable backend - no model installed, engine
+    // failed to start - rejects here, and unguarded that left the pill
+    // floating with no way to dismiss it and no explanation, on the app's
+    // primary path. Same treatment as a microphone failure: say what
+    // happened, report it, and let it settle away on its own.
+    let inputDeviceId: string
+    let sessionId: string
+    try {
+      ;({ inputDeviceId } = await window.api.settings.get())
+      sessionId = await window.api.dictation.startSession({ sampleRate: 16000 })
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      window.api.log.rendererError(`overlay could not start a dictation session: ${reason}`)
+      dispatch({ type: 'failed', message: reason })
+      clearSettleTimer()
+      settleTimerRef.current = setTimeout(() => {
+        dispatch({ type: 'reset' })
+        settleTimerRef.current = null
+      }, REVEAL_SETTLE_MS)
+      window.api.overlay.sendResult({
+        rawTranscript: '',
+        cleanedText: '',
+        durationMs: 0,
+        error: reason
+      })
+      return
+    }
     sessionIdRef.current = sessionId
     const offPartial = window.api.dictation.onPartialTranscript((sid, text) => {
       if (sid === sessionId) dispatch({ type: 'partial', text })

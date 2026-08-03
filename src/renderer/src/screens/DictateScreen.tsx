@@ -6,6 +6,7 @@ import { VoiceEditBar } from '../components/VoiceEditBar'
 import { MicLevelMeter } from '../components/MicLevelMeter'
 import { CopyIcon } from '../components/Icons'
 import { DiffReveal } from '../components/DiffReveal'
+import { useBackendStatus } from '../hooks/useBackendStatus'
 import './DictateScreen.css'
 
 const STATUS_LABEL: Record<UseDictationSession['phase'], string> = {
@@ -46,6 +47,8 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
     copyShownText,
     startNew
   } = session
+
+  const backendStatus = useBackendStatus()
 
   const recording = phase === 'recording'
   /** Capturing a spoken edit instruction - the mic is live, but the transcript is not being replaced. */
@@ -106,6 +109,22 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
       {/* Shown for a spoken edit too - it is the same microphone, and the
           same question of whether it is actually picking anything up. */}
       {(recording || commandRecording) && <MicLevelMeter level={micLevel} />}
+
+      {/*
+        Why the backend is unusable, said here rather than only in the
+        sidebar. The status pill has room for one word - it said "Error" and
+        nothing else, with the actual reason reachable only by hovering it,
+        on a screen where the user has just pressed record and is waiting
+        for something to happen. The reason is the useful part, and this is
+        where they are looking.
+
+        Suppressed once a dictation is under way: mid-recording the backend
+        status is either stale or about to be superseded by a real
+        sessionError, and two contradictory red messages is worse than one.
+      */}
+      {backendStatus.state === 'error' && backendStatus.message && !recording && !busy && (
+        <p className="dictate-screen__warning">{backendStatus.message}</p>
+      )}
 
       {sessionError && <p className="dictate-screen__warning">{sessionError}</p>}
 

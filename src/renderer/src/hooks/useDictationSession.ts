@@ -221,10 +221,25 @@ export function useDictationSession(): UseDictationSession {
     setSessionError(null)
     setPhase('recording')
 
-    const sessionId = await window.api.dictation.startSession({
-      sampleRate: 16000,
-      vocabulary: settings.customVocabulary
-    })
+    // startSession rejects whenever the backend is not actually usable - no
+    // model installed, sidecar failed to start, engine crashed. This used to
+    // be unguarded, and `toggleRecording` calls this as a floating promise,
+    // so the rejection went nowhere: the phase stayed 'recording' and the UI
+    // sat on "Listening…" for ever, with no recording, no error, and no way
+    // out short of restarting the app. Reported from a real session - delete
+    // the model, press record, and the app is wedged.
+    let sessionId: string
+    try {
+      sessionId = await window.api.dictation.startSession({
+        sampleRate: 16000,
+        vocabulary: settings.customVocabulary
+      })
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      setPhase('idle')
+      setSessionError(reason)
+      return
+    }
     sessionIdRef.current = sessionId
     startTimeRef.current = Date.now()
 
@@ -264,7 +279,21 @@ export function useDictationSession(): UseDictationSession {
     // unsubscribe until it's actually done.
     setPhase('finalizing')
 
-    const finalRaw = await window.api.dictation.endSession(sessionId)
+    // Same failure mode as startSession, one phase later: if the engine dies
+    // mid-dictation this rejects, and unguarded that left the UI stuck on
+    // "Finishing up…" for ever. Whatever was said is already lost at that
+    // point, so the only thing left worth doing is saying so and freeing the
+    // record button.
+    let finalRaw: string
+    try {
+      finalRaw = await window.api.dictation.endSession(sessionId)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      unsubscribePartialRef.current()
+      setPhase('idle')
+      setSessionError(reason)
+      return
+    }
     unsubscribePartialRef.current()
 
     // Nothing was said. Stop here rather than running the rest of the
@@ -345,10 +374,23 @@ export function useDictationSession(): UseDictationSession {
     setSpokenCommand('')
     setPhase('command-recording')
 
-    const sessionId = await window.api.dictation.startSession({
-      sampleRate: 16000,
-      vocabulary: settings.customVocabulary
-    })
+    // Guarded for the same reason as startRecording - an unusable backend
+    // rejects here, and leaving it unhandled wedges the UI in
+    // 'command-recording' with the mic button stuck showing Stop. Back to
+    // 'ready', not 'idle': the transcript is still on screen and still
+    // editable by typing; only the spoken shortcut failed.
+    let sessionId: string
+    try {
+      sessionId = await window.api.dictation.startSession({
+        sampleRate: 16000,
+        vocabulary: settings.customVocabulary
+      })
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      setPhase('ready')
+      setSessionError(reason)
+      return
+    }
     sessionIdRef.current = sessionId
 
     // Stream the partial transcript straight into `spokenCommand` so the
@@ -388,7 +430,16 @@ export function useDictationSession(): UseDictationSession {
     audio.stop()
     setPhase('finalizing')
 
-    const finalCommand = await window.api.dictation.endSession(sessionId)
+    let finalCommand: string
+    try {
+      finalCommand = await window.api.dictation.endSession(sessionId)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      unsubscribePartialRef.current()
+      setPhase('ready')
+      setSessionError(reason)
+      return
+    }
     unsubscribePartialRef.current()
     setPhase('ready')
 
