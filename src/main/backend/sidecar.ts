@@ -308,6 +308,50 @@ export function resolveManagedCliForImport(
   return resolveImportCli(managedCommand)
 }
 
+/**
+ * Rewrites an `ImportCliResolution` failure into something a user can act
+ * on, for display in Settings.
+ *
+ * The errors above are written for whoever is debugging this code, and they
+ * are the right level of detail for the log. But they are also handed
+ * straight to the Settings screen, where a user who pressed Download reads
+ * sentences like "Can't derive the litert-lm import CLI from managed
+ * command's binary" - naming an internal function's job, an internal
+ * component, and a setting most people will never open. There is nothing in
+ * that a person can do something about.
+ *
+ * So: the precise text keeps going to the log (every caller already logs it
+ * before calling this), and the screen gets one plain sentence and one
+ * suggested action. Matching on the internal wording rather than on an error
+ * code is deliberate - these strings are defined a few lines above in this
+ * same file, the mapping is total (there is always a fallback), and a missed
+ * match degrades to the generic message rather than to nothing.
+ */
+export function describeImportFailureForUser(error: string): string {
+  // The runtime venv is missing entirely. On Windows/macOS that means
+  // first-run setup has not completed, which a relaunch re-attempts.
+  if (/no runtime venv has been resolved/i.test(error)) {
+    return (
+      "Blurt's Python runtime isn't ready yet. Restart Blurt to finish setting it up, " +
+      'then try the download again.'
+    )
+  }
+  // A hand-edited command that cannot be resolved into an importer. The
+  // Advanced section has a "Reset to default" button for exactly this.
+  if (
+    /bare Python interpreter|Can't derive the litert-lm import CLI|command is empty/i.test(error)
+  ) {
+    return (
+      "Blurt couldn't work out how to install the model, because the engine command in " +
+      'Settings > Advanced has been changed. Use "Reset to default" there, then try again.'
+    )
+  }
+  return (
+    "Blurt couldn't install the model. See Settings > Advanced > Open logs folder for the " +
+    'details.'
+  )
+}
+
 const DEFAULT_READY_TIMEOUT_MS = 60_000
 const DEFAULT_READY_POLL_INTERVAL_MS = 500
 const MAX_RESTARTS = 3

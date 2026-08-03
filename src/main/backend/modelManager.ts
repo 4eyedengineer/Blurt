@@ -19,6 +19,7 @@ import {
   type ModelDownloadState
 } from '../../shared/models'
 import type { ImportCliResolution } from './sidecar'
+import { describeImportFailureForUser } from './sidecar'
 import { log } from '../log'
 import { probeHardware } from '../hardware/hardwareProbe'
 import { checkModelRequirements } from '../../shared/modelRequirements'
@@ -250,13 +251,15 @@ export class ModelManager extends EventEmitter {
     if (this.getProgress(modelId).state === 'downloading') return
 
     if (!cliResolution.ok) {
+      // Precise wording to the log, a sentence the user can act on to the
+      // screen - see describeImportFailureForUser.
       log.error(`model: download aborted for ${modelId}: ${cliResolution.error}`)
       this.setProgress({
         modelId,
         state: 'error',
         receivedBytes: 0,
         totalBytes: null,
-        error: cliResolution.error
+        error: describeImportFailureForUser(cliResolution.error)
       })
       return
     }

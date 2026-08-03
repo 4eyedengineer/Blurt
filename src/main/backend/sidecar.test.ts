@@ -14,6 +14,7 @@ import {
   PARENT_PID_ENV_VAR,
   renderManagedCommand,
   resolveImportCli,
+  describeImportFailureForUser,
   resolveManagedCliForImport,
   Sidecar,
   tokenizeCommand
@@ -728,5 +729,41 @@ describe('resolveManagedCliForImport', () => {
       undefined
     )
     expect(result).toEqual({ ok: true, cli: 'C:\\Blurt\\venv\\Scripts\\litert-lm.exe' })
+  })
+})
+
+describe('describeImportFailureForUser', () => {
+  // The point of this function is that a user never sees the internal
+  // wording, so each case asserts BOTH that the advice is right and that the
+  // jargon is gone - a mapping that quietly passed the raw string through
+  // would satisfy a looser test.
+  it('tells the user to restart when the runtime venv is not set up yet', () => {
+    const out = describeImportFailureForUser(
+      'Managed command references {venvPython}/{litertLmCli} but no runtime venv has been resolved'
+    )
+    expect(out).toMatch(/restart blurt/i)
+    expect(out).not.toContain('{venvPython}')
+    expect(out).not.toMatch(/venv/i)
+  })
+
+  it('points at Reset to default when the command has been hand-edited into something unusable', () => {
+    const out = describeImportFailureForUser(
+      'Can\'t derive the litert-lm import CLI from managed command\'s binary "python"'
+    )
+    expect(out).toMatch(/reset to default/i)
+    expect(out).not.toMatch(/litert-lm|CLI/i)
+  })
+
+  it('covers the bare-interpreter case with the same advice', () => {
+    const out = describeImportFailureForUser(
+      'Managed command\'s binary is a bare Python interpreter ("python") with no path'
+    )
+    expect(out).toMatch(/reset to default/i)
+  })
+
+  it('falls back to pointing at the logs for anything unrecognized', () => {
+    const out = describeImportFailureForUser('something nobody anticipated')
+    expect(out).toMatch(/logs folder/i)
+    expect(out).not.toContain('something nobody anticipated')
   })
 })
