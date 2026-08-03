@@ -353,6 +353,19 @@ export function SettingsScreen(): React.JSX.Element {
 
       <div className="settings-screen__group">
         <h2>Model</h2>
+        {/*
+          First run. Setup finishes, the app opens, and nothing has told the
+          user that a model download is still required - they are left to
+          infer it from a backend error and find their own way here. Blurt
+          cannot transcribe a word until this is done, so it is worth saying
+          plainly, once, and only while it is actually true.
+        */}
+        {models.installed.length === 0 && (
+          <p className="settings-screen__hint settings-screen__hint--callout">
+            Blurt needs a model before it can transcribe anything. Pick one below and press
+            Download. E2B is the smallest and fastest, and a good place to start.
+          </p>
+        )}
         <div className="settings-screen__radio-group">
           {MODEL_OPTIONS.map((opt) => (
             <ModelRow

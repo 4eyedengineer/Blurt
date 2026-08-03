@@ -35,6 +35,17 @@
   line-height: 1.5;
 }
 
+/* A hint that is the next required step rather than an aside, so it has to
+   carry more weight than the faint grey the others use - a first-run user
+   who misses this cannot transcribe anything at all. */
+.settings-screen__hint--callout {
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  border-left: 2px solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
 .settings-screen__radio-group {
   display: flex;
   flex-direction: column;
