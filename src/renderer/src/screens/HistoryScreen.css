@@ -61,8 +61,8 @@
 /* No cursor: pointer here. The row itself is no longer clickable - the
    click handler moved onto the .history-screen__item-main button so the
    list can be reached from the keyboard - so a pointer on the row's padding
-   and on the gap between the two buttons would promise a click that does
-   nothing. The two buttons set their own pointer. */
+   and on the gap between item-main and the actions group would promise a
+   click that does nothing. Each button sets its own pointer. */
 .history-screen__item {
   display: flex;
   align-items: flex-start;
@@ -126,17 +126,43 @@
   color: var(--color-primary);
 }
 
-.history-screen__delete {
+.history-screen__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.history-screen__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: none;
   background: transparent;
   color: var(--color-text-faint);
   cursor: pointer;
   padding: 6px;
+  font: inherit;
+  font-size: 12px;
   border-radius: var(--radius-sm);
-  flex-shrink: 0;
+}
+
+.history-screen__action:hover {
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+}
+
+.history-screen__action:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Brief post-copy confirmation - see HistoryScreen's `copy` callback, which
+   swaps the icon for this modifier + the text "Copied" for ~1500ms. */
+.history-screen__action--copied {
+  color: var(--color-success);
 }
 
 .history-screen__delete:hover {
   color: var(--color-danger);
-  background: var(--color-surface-raised);
 }

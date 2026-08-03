@@ -35,6 +35,44 @@ const CLEANUP_REVEAL_MS = 2000
  */
 const VOICE_EDIT_REVEAL_MS = 1500
 
+export interface CanRevertParams {
+  phase: DictationPhase
+  displayText: string
+  cleanedText: string
+}
+
+/**
+ * Whether there is a cleaned original worth reverting back to - true only
+ * once a dictation has settled ('ready'; there is nothing stable to restore
+ * to mid-recording or mid-rewrite), only once cleanup has actually produced
+ * a cleaned original (empty before the first dictation finishes), and only
+ * once the shown text has actually diverged from it (nothing to revert if no
+ * transform or voice edit has run yet). Named distinctly from
+ * HistoryScreen's `canRevertToCleaned` (same core idea, minus `phase`, for a
+ * saved entry rather than the live session) so the two don't shadow each
+ * other in search results.
+ */
+export function computeCanRevert({ phase, displayText, cleanedText }: CanRevertParams): boolean {
+  return phase === 'ready' && cleanedText !== '' && displayText !== cleanedText
+}
+
+export interface CanShowOriginalParams {
+  rawTranscript: string
+  displayText: string
+}
+
+/**
+ * Whether the "show original" toggle is worth offering at all - there has to
+ * be a captured raw transcript, and it has to actually differ from the
+ * (edited) displayText, or flipping to "raw" would render the exact same
+ * text. Deliberately compares against `displayText` rather than whatever
+ * happens to be on screen right now, so the toggle stays offered (and
+ * toggleable back off) while `showingRaw` itself is true.
+ */
+export function canShowOriginal({ rawTranscript, displayText }: CanShowOriginalParams): boolean {
+  return rawTranscript !== '' && rawTranscript !== displayText
+}
+
 export interface UseDictationSession {
   phase: DictationPhase
   liveText: string
@@ -59,12 +97,21 @@ export interface UseDictationSession {
    * Empty when no spoken command has been captured.
    */
   spokenCommand: string
+  /** True when displayText has diverged from cleanedText and there's a cleaned original to go back to - see computeCanRevert. */
+  canRevert: boolean
+  /** True while the transcript panel is showing rawTranscript in place of displayText - a pure view toggle, see toggleShowRaw. */
+  showingRaw: boolean
   toggleRecording: () => void
   /** Starts/stops capturing a spoken edit instruction. No-op unless there is a transcript to edit. */
   toggleCommandRecording: () => void
   applyTransform: (mode: TransformMode) => Promise<void>
   applyVoiceEdit: (command: string) => Promise<void>
-  copyDisplayText: () => Promise<boolean>
+  /** Restores displayText to cleanedText. A local state restore only - never re-runs the model. No-op unless canRevert. */
+  revertToCleaned: () => Promise<void>
+  /** Flips `showingRaw`. Never mutates displayText, persists anything, or calls the model. */
+  toggleShowRaw: () => void
+  /** Copies whatever the transcript panel currently shows - rawTranscript while showingRaw, displayText otherwise. */
+  copyShownText: () => Promise<boolean>
   loadFromHistory: (entry: DictationEntry) => void
   startNew: () => void
 }
@@ -87,6 +134,8 @@ export function useDictationSession(): UseDictationSession {
   const [streamPreview, setStreamPreview] = useState('')
   const [reveal, setReveal] = useState<DiffToken[] | null>(null)
   const [spokenCommand, setSpokenCommand] = useState('')
+  /** View-only toggle: renders rawTranscript instead of displayText when true. Never persisted - see toggleShowRaw. */
+  const [showingRaw, setShowingRaw] = useState(false)
 
   const sessionIdRef = useRef<string | null>(null)
   const startTimeRef = useRef(0)
@@ -164,6 +213,7 @@ export function useDictationSession(): UseDictationSession {
     setStreamPreview('')
     setReveal(null)
     setSpokenCommand('')
+    setShowingRaw(false)
   }, [clearRevealTimer])
 
   const startRecording = useCallback(async () => {
@@ -386,6 +436,10 @@ export function useDictationSession(): UseDictationSession {
       )
       setDisplayText(transformed)
       setDisplayMode(mode)
+      // A transform replaces displayText - if the panel was pinned on the
+      // raw view, leaving showingRaw on would silently hide the very change
+      // this just made behind the old, unrelated raw transcript.
+      setShowingRaw(false)
       setPhase('ready')
       await persistCurrent({ displayText: transformed, displayMode: mode })
     },
@@ -406,6 +460,10 @@ export function useDictationSession(): UseDictationSession {
         window.api.dictation.voiceEdit(displayText, command, operationId)
       )
       setDisplayText(edited)
+      // See the same setShowingRaw(false) in applyTransform - a voice edit
+      // replaces displayText too, and the reveal below is a diff of that
+      // change, not of the raw transcript.
+      setShowingRaw(false)
       setPhase('ready')
       setSpokenCommand('')
       showReveal(diffWords(before, edited), VOICE_EDIT_REVEAL_MS)
@@ -414,11 +472,39 @@ export function useDictationSession(): UseDictationSession {
     [displayText, persistCurrent, showReveal, withStreamPreview]
   )
 
-  const copyDisplayText = useCallback(async () => {
-    const ok = await copyToClipboard(displayText)
+  /**
+   * Restores displayText to cleanedText, undoing whatever transform(s) or
+   * voice edit(s) ran since cleanup. cleanedText is already held in state
+   * (and already saved to history alongside every displayText change), so
+   * this is a local state restore only - unlike every other way displayText
+   * changes, it never calls the model or the backend.
+   */
+  const revertToCleaned = useCallback(async () => {
+    if (!computeCanRevert({ phase, displayText, cleanedText })) return
+    const before = displayText
+    setDisplayText(cleanedText)
+    setDisplayMode('none')
+    setSpokenCommand('')
+    setShowingRaw(false)
+    showReveal(diffWords(before, cleanedText), VOICE_EDIT_REVEAL_MS)
+    await persistCurrent({ displayText: cleanedText, displayMode: 'none' })
+  }, [phase, displayText, cleanedText, showReveal, persistCurrent])
+
+  /**
+   * Flips the transcript panel between displayText and rawTranscript. Purely
+   * a view toggle - no state beyond `showingRaw` itself changes, so this can
+   * never reach the model or the backend.
+   */
+  const toggleShowRaw = useCallback(() => {
+    setShowingRaw((prev) => !prev)
+  }, [])
+
+  /** Copies whatever the transcript panel is currently showing - rawTranscript while showingRaw, displayText otherwise. */
+  const copyShownText = useCallback(async () => {
+    const ok = await copyToClipboard(showingRaw ? rawTranscript : displayText)
     if (ok) flashCopy()
     return ok
-  }, [displayText, flashCopy])
+  }, [showingRaw, rawTranscript, displayText, flashCopy])
 
   const loadFromHistory = useCallback(
     (entry: DictationEntry) => {
@@ -428,6 +514,7 @@ export function useDictationSession(): UseDictationSession {
       setLiveText('')
       setStreamPreview('')
       setReveal(null)
+      setShowingRaw(false)
       setEntryId(entry.id)
       setRawTranscript(entry.rawTranscript)
       setCleanedText(entry.cleanedText)
@@ -441,6 +528,8 @@ export function useDictationSession(): UseDictationSession {
   // Global hotkey toggles recording from anywhere (main process brings the
   // window to front before sending this event).
   useEffect(() => window.api.hotkey.onToggleRecording(() => toggleRecording()), [toggleRecording])
+
+  const canRevert = computeCanRevert({ phase, displayText, cleanedText })
 
   return {
     phase,
@@ -456,11 +545,15 @@ export function useDictationSession(): UseDictationSession {
     streamPreview,
     reveal,
     spokenCommand,
+    canRevert,
+    showingRaw,
     toggleRecording,
     toggleCommandRecording,
     applyTransform,
     applyVoiceEdit,
-    copyDisplayText,
+    revertToCleaned,
+    toggleShowRaw,
+    copyShownText,
     loadFromHistory,
     startNew
   }

@@ -1,4 +1,4 @@
-import type { UseDictationSession } from '../hooks/useDictationSession'
+import { canShowOriginal, type UseDictationSession } from '../hooks/useDictationSession'
 import { RecordButton } from '../components/RecordButton'
 import { TransformBar } from '../components/TransformBar'
 import { StatsBar } from '../components/StatsBar'
@@ -35,11 +35,15 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
     streamPreview,
     reveal,
     spokenCommand,
+    canRevert,
+    showingRaw,
     toggleRecording,
     toggleCommandRecording,
     applyTransform,
     applyVoiceEdit,
-    copyDisplayText,
+    revertToCleaned,
+    toggleShowRaw,
+    copyShownText,
     startNew
   } = session
 
@@ -49,6 +53,16 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
   const streamingLive = phase === 'recording' || phase === 'finalizing'
   const rewriting = phase === 'cleaning' || phase === 'transforming' || phase === 'editing'
   const busy = rewriting || phase === 'finalizing'
+  // The Revert / Show original toolbar buttons must never be actionable
+  // while text is actively streaming or being rewritten - the same window
+  // TransformBar and VoiceEditBar already disable themselves for.
+  const toolbarActionsDisabled = recording || commandRecording || busy
+  // Only worth offering a "show original" toggle when there's an actually
+  // different raw transcript to flip to - see canShowOriginal.
+  const showOriginalAvailable = canShowOriginal({ rawTranscript, displayText })
+  const showOriginalLabel = showingRaw
+    ? 'Show the edited transcript'
+    : 'Show the original transcript'
   // While streaming (live audio, or a cleanup/transform/edit rewrite), render
   // updates immediately with no transition on the text itself - only the
   // shimmer/caret below are animated.
@@ -58,7 +72,9 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
       ? streamPreview || rawTranscript
       : phase === 'transforming' || phase === 'editing'
         ? streamPreview || displayText
-        : displayText
+        : showingRaw
+          ? rawTranscript
+          : displayText
   const showCaret = streamingLive || rewriting
   const placeholder = recording ? 'Listening for speech…' : 'Press record to start dictating.'
 
@@ -95,16 +111,44 @@ export function DictateScreen({ session }: { session: UseDictationSession }): Re
 
       <div className="dictate-screen__transcript-wrap">
         <div className="dictate-screen__transcript-toolbar">
-          <span>{recording ? 'Live transcript' : 'Transcript'}</span>
-          <button
-            type="button"
-            className="dictate-screen__copy"
-            disabled={!displayText || recording}
-            onClick={() => void copyDisplayText()}
-          >
-            <CopyIcon width={16} height={16} />
-            {copyFlash ? 'Copied!' : 'Copy'}
-          </button>
+          <span>
+            {showingRaw ? 'Original transcript' : recording ? 'Live transcript' : 'Transcript'}
+          </span>
+          <div className="dictate-screen__transcript-actions">
+            {canRevert && (
+              <button
+                type="button"
+                className="dictate-screen__toolbar-btn"
+                disabled={toolbarActionsDisabled}
+                onClick={() => void revertToCleaned()}
+                title="Revert to the original cleaned text"
+                aria-label="Revert to the original cleaned text"
+              >
+                Revert
+              </button>
+            )}
+            {showOriginalAvailable && (
+              <button
+                type="button"
+                className="dictate-screen__toolbar-btn"
+                disabled={toolbarActionsDisabled}
+                onClick={toggleShowRaw}
+                title={showOriginalLabel}
+                aria-label={showOriginalLabel}
+              >
+                {showingRaw ? 'Show edited' : 'Show original'}
+              </button>
+            )}
+            <button
+              type="button"
+              className="dictate-screen__toolbar-btn"
+              disabled={!displayText || recording}
+              onClick={() => void copyShownText()}
+            >
+              <CopyIcon width={16} height={16} />
+              {copyFlash ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
         </div>
         <div
           className={[

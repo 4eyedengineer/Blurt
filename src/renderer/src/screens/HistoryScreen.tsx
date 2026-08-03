@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { DictationEntry } from '@shared/types'
 import { formatTimestamp } from '../lib/format'
-import { SearchIcon, TrashIcon } from '../components/Icons'
+import { copyToClipboard } from '../lib/clipboard'
+import { canRevertToCleaned } from '../lib/historyEntry'
+import { CopyIcon, SearchIcon, TrashIcon } from '../components/Icons'
 import './HistoryScreen.css'
 
 interface HistoryScreenProps {
@@ -36,6 +38,35 @@ export function HistoryScreen({ onOpenEntry }: HistoryScreenProps): React.JSX.El
   const remove = useCallback(async (id: string) => {
     await window.api.history.remove(id)
     setEntries((prev) => prev.filter((entry) => entry.id !== id))
+  }, [])
+
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  const copy = useCallback(async (entry: DictationEntry) => {
+    const ok = await copyToClipboard(entry.displayText || entry.cleanedText)
+    if (!ok) return
+    setCopiedId(entry.id)
+    // A different row's copy button can be clicked before this timer fires -
+    // only clear the flash if this row is still the one showing it.
+    setTimeout(() => setCopiedId((current) => (current === entry.id ? null : current)), 1500)
+  }, [])
+
+  // Restores the cleaned original - no model call, just writing back text
+  // that is already stored. save() resolves with the updated row, which is
+  // patched into local state directly (as `remove` above does) rather than
+  // re-querying the whole store.
+  const revert = useCallback(async (entry: DictationEntry) => {
+    const updated = await window.api.history.save({
+      id: entry.id,
+      rawTranscript: entry.rawTranscript,
+      cleanedText: entry.cleanedText,
+      displayText: entry.cleanedText,
+      displayMode: 'none',
+      wordCount: entry.wordCount,
+      durationMs: entry.durationMs,
+      wpm: entry.wpm
+    })
+    setEntries((prev) => prev.map((e) => (e.id === updated.id ? updated : e)))
   }, [])
 
   return (
@@ -85,14 +116,47 @@ export function HistoryScreen({ onOpenEntry }: HistoryScreenProps): React.JSX.El
                 )}
               </span>
             </button>
-            <button
-              type="button"
-              className="history-screen__delete"
-              aria-label="Delete dictation"
-              onClick={() => void remove(entry.id)}
-            >
-              <TrashIcon width={16} height={16} />
-            </button>
+            {/* Siblings of history-screen__item-main, never nested inside it -
+                same reason as above, plus a <button> cannot itself contain
+                another interactive element. Being siblings rather than
+                descendants also means none of these need stopPropagation: a
+                click here never bubbles through item-main's onClick (see the
+                delete button, which lost its own stopPropagation call when
+                the row's click handler moved off the <li> and onto
+                item-main specifically). */}
+            <div className="history-screen__actions">
+              <button
+                type="button"
+                className={
+                  copiedId === entry.id
+                    ? 'history-screen__action history-screen__action--copied'
+                    : 'history-screen__action'
+                }
+                aria-label="Copy dictation"
+                onClick={() => void copy(entry)}
+              >
+                {copiedId === entry.id ? 'Copied' : <CopyIcon width={16} height={16} />}
+              </button>
+              {canRevertToCleaned(entry) && (
+                <button
+                  type="button"
+                  className="history-screen__action"
+                  aria-label="Revert to original"
+                  title="Revert to the original cleaned text"
+                  onClick={() => void revert(entry)}
+                >
+                  Revert
+                </button>
+              )}
+              <button
+                type="button"
+                className="history-screen__action history-screen__delete"
+                aria-label="Delete dictation"
+                onClick={() => void remove(entry.id)}
+              >
+                <TrashIcon width={16} height={16} />
+              </button>
+            </div>
           </li>
         ))}
       </ul>

@@ -76,7 +76,16 @@
   letter-spacing: 0.05em;
 }
 
-.dictate-screen__copy {
+.dictate-screen__transcript-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Shared look for every transcript-toolbar button (Copy, Revert, Show
+   original) - one rule set so the new actions match Copy exactly rather than
+   growing their own slightly-different style. */
+.dictate-screen__toolbar-btn {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -91,12 +100,12 @@
   border-radius: var(--radius-sm);
 }
 
-.dictate-screen__copy:hover:not(:disabled) {
+.dictate-screen__toolbar-btn:hover:not(:disabled) {
   background: var(--color-surface-raised);
   color: var(--color-text);
 }
 
-.dictate-screen__copy:disabled {
+.dictate-screen__toolbar-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
