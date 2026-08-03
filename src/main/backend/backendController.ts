@@ -284,14 +284,13 @@ export class BackendController extends EventEmitter {
           // ever looks ready. Harmless/unused for a plain `litert-lm serve`
           // managed command (e.g. a hand-edited external one).
           BLURT_EAGER_MODEL_ID: getCatalogEntry(settings.modelId).alias,
-          // The speech recogniser, read by serve_gpu.py's /blurt/transcribe
-          // route (see its "Speech recognition" doc comment). Empty strings
-          // rather than omitted keys when there is no recogniser: that is
-          // the case an 'external' sidecar is in, and the route answers 503
-          // with a clear message rather than the process failing to start.
-          BLURT_ASR_MODEL: recognizer?.modelPath ?? '',
-          BLURT_ASR_FINAL_MODEL: recognizer?.finalModelPath ?? '',
-          BLURT_ASR_TOKENIZER: recognizer?.tokenizerPath ?? ''
+          // The speech recogniser's directory, read by serve_gpu.py's
+          // /blurt/transcribe route (see its "Speech recognition" doc
+          // comment). An empty string rather than an omitted key when there
+          // is no recogniser: that is the case an 'external' sidecar is in,
+          // and the route answers 503 with a clear message rather than the
+          // process failing to start.
+          BLURT_ASR_MODEL_DIR: recognizer?.modelDir ?? ''
         }
       })
 

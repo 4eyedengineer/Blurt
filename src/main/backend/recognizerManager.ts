@@ -9,69 +9,63 @@ import { log } from '../log'
  *
  * Deliberately not part of `ModelManager`. That class is built around
  * `ModelId`, a catalog entry, a VRAM/RAM requirements gate and a
- * `litert-lm import` step - none of which apply here. This is two small
- * files fetched once, used directly off disk by `resources/asr.py`, and
- * never handed to `litert-lm` at all. Folding it into the LLM's machinery
+ * `litert-lm import` step - none of which apply here. These are files
+ * fetched once, read directly off disk by `resources/asr.py`, and never
+ * handed to `litert-lm` at all. Folding it into the LLM's machinery
  * would have meant a fake catalog entry and an import that does nothing,
  * leaking a non-LLM artifact into `Settings.modelId` and the model-picker
  * UI.
  */
 
 /**
- * whisper-acft: Whisper fine-tuned for short, fixed-length audio windows,
- * which is what dictation is. Apache-2.0 and ungated, so the unauthenticated
- * HuggingFace fetches below (Blurt has no HF token handling at all) work.
+ * NVIDIA Parakeet TDT 0.6B, converted to ONNX, int8.
  *
- * Two sizes, because a mid-recording tick and the one final pass want
- * opposite things. Measured on 25 LibriSpeech clips (463 reference words) on
- * a real Windows machine, CPU:
+ * Measured on this project against 25 LibriSpeech clips (463 reference
+ * words) on a Windows machine with an RTX 3060, same audio and scorer
+ * throughout:
  *
- *     tiny.en    61 MB   10.37% WER    442ms per 3s window
- *     base.en   103 MB    6.26% WER    651ms
- *     small.en  289 MB    3.46% WER   2157ms
- *     (Gemma 4 E2B, 2,588 MB, for reference: 6.48%)
+ *     Engine                      WER    median   29s clip   hardware
+ *     parakeet-tdt-0.6b (this)   1.94%    328ms      359ms   GPU (DirectML)
+ *     whisper-acft small.en      3.46%   3716ms    20561ms   CPU
+ *     whisper-acft base.en       6.26%   1301ms     5229ms   CPU
+ *     Gemma 4 E2B                6.48%    948ms     3543ms   GPU
+ *     whisper-acft tiny.en      10.37%    748ms          -   CPU
  *
- * `base.en` drives the live transcript: its window cost is paid again every
- * tick, and at 651ms it keeps the on-screen cadence near 800ms. `small.en`
- * runs the single final pass, whose output is what gets pasted and saved -
- * roughly half Gemma's error rate, and its 2157ms is paid once.
+ * Most accurate and by a wide margin the fastest, because it is the only
+ * recogniser here that reaches the GPU - the whisper `.tflite` builds cannot
+ * (see asr.py for the two dead ends that established that). Fast enough that
+ * one model serves both the live ticks and the final pass; an earlier
+ * CPU-only recogniser needed those split.
  *
- * `tiny.en` was shipped briefly on the strength of a 6-clip run that put it
- * at 4.14%. A 25-clip run put it at 10.37%, worse than the Gemma path it
- * replaced. Kept here as a warning about the sample size, not as an option.
+ * CC-BY-4.0, which requires attribution and nothing else - see NOTICE. It is
+ * ungated, so the unauthenticated HuggingFace fetches below (Blurt has no HF
+ * token handling at all) work.
  *
- * The 30s builds rather than 5s/10s: those hard-truncate anything longer,
- * and truncation is silent - a 12s clip through the 10s build simply loses
- * its ending, which measured as 18.8% WER purely from the missing words.
- * English-only; the multilingual builds are the same sizes if that ever
- * needs revisiting.
+ * English-only. `nemo-parakeet-tdt-0.6b-v3` is the multilingual sibling at
+ * the same size if that ever needs revisiting.
  */
-export const RECOGNIZER_REPO = 'litert-community/whisper-acft'
-/** Drives the live transcript - see the table above. */
-export const RECOGNIZER_LIVE_FILE = 'base.en/acft_whisper_base.en_30s_drq.tflite'
-/** Runs the single final pass, whose output is pasted and saved. */
-export const RECOGNIZER_FINAL_FILE = 'small.en/acft_whisper_small.en_30s_drq.tflite'
+export const RECOGNIZER_REPO = 'istupakov/parakeet-tdt-0.6b-v2-onnx'
 
 /**
- * The decoder emits Whisper token ids, so it needs Whisper's own vocabulary
- * to become text. It comes from the matching `openai/whisper-*` repo rather
- * than from the recogniser's, which ships weights only.
- *
- * One tokenizer serves both models: every English Whisper build shares the
- * same 51864-token vocabulary regardless of size. It does have to match the
- * *language* build though - the multilingual vocabulary is 51865, and the
- * wrong one shifts every id past the mismatch and produces fluent-looking
- * nonsense rather than an error.
+ * Exactly the files onnx-asr needs to load this model from a local
+ * directory, and no more. The repo also ships fp32 weights - an
+ * `encoder-model.onnx` plus a 2.4 GB `.onnx.data` - which would nearly
+ * quadruple the download for a precision nothing here uses.
  */
-export const TOKENIZER_REPO = 'openai/whisper-tiny.en'
-export const TOKENIZER_FILE = 'tokenizer.json'
+export const RECOGNIZER_FILES = [
+  'encoder-model.int8.onnx',
+  'decoder_joint-model.int8.onnx',
+  'nemo128.onnx',
+  'vocab.txt',
+  'config.json'
+]
+
+/** Roughly what RECOGNIZER_FILES weighs, for the progress bar's total before any response arrives. */
+export const RECOGNIZER_APPROX_BYTES = 661_000_000
 
 export interface RecognizerPaths {
-  /** The fast recogniser behind the live transcript. */
-  modelPath: string
-  /** The accurate recogniser behind the final pass. */
-  finalModelPath: string
-  tokenizerPath: string
+  /** Directory holding RECOGNIZER_FILES - onnx-asr loads the model from here. */
+  modelDir: string
 }
 
 export type RecognizerState = 'missing' | 'downloading' | 'ready' | 'error'
@@ -99,17 +93,12 @@ export class RecognizerManager extends EventEmitter {
   }
 
   getPaths(): RecognizerPaths {
-    return {
-      modelPath: join(this.dir, 'recognizer-live.tflite'),
-      finalModelPath: join(this.dir, 'recognizer-final.tflite'),
-      tokenizerPath: join(this.dir, 'tokenizer.json')
-    }
+    return { modelDir: this.dir }
   }
 
-  /** All three files present. None is useful alone, so this is deliberately all-or-nothing. */
+  /** Every file present. None is useful alone, so this is deliberately all-or-nothing. */
   isInstalled(): boolean {
-    const { modelPath, finalModelPath, tokenizerPath } = this.getPaths()
-    return existsSync(modelPath) && existsSync(finalModelPath) && existsSync(tokenizerPath)
+    return RECOGNIZER_FILES.every((name) => existsSync(join(this.dir, name)))
   }
 
   getStatus(): RecognizerStatus {
@@ -126,7 +115,7 @@ export class RecognizerManager extends EventEmitter {
    *
    * Called on every backend rebuild, so the common case is an existence
    * check and nothing else. On a fresh install (or after the files are
-   * deleted) it fetches ~61 MB, which is why the caller reports it as a
+   * deleted) it fetches ~661 MB, which is why the caller reports it as a
    * startup step rather than doing it silently.
    */
   async ensureDownloaded(): Promise<RecognizerPaths> {
@@ -136,40 +125,35 @@ export class RecognizerManager extends EventEmitter {
     }
     if (this.inFlight) return this.inFlight
 
-    this.inFlight = this.downloadBoth().finally(() => {
+    this.inFlight = this.downloadAll().finally(() => {
       this.inFlight = null
     })
     return this.inFlight
   }
 
-  private async downloadBoth(): Promise<RecognizerPaths> {
-    const paths = this.getPaths()
-    log.info('recognizer: downloading speech recognition model')
-    this.setStatus({ state: 'downloading', receivedBytes: 0, totalBytes: null })
+  private async downloadAll(): Promise<RecognizerPaths> {
+    log.info(`recognizer: downloading speech recognition model (${RECOGNIZER_FILES.length} files)`)
+    this.setStatus({
+      state: 'downloading',
+      receivedBytes: 0,
+      totalBytes: RECOGNIZER_APPROX_BYTES
+    })
     try {
-      // Weights before the tokenizer, and the largest weights first: each
-      // file is only renamed into place once complete, so a failure part way
-      // through leaves the remaining files absent and the all-or-nothing
-      // isInstalled() check cannot mistake a partial install for a finished
-      // one.
-      await this.downloadFile(
-        `https://huggingface.co/${RECOGNIZER_REPO}/resolve/main/${RECOGNIZER_FINAL_FILE}`,
-        paths.finalModelPath,
-        true
-      )
-      await this.downloadFile(
-        `https://huggingface.co/${RECOGNIZER_REPO}/resolve/main/${RECOGNIZER_LIVE_FILE}`,
-        paths.modelPath,
-        true
-      )
-      await this.downloadFile(
-        `https://huggingface.co/${TOKENIZER_REPO}/resolve/main/${TOKENIZER_FILE}`,
-        paths.tokenizerPath,
-        false
-      )
+      // Largest first, and each file only renamed into place once complete,
+      // so a failure part way through leaves the rest absent and the
+      // all-or-nothing isInstalled() check cannot mistake a partial install
+      // for a finished one.
+      let received = 0
+      for (const name of RECOGNIZER_FILES) {
+        received += await this.downloadFile(
+          `https://huggingface.co/${RECOGNIZER_REPO}/resolve/main/${name}`,
+          join(this.dir, name),
+          received
+        )
+      }
       log.info('recognizer: ready')
       this.setStatus({ state: 'ready', receivedBytes: 0, totalBytes: null })
-      return paths
+      return this.getPaths()
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
       log.error(`recognizer: download failed: ${detail}`)
@@ -191,8 +175,9 @@ export class RecognizerManager extends EventEmitter {
   private async downloadFile(
     url: string,
     destination: string,
-    reportProgress: boolean
-  ): Promise<void> {
+    /** Bytes already fetched for earlier files, so progress spans the whole set rather than restarting per file. */
+    alreadyReceived: number
+  ): Promise<number> {
     const partPath = `${destination}.part`
     if (existsSync(partPath)) unlinkSync(partPath)
 
@@ -215,9 +200,11 @@ export class RecognizerManager extends EventEmitter {
           stream.write(Buffer.from(value), (writeErr) => (writeErr ? reject(writeErr) : resolve()))
         })
         received += value.length
-        if (reportProgress) {
-          this.setStatus({ state: 'downloading', receivedBytes: received, totalBytes })
-        }
+        this.setStatus({
+          state: 'downloading',
+          receivedBytes: alreadyReceived + received,
+          totalBytes: RECOGNIZER_APPROX_BYTES
+        })
       }
     } finally {
       await new Promise<void>((resolve) => stream.close(() => resolve()))
@@ -236,5 +223,6 @@ export class RecognizerManager extends EventEmitter {
 
     if (existsSync(destination)) unlinkSync(destination)
     renameSync(partPath, destination)
+    return writtenBytes
   }
 }

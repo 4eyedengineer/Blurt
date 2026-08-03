@@ -4,7 +4,7 @@ import { dirname, join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   RUNTIME_MARKER_FILENAME,
-  RUNTIME_PIP_SPECS,
+  runtimePipSpecs,
   getRuntimeBaseDir,
   isRuntimeManagedPlatform,
   isVenvHealthy,
@@ -140,8 +140,37 @@ describe('isVenvHealthy', () => {
 
   /** The recogniser cannot run without these, so dropping one must invalidate the venv. */
   it('requires the speech-recogniser packages to be part of the recorded set', () => {
-    expect(RUNTIME_PIP_SPECS.some((s) => s.startsWith('ai-edge-litert'))).toBe(true)
-    expect(RUNTIME_PIP_SPECS.some((s) => s.startsWith('tokenizers'))).toBe(true)
-    expect(RUNTIME_PIP_SPECS.some((s) => s.startsWith('numpy'))).toBe(true)
+    for (const platform of ['win32', 'darwin'] as const) {
+      const specs = runtimePipSpecs(platform)
+      expect(specs.some((s) => s.startsWith('onnx-asr'))).toBe(true)
+      expect(specs.some((s) => s.startsWith('numpy'))).toBe(true)
+      expect(specs.some((s) => s.startsWith('litert-lm'))).toBe(true)
+    }
+  })
+
+  /**
+   * onnxruntime-directml is what puts the recogniser on the GPU, and it
+   * exists only for Windows. Installing the stock build there would silently
+   * drop every dictation onto the CPU; installing the DirectML build
+   * anywhere else fails outright at pip. They also conflict, so exactly one
+   * must ever appear.
+   */
+  it('picks the ONNX Runtime build that matches the platform, and only one', () => {
+    const windows = runtimePipSpecs('win32')
+    expect(windows.filter((s) => s.startsWith('onnxruntime')).length).toBe(1)
+    expect(windows.some((s) => s.startsWith('onnxruntime-directml'))).toBe(true)
+
+    const mac = runtimePipSpecs('darwin')
+    expect(mac.filter((s) => s.startsWith('onnxruntime')).length).toBe(1)
+    expect(mac.some((s) => s.startsWith('onnxruntime-directml'))).toBe(false)
+  })
+
+  /**
+   * The marker records what was installed, so it has to differ per platform
+   * - otherwise a venv provisioned on one would be judged healthy on the
+   * other while carrying the wrong ONNX Runtime.
+   */
+  it('records a different marker per platform', () => {
+    expect(runtimeMarkerContents('win32')).not.toBe(runtimeMarkerContents('darwin'))
   })
 })

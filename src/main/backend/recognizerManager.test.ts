@@ -1,13 +1,13 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { dirname, join } from 'path'
+import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../log', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 }))
 
-import { RecognizerManager } from './recognizerManager'
+import { RECOGNIZER_FILES, RecognizerManager } from './recognizerManager'
 
 /**
  * A response body delivered in one chunk, with the content-length the caller
@@ -53,19 +53,16 @@ describe('RecognizerManager', () => {
 
     const paths = await manager.ensureDownloaded()
 
-    expect(readFileSync(paths.modelPath, 'utf-8')).toBe('LIVE')
-    expect(readFileSync(paths.finalModelPath, 'utf-8')).toBe('FINAL')
-    expect(readFileSync(paths.tokenizerPath, 'utf-8')).toBe('{"vocab":1}')
+    for (const name of RECOGNIZER_FILES) {
+      expect(existsSync(join(paths.modelDir, name))).toBe(true)
+    }
     expect(manager.isInstalled()).toBe(true)
     expect(manager.getStatus().state).toBe('ready')
   })
 
   it('does not download again when every file is already there', async () => {
     const manager = new RecognizerManager(dir)
-    const paths = manager.getPaths()
-    writeFileSync(paths.modelPath, 'LIVE')
-    writeFileSync(paths.finalModelPath, 'FINAL')
-    writeFileSync(paths.tokenizerPath, '{}')
+    for (const name of RECOGNIZER_FILES) writeFileSync(join(manager.getPaths().modelDir, name), 'x')
 
     await manager.ensureDownloaded()
     expect(fetchMock).not.toHaveBeenCalled()
@@ -83,10 +80,8 @@ describe('RecognizerManager', () => {
 
     await expect(manager.ensureDownloaded()).rejects.toThrow(/ended early/)
     expect(manager.isInstalled()).toBe(false)
-    expect(existsSync(manager.getPaths().modelPath)).toBe(false)
-    // Not even as a leftover .part. Checked in the recogniser's own
-    // directory, not the userData root it lives under.
-    expect(readdirSync(dirname(manager.getPaths().modelPath))).toEqual([])
+    // Not even as a leftover .part.
+    expect(readdirSync(manager.getPaths().modelDir)).toEqual([])
     expect(manager.getStatus().state).toBe('error')
   })
 
@@ -95,9 +90,11 @@ describe('RecognizerManager', () => {
    * tokenizer behind - `isInstalled()` is all-or-nothing, and a half-install
    * that reported ready would be indistinguishable from a real one.
    */
-  it('leaves nothing installed when the second file fails', async () => {
-    fetchMock.mockImplementation(async (url: string) =>
-      url.includes('tokenizer') ? new Response('nope', { status: 404 }) : bodyResponse('WEIGHTS')
+  it('leaves nothing installed when a later file fails', async () => {
+    // First file lands, the rest 404 - the partial-install case.
+    let call = 0
+    fetchMock.mockImplementation(async () =>
+      ++call === 1 ? bodyResponse('BYTES') : new Response('nope', { status: 404 })
     )
     const manager = new RecognizerManager(dir)
 
@@ -115,22 +112,18 @@ describe('RecognizerManager', () => {
 
   /** Two callers (a rebuild and a retry) must share one download, not race on the same .part file. */
   it('shares a single in-flight download between concurrent callers', async () => {
-    fetchMock.mockImplementation(async (url: string) =>
-      bodyResponse(url.includes('tokenizer') ? '{}' : url.includes('small.en') ? 'FINAL' : 'LIVE')
-    )
+    fetchMock.mockImplementation(async () => bodyResponse('BYTES'))
     const manager = new RecognizerManager(dir)
 
     const [a, b] = await Promise.all([manager.ensureDownloaded(), manager.ensureDownloaded()])
 
     expect(a).toEqual(b)
-    // Three files, fetched once each - not six.
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    // Each file fetched once, not once per caller.
+    expect(fetchMock).toHaveBeenCalledTimes(RECOGNIZER_FILES.length)
   })
 
   it('reports download progress for the weights', async () => {
-    fetchMock.mockImplementation(async (url: string) =>
-      bodyResponse(url.includes('tokenizer') ? '{}' : url.includes('small.en') ? 'FINAL' : 'LIVE')
-    )
+    fetchMock.mockImplementation(async () => bodyResponse('BYTES'))
     const manager = new RecognizerManager(dir)
     const states: string[] = []
     manager.on('status', (s) => states.push(s.state))

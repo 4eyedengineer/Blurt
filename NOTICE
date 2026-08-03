@@ -1,0 +1,12 @@
+Blurt bundles no model weights. Models are downloaded at runtime from
+HuggingFace and stored in the user's own application data directory.
+
+Speech recognition uses NVIDIA Parakeet TDT 0.6B v2, in the ONNX conversion
+published at https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx
+(upstream: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2).
+Licensed under CC-BY-4.0 - https://creativecommons.org/licenses/by/4.0/
+Attribution: NVIDIA Corporation.
+
+Cleanup, transforms and voice edit use Google Gemma 4, in the LiteRT-LM
+conversion published at https://huggingface.co/litert-community
+Licensed under Apache-2.0.

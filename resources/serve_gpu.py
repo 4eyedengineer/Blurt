@@ -134,9 +134,9 @@ lazily on the first request - see "Eager engine creation" above.
 
 ## Speech recognition (POST /blurt/transcribe)
 
-Transcription does not go through the LLM at all any more - a small
-dedicated `.tflite` recogniser handles it, and Gemma keeps only the language
-work (cleanup, transforms, voice edit). See `asr.py`, which lives beside
+Transcription does not go through the LLM at all any more - a dedicated
+recogniser handles it on the GPU, and Gemma keeps only the language work
+(cleanup, transforms, voice edit). See `asr.py`, which lives beside
 this file and is imported by name (both are copied into
 `process.resourcesPath` by electron-builder's `extraResources`, and Python
 puts a script's own directory on `sys.path`, so a plain `import asr` finds
@@ -150,16 +150,14 @@ probe, one port, and one lifecycle. A second process would have duplicated
 every one of those and given the Electron side two things to keep in
 agreement about whether dictation works.
 
-There are two recognisers, because a mid-recording tick and the one final
-pass want opposite things - see `asr.py`. `BLURT_ASR_MODEL` is the fast one
-that drives the live transcript; `BLURT_ASR_FINAL_MODEL` is the accurate one
-used when a request asks for `"final": true`, and defaults to the live model
-if unset. `BLURT_ASR_TOKENIZER` is shared: both are the same Whisper family
-and the same vocabulary, so one `tokenizer.json` serves both.
+Set `BLURT_ASR_MODEL_DIR` to the directory holding the recogniser's
+downloaded files. One model serves both the live transcript and the final
+pass: it is fast enough (~330ms) that splitting the two, which an earlier
+CPU-only recogniser needed, buys nothing.
 
-With the model or tokenizer unset or missing, the route answers 503 with a
-message rather than the process refusing to start - the LLM half still
-works, and the failure lands on the request that needs it.
+With that unset or missing, the route answers 503 with a message rather than
+the process refusing to start - the LLM half still works, and the failure
+lands on the request that needs it.
 
 ## Parent watchdog (crash-safe cleanup)
 
@@ -323,9 +321,7 @@ def _server_init_with_eager_engine(self, *args, **kwargs):
 
 serve_util.LiteRTLMServer.__init__ = _server_init_with_eager_engine
 
-_ASR_MODEL_ENV = "BLURT_ASR_MODEL"
-_ASR_FINAL_MODEL_ENV = "BLURT_ASR_FINAL_MODEL"
-_ASR_TOKENIZER_ENV = "BLURT_ASR_TOKENIZER"
+_ASR_MODEL_DIR_ENV = "BLURT_ASR_MODEL_DIR"
 _ASR_PATH = "/blurt/transcribe"
 
 
@@ -359,34 +355,22 @@ def _handle_transcribe(handler) -> None:
     length = int(handler.headers.get("Content-Length", 0))
     request = json.loads(handler.rfile.read(length) or b"{}")
     wav_bytes = base64.b64decode(request["wav"])
-    # `"final": true` asks for the larger, slower, more accurate recogniser -
-    # see asr.py's doc comment for why there are two. Absent or false means
-    # a mid-recording tick, where cost sets the on-screen cadence.
-    want_final = bool(request.get("final"))
   except Exception as err:  # pylint: disable=broad-exception-caught
     respond(400, {"error": f"Malformed transcription request: {err}"})
     return
 
-  live_path = os.environ.get(_ASR_MODEL_ENV, "").strip()
-  # Falling back to the live model when no final one is configured is a
-  # deliberate configuration default, not a silent downgrade: it keeps a
-  # hand-run or single-model setup working, and Blurt itself always sets
-  # both (see BackendController.rebuild).
-  final_path = os.environ.get(_ASR_FINAL_MODEL_ENV, "").strip() or live_path
-  model_path = final_path if want_final else live_path
-  tokenizer_path = os.environ.get(_ASR_TOKENIZER_ENV, "").strip()
-
-  if not model_path or not tokenizer_path:
+  model_dir = os.environ.get(_ASR_MODEL_DIR_ENV, "").strip()
+  if not model_dir:
     respond(503, {"error": "No speech recognition model is configured."})
     return
-  if not os.path.exists(model_path) or not os.path.exists(tokenizer_path):
+  if not os.path.isdir(model_dir):
     respond(503, {"error": "The speech recognition model is not installed."})
     return
 
   try:
     import asr  # pylint: disable=import-outside-toplevel
 
-    text = asr.transcribe_wav(model_path, tokenizer_path, wav_bytes)
+    text = asr.transcribe_wav(model_dir, wav_bytes)
   except Exception as err:  # pylint: disable=broad-exception-caught
     sys.stderr.write(f"[serve_gpu] transcription failed: {err!r}\n")
     sys.stderr.flush()

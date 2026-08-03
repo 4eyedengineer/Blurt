@@ -101,17 +101,13 @@ describe('LitertBackend - endSession reusing an in-flight partial tick', () => {
 
   /**
    * endSession once reused an in-flight tick's result for short recordings,
-   * to avoid a second identical request. That rested on the tick and the
-   * final pass producing the same thing, which stopped being true when they
-   * moved to different models: ticks run on the smaller recogniser, the
-   * final pass on the larger one (see resources/asr.py).
-   *
-   * So a short session must now still make its own final request, flagged
-   * `final: true`. Reusing the tick would quietly return the weaker model's
-   * transcript - 6.26% WER against 3.46% - for exactly the short recordings
-   * where the saving looked most attractive.
+   * to avoid a second identical request. That was removed when ticks and the
+   * final pass briefly ran on different models, and is deliberately left
+   * removed now they share one again: the recogniser answers in ~330ms, so
+   * the redundant call this saved is no longer worth the coupling between
+   * endSession and whatever a tick happens to have in flight.
    */
-  it('runs its own final pass on the larger model rather than reusing an in-flight tick', async () => {
+  it('runs its own final pass rather than reusing an in-flight tick', async () => {
     fetchMock.mockResolvedValue(makeTranscriptResponse('The history'))
 
     const partials: string[] = []
@@ -140,16 +136,9 @@ describe('LitertBackend - endSession reusing an in-flight partial tick', () => {
 
     // The tick, then a distinct final request - not one reused for both.
     expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2)
-    const finals = fetchMock.mock.calls.filter(
-      (c) => JSON.parse((c[1] as RequestInit).body as string).final === true
-    )
-    expect(finals).toHaveLength(1)
-    // ...and the ticks must NOT be flagged final, or every one of them would
-    // pay the larger model's cost and the cadence would collapse.
-    const ticks = fetchMock.mock.calls.filter(
-      (c) => JSON.parse((c[1] as RequestInit).body as string).final !== true
-    )
-    expect(ticks.length).toBeGreaterThanOrEqual(1)
+    for (const call of fetchMock.mock.calls) {
+      expect(String(call[0])).toBe('http://test-sidecar/blurt/transcribe')
+    }
   })
 
   it('still emits the in-flight tick even though the session is already ended (no silent suppression)', async () => {

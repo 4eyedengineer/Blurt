@@ -3,8 +3,8 @@ import { writeFileSync } from 'fs'
 import { join } from 'path'
 import {
   RUNTIME_MARKER_FILENAME,
-  RUNTIME_PIP_SPECS,
   runtimeMarkerContents,
+  runtimePipSpecs,
   type VenvPaths
 } from './venvResolver'
 import { log } from '../log'
@@ -309,12 +309,9 @@ export async function runFirstRunSetup(
   // One pip invocation for all of them, so the resolver sees the whole set
   // at once and the marker below can only ever be written for a venv where
   // every package installed together.
-  callbacks.onLine(`Installing ${RUNTIME_PIP_SPECS.join(', ')}...`)
-  await streamSpawn(
-    venv.pythonExe,
-    ['-m', 'pip', 'install', '--quiet', ...RUNTIME_PIP_SPECS],
-    callbacks.onLine
-  )
+  const specs = runtimePipSpecs()
+  callbacks.onLine(`Installing ${specs.join(', ')}...`)
+  await streamSpawn(venv.pythonExe, ['-m', 'pip', 'install', '--quiet', ...specs], callbacks.onLine)
   // Last, and only on success: this file is what tells the next launch it
   // does not need to do any of the above again, so writing it earlier would
   // let a half-installed venv claim to be complete.

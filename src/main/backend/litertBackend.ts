@@ -423,9 +423,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
   private async transcribeSamplesStreaming(
     session: LitertSession,
     samples: Int16Array,
-    onStreamText: (text: string) => void,
-    /** True for `endSession`'s one full-buffer pass, which uses the larger, more accurate recogniser - see resources/asr.py. */
-    isFinal = false
+    onStreamText: (text: string) => void
   ): Promise<string> {
     const wavBase64 = pcm16ToWavBase64(samples, session.sampleRate)
     // The one place audio becomes text, so routing it here moves every
@@ -445,7 +443,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     // ("Sure, here is the transcription:"); a recogniser emits speech tokens
     // and nothing else, so running it here could only ever damage a genuine
     // transcript that happened to begin with a matching phrase.
-    const text = await this.enqueue(() => this.transcribeAudio(wavBase64, isFinal))
+    const text = await this.enqueue(() => this.transcribeAudio(wavBase64))
     const throttled = new ThrottledTextEmitter({
       intervalMs: this.streamThrottleMs,
       emit: onStreamText
@@ -465,7 +463,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
    * problem. They are the same process, so in practice they usually are the
    * same problem.
    */
-  private async transcribeAudio(wavBase64: string, isFinal: boolean): Promise<string> {
+  private async transcribeAudio(wavBase64: string): Promise<string> {
     const baseUrl = this.options.getBaseUrl()
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs)
@@ -473,7 +471,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       const res = await fetch(`${baseUrl}/blurt/transcribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wav: wavBase64, final: isFinal }),
+        body: JSON.stringify({ wav: wavBase64 }),
         signal: controller.signal
       })
       const payload = (await res.json().catch(() => null)) as {
@@ -733,15 +731,10 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       // already marked `ended` so this is unambiguously the last update the
       // renderer will see for it, rather than needing a separate IPC event
       // just for "the final one is streaming too".
-      return await this.transcribeSamplesStreaming(
-        session,
-        samples,
-        (text) => {
-          session.lastTranscript = text
-          this.emitter.emit('partial', session.id, text)
-        },
-        true
-      )
+      return await this.transcribeSamplesStreaming(session, samples, (text) => {
+        session.lastTranscript = text
+        this.emitter.emit('partial', session.id, text)
+      })
     } catch (err) {
       this.emitError(sessionId, err)
       return session.lastTranscript

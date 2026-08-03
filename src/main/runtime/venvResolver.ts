@@ -8,16 +8,18 @@ import { join, posix, win32 } from 'path'
  * Everything pip-installed into the runtime venv, pinned, in the order they
  * are installed and recorded.
  *
- * `litert-lm` runs the language model. The other three run the speech
- * recogniser (see resources/asr.py): `ai-edge-litert` is the LiteRT
- * interpreter that loads its `.tflite` graph, `tokenizers` turns the
- * decoder's token ids back into text, and `numpy` does the mel front end.
- * All four are pure wheels with prebuilt Windows binaries, so none of this
- * asks the user's machine to compile anything - which was the main risk in
- * adding a second inference runtime at all.
+ * `litert-lm` runs the language model. `onnx-asr` plus an ONNX Runtime build
+ * run the speech recogniser (see resources/asr.py), and `numpy` carries the
+ * audio between them. All are pure wheels, so none of this asks the user's
+ * machine to compile anything - which was the main risk in adding a second
+ * inference runtime at all.
  *
- * `litert-lm` pulls in none of the other three itself (verified against a
- * real provisioned venv), so they are named here rather than assumed.
+ * The ONNX Runtime build is platform-specific and cannot be otherwise:
+ * `onnxruntime-directml` exists only for Windows, and it is what puts the
+ * recogniser on the GPU there (any Direct3D 12 adapter, no CUDA dependency -
+ * which would be NVIDIA-only and several hundred MB). macOS gets the stock
+ * build, whose CoreML provider covers Apple Silicon. The two packages
+ * conflict, so exactly one is installed.
  *
  * Every version is pinned to one verified working against a real Windows
  * host with a discrete NVIDIA GPU (see WINDOWS.md's GPU section). Bumped
@@ -37,19 +39,22 @@ import { join, posix, win32 } from 'path'
  * detecting Intel Macs itself and pre-empting pip with a parallel error
  * path.
  */
-export const RUNTIME_PIP_SPECS = [
-  'litert-lm==0.14.0',
-  'ai-edge-litert==2.1.6',
-  'tokenizers==0.23.1',
-  'numpy>=2.0'
-]
+export function runtimePipSpecs(platform: NodeJS.Platform = process.platform): string[] {
+  const onnxRuntime = platform === 'win32' ? 'onnxruntime-directml==1.24.4' : 'onnxruntime==1.24.4'
+  return ['litert-lm==0.14.0', onnxRuntime, 'onnx-asr==0.12.0', 'numpy>=2.0']
+}
 
 /** Written into the venv once every package in RUNTIME_PIP_SPECS installed cleanly - see isVenvHealthy for what it is for. */
 export const RUNTIME_MARKER_FILENAME = '.blurt-runtime'
 
-/** Expected contents of RUNTIME_MARKER_FILENAME for this build. Compared exactly, so RUNTIME_PIP_SPECS' order is part of the contract. */
-export function runtimeMarkerContents(): string {
-  return RUNTIME_PIP_SPECS.join('\n')
+/**
+ * Expected contents of RUNTIME_MARKER_FILENAME for this build. Compared
+ * exactly, so the spec order is part of the contract - and so is the
+ * platform, since a venv provisioned for one carries the wrong ONNX Runtime
+ * for another.
+ */
+export function runtimeMarkerContents(platform: NodeJS.Platform = process.platform): string {
+  return runtimePipSpecs(platform).join('\n')
 }
 
 /**
