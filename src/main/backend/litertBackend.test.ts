@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { LitertBackend } from './litertBackend'
+import {
+  DEFAULT_PARTIAL_INTERVAL_MS,
+  DEFAULT_PARTIAL_WINDOW_MS,
+  DEFAULT_PARTIAL_WINDOW_OVERLAP_MS,
+  LitertBackend
+} from './litertBackend'
 
 /** Encodes one OpenAI-style `chat.completion.chunk` SSE event carrying `delta`. */
 function sseChunk(delta: string): string {
@@ -630,5 +635,40 @@ describe('LitertBackend - transcription goes to the recogniser, not the LLM', ()
     await backend.endSession(sessionId)
 
     expect(errors.join(' ')).toMatch(/no transcript/i)
+  })
+})
+
+/**
+ * The live transcript's cadence is a budget, not a preference: what the user
+ * sees is `max(interval, tickCost + minIdleGap)`. These constants were
+ * retuned once already, after transcription moved off the language model
+ * made a tick roughly three times cheaper, and the numbers only make sense
+ * together. Pinned here so a later change to one of them has to be
+ * deliberate.
+ */
+describe('live transcript cadence constants', () => {
+  it('keeps the commit boundary advancing (window must exceed its overlap)', () => {
+    // windowStart reaches back `overlap` ms into already-committed audio, so
+    // an overlap at or past the window size would leave each tick covering
+    // no new ground and nothing would ever commit.
+    expect(DEFAULT_PARTIAL_WINDOW_OVERLAP_MS).toBeLessThan(DEFAULT_PARTIAL_WINDOW_MS)
+  })
+
+  it('keeps consecutive ticks overlapping, so the shown text stays stable', () => {
+    // A tick fires every `interval` ms of new audio and re-reads the trailing
+    // `window` ms. With interval >= window, consecutive ticks would share no
+    // audio at all and the transcript would visibly jump rather than settle.
+    expect(DEFAULT_PARTIAL_INTERVAL_MS).toBeLessThan(DEFAULT_PARTIAL_WINDOW_MS)
+  })
+
+  /**
+   * Measured on a real Windows machine, warm: a 3s window costs ~557ms.
+   * The interval has to stay above that or the cadence stops being
+   * interval-bound and becomes whatever the hardware manages, which is the
+   * unpredictable behaviour the budget exists to avoid.
+   */
+  it('leaves the interval above the measured cost of one window', () => {
+    const measuredThreeSecondWindowMs = 557
+    expect(DEFAULT_PARTIAL_INTERVAL_MS).toBeGreaterThan(measuredThreeSecondWindowMs)
   })
 })

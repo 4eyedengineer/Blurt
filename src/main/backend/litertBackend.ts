@@ -35,26 +35,51 @@ import { log } from '../log'
 
 /**
  * How often (ms of *new* audio, not wall-clock time) to fire a partial
- * re-transcription tick. Deliberately short (down from an earlier 3000ms) -
- * each tick now streams its result in via SSE (see `runPartialTranscription`)
- * rather than blocking on the whole re-transcription, so a snappier tick
- * rate mostly just means the *next* re-transcription of the growing buffer
- * starts sooner; `partialInFlight` still skips a tick outright if the
- * previous one hasn't finished, so this self-throttles on slower hardware.
+ * re-transcription tick.
+ *
+ * This is what sets the live transcript's cadence, and it is a budget
+ * rather than a preference: the effective cadence is
+ * `max(interval, tickCost + minIdleGap)`, so setting it below what a tick
+ * actually costs buys nothing and just leaves ticks queueing.
+ *
+ * Was 1500ms, chosen when a tick meant a call into the 2.5 GB language
+ * model. Transcription now runs on a dedicated recogniser (see
+ * resources/asr.py), and a tick got roughly three times cheaper - measured
+ * on a real Windows machine, warm, against the window sizes below:
+ *
+ *     window   1s     2s     3s     4s
+ *     cost   335ms  405ms  557ms  731ms
+ *
+ * Note how little the cost falls with a shorter window: the encoder always
+ * processes the recogniser's full 30s mel grid whatever fraction of it
+ * holds real audio, so ~260ms of every tick is fixed and only the decode
+ * loop scales with how much was actually said.
+ *
+ * 700ms against a 3s window's measured 557ms leaves the cadence
+ * interval-bound with headroom, rather than pinned to whatever the machine
+ * happens to manage. `partialInFlight` still skips a tick outright if the
+ * previous one hasn't finished, so slower hardware degrades to its own
+ * natural rate instead of queueing.
  */
-const DEFAULT_PARTIAL_INTERVAL_MS = 1500
+export const DEFAULT_PARTIAL_INTERVAL_MS = 700
 /**
  * Bound on how much trailing audio a *partial* tick re-transcribes (see
  * `runPartialTranscription`'s window/commit logic), instead of the whole
- * session buffer. Sized against measured CPU throughput numbers: a ~4s
- * window keeps a tick's cost under the `DEFAULT_PARTIAL_INTERVAL_MS` cadence
- * indefinitely, regardless of how long the session has been running - the
- * fix for the "unbounded per-tick cost" finding. `endSession`'s final pass is
- * unaffected - it still
- * re-transcribes the *entire* buffer once, for accuracy (see its doc
- * comment).
+ * session buffer. This is what keeps a tick's cost flat no matter how long
+ * the session has been running - the fix for the "unbounded per-tick cost"
+ * finding.
+ *
+ * 3s rather than the earlier 4s, which buys ~175ms per tick (see the
+ * measured table on DEFAULT_PARTIAL_INTERVAL_MS) and so lets the cadence
+ * come down. Not shortened further: the recogniser sees only this window,
+ * and less audio means less context for it to resolve a word against, with
+ * more of the transcript's continuity resting on `stitchTranscript` at the
+ * seams. 3s keeps a normal spoken phrase intact inside one window.
+ *
+ * `endSession`'s final pass is unaffected - it still re-transcribes the
+ * *entire* buffer once, for accuracy (see its doc comment).
  */
-export const DEFAULT_PARTIAL_WINDOW_MS = 4000
+export const DEFAULT_PARTIAL_WINDOW_MS = 3000
 /**
  * How much already-committed audio a partial tick's window reaches back
  * into, so a word cut off right at the committed boundary gets a full
@@ -79,8 +104,13 @@ const RECENT_CHUNKS_PRUNE_SLACK_MS = 500
  * cost, but this still matters on CPU-only hardware where a tick can take
  * longer than the interval - it makes such hardware degrade to a slower,
  * stable cadence instead of pegging the CPU with zero-gap requests.
+ *
+ * Halved from 300ms alongside the cadence itself. It is pure overhead added
+ * to every tick, and at a 700ms interval a 300ms floor would have been most
+ * of the reduction this retune was for. 150ms still leaves real breathing
+ * room between requests on hardware slow enough to need it.
  */
-const DEFAULT_MIN_PARTIAL_IDLE_GAP_MS = 300
+const DEFAULT_MIN_PARTIAL_IDLE_GAP_MS = 150
 /** How often (ms) streamed partial/cleanup/transform/voiceEdit text is allowed to reach the renderer - see ThrottledTextEmitter. */
 const DEFAULT_STREAM_THROTTLE_MS = 100
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
