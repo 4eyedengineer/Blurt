@@ -103,6 +103,32 @@ export class BackendController extends EventEmitter {
     return this.status
   }
 
+  /**
+   * Stops the running sidecar so the model files it holds open can be
+   * deleted or replaced, and reports the backend as unavailable while that
+   * is true.
+   *
+   * Needed because the engine keeps its model memory-mapped for as long as
+   * it serves, and Windows will not let a mapped file be deleted or
+   * reopened for writing. Without this, "Delete" appeared to work - the
+   * downloaded copy went - while the imported copy the sidecar was actually
+   * serving stayed on disk, so Settings reported no model installed and the
+   * status pill went on saying Ready. Both were true, of different files.
+   *
+   * The caller is responsible for calling `rebuild()` afterwards. Deliberately
+   * not automatic: the point is to leave a window in which the files are not
+   * held, and rebuilding immediately would close it.
+   */
+  releaseModelFiles(): void {
+    if (!this.sidecar) return
+    log.info('backend: releasing model files - stopping sidecar')
+    this.sidecar.stop()
+    this.sidecar = null
+    const message = 'Updating models…'
+    this.setBackend(new UnavailableBackend(message))
+    this.setStatus({ state: 'starting', message })
+  }
+
   /** Call once at startup, and again after any settings change that could affect the backend. */
   async rebuild(): Promise<void> {
     const generation = ++this.generation
@@ -143,6 +169,23 @@ export class BackendController extends EventEmitter {
         )
         if (!cliResolution.ok) {
           throw new Error(`Cannot import model: ${cliResolution.error}`)
+        }
+        // The running sidecar has the import destination open - `litert-lm
+        // import` is a plain shutil.copy onto
+        // $LITERT_LM_DIR/models/<alias>/model.litertlm, and the engine keeps
+        // that file mapped for as long as it is serving. On Windows a mapped
+        // file cannot be reopened for writing, so the copy dies with
+        // "OSError: [Errno 22] Invalid argument" on the destination path -
+        // an error that names the file but says nothing about why, and
+        // reads like a corrupt download rather than a lock.
+        //
+        // So release it first. This rebuild is going to replace the sidecar
+        // anyway; the only change is that the old one stops a moment
+        // earlier, before the file it holds is overwritten rather than
+        // after.
+        if (previousSidecar) {
+          log.info('backend: stopping the running sidecar so the model import can replace its file')
+          previousSidecar.stop()
         }
         await this.modelManager.importModel(settings.modelId, cliResolution.cli)
         if (generation !== this.generation) return

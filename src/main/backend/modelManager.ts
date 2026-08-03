@@ -33,6 +33,67 @@ interface HfModelInfo {
   siblings?: HfSibling[]
 }
 
+/** How much of a failed child process's stderr to keep - see `tailOfOutput`. */
+export const CHILD_STDERR_KEEP_CHARS = 600
+
+/** Total time `unlinkWithRetry` will keep trying before giving up. */
+const UNLINK_RETRY_BUDGET_MS = 3000
+const UNLINK_RETRY_INTERVAL_MS = 150
+
+/**
+ * Deletes a file, retrying briefly while it is still locked.
+ *
+ * The caller stops the sidecar first, but `Sidecar.stop()` only sends a kill
+ * and returns - it does not wait for the process to exit, and Windows holds
+ * the model's file handle until it actually does. Deleting immediately
+ * afterwards therefore races the child's exit, and loses often enough to
+ * matter on a multi-GB memory-mapped file. Retrying for a few seconds turns
+ * a coin-flip failure into a wait nobody notices.
+ *
+ * Returns false if it never succeeded, so the caller can say so rather than
+ * report a deletion that did not happen.
+ */
+async function unlinkWithRetry(path: string): Promise<boolean> {
+  const deadline = Date.now() + UNLINK_RETRY_BUDGET_MS
+  let lastError = ''
+  for (;;) {
+    try {
+      unlinkSync(path)
+      log.info(`model: removed ${path}`)
+      return true
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err)
+      if (!existsSync(path)) return true
+      if (Date.now() >= deadline) {
+        log.error(`model: gave up removing ${path} after ${UNLINK_RETRY_BUDGET_MS}ms: ${lastError}`)
+        return false
+      }
+      await new Promise((resolve) => setTimeout(resolve, UNLINK_RETRY_INTERVAL_MS))
+    }
+  }
+}
+
+/**
+ * The LAST `CHILD_STDERR_KEEP_CHARS` characters of a child process's stderr,
+ * not the first.
+ *
+ * This is the whole point rather than a detail. `litert-lm` is a Python CLI,
+ * and a Python traceback puts the thing that actually went wrong on its
+ * final line, after a preamble of runpy and click frames that is identical
+ * for every failure. Keeping the head threw away the cause and kept the
+ * boilerplate: a real import failure was reported to the user, and written
+ * to the log, as a wall of frames ending mid-expression at
+ * "return self.main(*args," - with the actual "OSError: [Errno 22] Invalid
+ * argument" nowhere in it. Diagnosing it meant re-running the command by
+ * hand to see the end of the output the app had already captured and
+ * discarded.
+ */
+export function tailOfOutput(output: string): string {
+  const trimmed = output.trim()
+  if (trimmed.length <= CHILD_STDERR_KEEP_CHARS) return trimmed
+  return `...${trimmed.slice(-CHILD_STDERR_KEEP_CHARS)}`
+}
+
 function writeChunk(stream: WriteStream, chunk: Buffer): Promise<void> {
   return new Promise((resolve, reject) => {
     stream.write(chunk, (err) => (err ? reject(err) : resolve()))
@@ -166,7 +227,7 @@ export class ModelManager extends EventEmitter {
           reject(
             new Error(
               `'${cliBinary} import ${filePath} ${alias}' exited with code ${code}${
-                stderr ? `: ${stderr.trim().slice(0, 500)}` : ''
+                stderr ? `: ${tailOfOutput(stderr)}` : ''
               }`
             )
           )
@@ -377,13 +438,51 @@ export class ModelManager extends EventEmitter {
     this.abortControllers.get(modelId)?.abort()
   }
 
-  /** Deletes the installed model (and any stale partial download). */
-  remove(modelId: ModelId): void {
+  /**
+   * Deletes the installed model: the downloaded file, any stale partial
+   * download, AND the imported copy under LITERT_LM_DIR that the sidecar
+   * actually serves (see this class's doc comment - `litert-lm import` is a
+   * copy, so an installed model exists twice on disk, at roughly 2x its
+   * download size).
+   *
+   * The imported copy used to be left behind. That is what makes "Delete"
+   * only look like it worked: `listInstalled` checks the downloaded path,
+   * so Settings immediately reported no model installed, while the engine
+   * carried on serving the imported copy it already had open and the status
+   * pill kept saying Ready. Half the disk space stayed used, and the two
+   * halves of the UI disagreed while both were telling the truth about
+   * different files.
+   *
+   * The caller must stop the sidecar first (see
+   * `BackendController.releaseModelFiles`) - the engine keeps its model
+   * mapped while serving, and Windows will not delete a mapped file. Any
+   * deletion that does fail is reported rather than swallowed, since a
+   * silent failure here is exactly the bug above.
+   */
+  async remove(modelId: ModelId): Promise<void> {
     this.cancelDownload(modelId)
     const finalPath = this.finalPath(modelId)
     if (existsSync(finalPath)) unlinkSync(finalPath)
     const partPath = this.partPath(modelId)
     if (existsSync(partPath)) unlinkSync(partPath)
+
+    const importedPath = this.importedModelPath(modelId)
+    if (existsSync(importedPath)) {
+      const removed = await unlinkWithRetry(importedPath)
+      if (!removed) {
+        this.setProgress({
+          modelId,
+          state: 'error',
+          receivedBytes: 0,
+          totalBytes: null,
+          error:
+            'Blurt deleted the download but could not remove the copy the engine is using. ' +
+            'Restart Blurt and try again.'
+        })
+        return
+      }
+    }
+
     this.setProgress({ modelId, state: 'idle', receivedBytes: 0, totalBytes: null })
   }
 

@@ -23,7 +23,15 @@ export function registerModelManagerIpc(
   modelManager: ModelManager,
   settingsStore: SettingsStore,
   getWindow: () => BrowserWindow | null,
-  venvPaths?: VenvPaths
+  venvPaths?: VenvPaths,
+  /**
+   * Lets a destructive model operation release the files the running engine
+   * holds open, and bring the backend back afterwards. Deleting a model
+   * without this leaves the sidecar serving the copy that was supposedly
+   * just deleted - see `BackendController.releaseModelFiles`. Optional so
+   * tests can register the IPC without a whole backend.
+   */
+  backend?: { releaseModelFiles: () => void; rebuild: () => Promise<void> }
 ): void {
   ipcMain.handle(IPC.models.list, () => ({
     installed: modelManager.listInstalled(),
@@ -59,8 +67,21 @@ export function registerModelManagerIpc(
     modelManager.cancelDownload(modelId)
   })
 
-  ipcMain.handle(IPC.models.remove, (_event, modelId: ModelId) => {
+  ipcMain.handle(IPC.models.remove, async (_event, modelId: ModelId) => {
+    // Stop the engine before deleting, then bring it back. The imported copy
+    // is memory-mapped by the running sidecar, and Windows will not delete a
+    // mapped file - so without the release, the deletion of that copy fails
+    // while the deletion of the download succeeds, leaving Settings saying
+    // "not installed" and the status pill saying "Ready" about the same
+    // model.
+    //
+    // The rebuild afterwards is what makes the pill honest again: with the
+    // model gone it lands in an error state naming the missing model,
+    // instead of continuing to report a healthy engine that is only healthy
+    // because it is still holding a file the user asked to delete.
+    backend?.releaseModelFiles()
     modelManager.remove(modelId)
+    if (backend) await backend.rebuild()
   })
 
   // Raw facts only - the Settings screen applies the same shared/modelRequirements.ts

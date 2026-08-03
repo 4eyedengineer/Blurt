@@ -298,7 +298,7 @@ app.whenReady().then(async () => {
     () => void controller.rebuild(),
     (pushToTalkSettings) => pushToTalkController?.applySettings(pushToTalkSettings)
   )
-  registerModelManagerIpc(modelManager, settingsStore, () => mainWindow, venvPaths)
+  registerModelManagerIpc(modelManager, settingsStore, () => mainWindow, venvPaths, controller)
   registerLogIpc(app.getPath('userData'))
 
   // If a model finishes downloading while it's the currently-selected model
