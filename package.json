@@ -1,6 +1,6 @@
 {
   "name": "blurt",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Offline-first AI dictation for Windows (Electron + React + TypeScript) - speech to cleaned-up text, running Gemma 4 locally on your own GPU via LiteRT-LM. Nothing leaves your machine.",
   "main": "./out/main/index.js",
   "author": "Blurt contributors",
