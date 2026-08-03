@@ -8,3 +8,4 @@ out
 .node-version-stamp
 Thumbs.db
 *.tsbuildinfo
+__pycache__/

@@ -5,6 +5,7 @@ import type { Accelerator, Settings, SidecarMode } from '../../shared/types'
 import { getCatalogEntry } from '../../shared/models'
 import type { SettingsStore } from '../store/settingsStore'
 import type { ModelManager } from './modelManager'
+import type { RecognizerManager, RecognizerPaths } from './recognizerManager'
 import { LitertBackend } from './litertBackend'
 import { resolveManagedCliForImport, Sidecar } from './sidecar'
 import { resolveServeGpuScriptPath } from './gpuWrapperPath'
@@ -72,6 +73,19 @@ export function describeBackendFailure(mode: SidecarMode, modelInstalled: boolea
   return 'The model could not be loaded.'
 }
 
+/** Shown while the speech recogniser is being fetched on first run - see RecognizerManager. */
+export const RECOGNIZER_DOWNLOADING_MESSAGE = 'Getting the speech model…'
+/** Shown when it could not be fetched at all. Short, like every other backend message - the URL and HTTP status go to the log. */
+export const RECOGNIZER_FAILED_MESSAGE = 'No speech model.'
+
+/**
+ * Thrown when the recogniser could not be obtained, purely so `rebuild`'s
+ * catch can tell this apart from an engine failure and report the right
+ * short sentence. The underlying HTTP detail rides along as the message and
+ * ends up in the log, same as any other failure.
+ */
+class RecognizerUnavailableError extends Error {}
+
 /**
  * Builds the active InferenceBackend from current settings, and rebuilds it
  * (disposing the old sidecar/backend cleanly) whenever the backend-relevant
@@ -94,6 +108,8 @@ export class BackendController extends EventEmitter {
   constructor(
     private readonly settingsStore: SettingsStore,
     private readonly modelManager: ModelManager,
+    /** Fetches and locates the speech recogniser - see RecognizerManager, and `rebuild`'s use of it before the sidecar spawns. */
+    private readonly recognizerManager: RecognizerManager,
     userDataDir: string,
     /** Passed straight through to LitertBackend as `debugAudioDir` - see its doc comment / BLURT_DEBUG_AUDIO. Optional so tests/mocks don't need to care. */
     private readonly debugAudioDir?: string,
@@ -213,6 +229,33 @@ export class BackendController extends EventEmitter {
         if (generation !== this.generation) return
       }
 
+      // Before the sidecar spawns, because the recogniser's paths are passed
+      // to it as environment variables and env is fixed at spawn time -
+      // downloading afterwards would leave this sidecar pointing at files
+      // that did not exist when it started.
+      //
+      // Normally an existence check and nothing more. Only a fresh install
+      // pays the ~61 MB fetch, and it is reported as a starting state rather
+      // than done silently, so a first run does not look like a hang.
+      let recognizer: RecognizerPaths | null = null
+      if (settings.sidecar.mode === 'managed') {
+        if (!this.recognizerManager.isInstalled()) {
+          this.setStatus({ state: 'starting', message: RECOGNIZER_DOWNLOADING_MESSAGE })
+        }
+        try {
+          recognizer = await this.recognizerManager.ensureDownloaded()
+        } catch (err) {
+          // Rethrown with the short user-facing wording, so the catch below
+          // reports it like every other backend failure. Without a
+          // recogniser there is no transcription, and Blurt will not quietly
+          // hand audio back to the language model instead - that is the
+          // behaviour this change exists to remove.
+          const detail = err instanceof Error ? err.message : String(err)
+          throw new RecognizerUnavailableError(detail)
+        }
+        if (generation !== this.generation) return
+      }
+
       sidecar = new Sidecar({
         mode: settings.sidecar.mode,
         externalUrl: settings.sidecar.externalUrl,
@@ -240,7 +283,14 @@ export class BackendController extends EventEmitter {
           // backend is known (and truthfully reported) before the sidecar
           // ever looks ready. Harmless/unused for a plain `litert-lm serve`
           // managed command (e.g. a hand-edited external one).
-          BLURT_EAGER_MODEL_ID: getCatalogEntry(settings.modelId).alias
+          BLURT_EAGER_MODEL_ID: getCatalogEntry(settings.modelId).alias,
+          // The speech recogniser's directory, read by serve_gpu.py's
+          // /blurt/transcribe route (see its "Speech recognition" doc
+          // comment). An empty string rather than an omitted key when there
+          // is no recogniser: that is the case an 'external' sidecar is in,
+          // and the route answers 503 with a clear message rather than the
+          // process failing to start.
+          BLURT_ASR_MODEL_DIR: recognizer?.modelDir ?? ''
         }
       })
 
@@ -338,7 +388,10 @@ export class BackendController extends EventEmitter {
         return
       }
       log.error(`backend: rebuild failed: ${detail}`)
-      const message = this.describeFailure(settings)
+      const message =
+        err instanceof RecognizerUnavailableError
+          ? RECOGNIZER_FAILED_MESSAGE
+          : this.describeFailure(settings)
       this.setStatus({ state: 'error', message, detail })
       // The short sentence, not `detail`: this is what `startSession` and
       // friends reject with, and those rejections are shown to the user as

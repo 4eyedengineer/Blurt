@@ -5,6 +5,7 @@ import icon from '../../resources/icon.png?asset'
 import { IPC } from '../shared/ipc-channels'
 import { BackendController } from './backend/backendController'
 import { ModelManager } from './backend/modelManager'
+import { RecognizerManager } from './backend/recognizerManager'
 import { HistoryStore } from './store/historyStore'
 import { SettingsStore } from './store/settingsStore'
 import { registerBackendIpc } from './ipc/backendIpc'
@@ -58,6 +59,7 @@ initLog(app.getPath('userData'), is.dev)
 const historyStore = new HistoryStore(app.getPath('userData'))
 const settingsStore = new SettingsStore(app.getPath('userData'))
 const modelManager = new ModelManager(app.getPath('userData'))
+const recognizerManager = new RecognizerManager(app.getPath('userData'))
 
 /**
  * Establishes the self-managed runtime venv the packaged app's managed
@@ -206,6 +208,7 @@ app.whenReady().then(async () => {
   backendController = new BackendController(
     settingsStore,
     modelManager,
+    recognizerManager,
     app.getPath('userData'),
     join(app.getPath('userData'), 'debug'),
     venvPaths

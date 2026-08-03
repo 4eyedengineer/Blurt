@@ -1,5 +1,12 @@
 import { spawn, spawnSync } from 'child_process'
-import type { VenvPaths } from './venvResolver'
+import { writeFileSync } from 'fs'
+import { join } from 'path'
+import {
+  RUNTIME_MARKER_FILENAME,
+  runtimeMarkerContents,
+  runtimePipSpecs,
+  type VenvPaths
+} from './venvResolver'
 import { log } from '../log'
 
 /**
@@ -15,28 +22,6 @@ import { log } from '../log'
  * found, this throws `NoPythonFoundError` and the caller shows a hard error
  * screen instead.
  */
-
-/**
- * Pinned to the exact version verified working against a real Windows host
- * (with a discrete NVIDIA GPU) - see WINDOWS.md's GPU section. Bumped deliberately
- * when a newer version is verified, never automatically (`--upgrade`
- * without a pin would silently change behavior on some future relaunch).
- *
- * macOS is arm64 (Apple Silicon) only - not a preference of this project's,
- * an upstream packaging constraint. Per PyPI, `litert-lm` itself ships a
- * pure-Python wheel (platform-independent), but its engine dependency
- * `litert-lm-api` publishes macOS wheels tagged only `macosx_12_0_arm64` -
- * true of every released version from 0.12.0 through 0.14.0, with no
- * Intel/x86_64 build and no `universal2` build in any of them. Concretely:
- * on an Intel Mac, step 3 below (`pip install litert-lm==<version>`) fails
- * outright with pip's own "no matching distribution found" error. That is
- * the correct, intended outcome, not a bug to route around - it surfaces
- * through the same pip-failure text this setup screen already shows for any
- * other pip failure (see `streamSpawn`/`runFirstRunSetup`), rather than this
- * code trying to detect Intel Macs itself and pre-empting pip with a
- * separate, parallel error path.
- */
-const LITERT_LM_PINNED_VERSION = '0.14.0'
 
 export interface PythonCandidate {
   cmd: string
@@ -321,12 +306,16 @@ export async function runFirstRunSetup(
     ['-m', 'pip', 'install', '--quiet', '--upgrade', 'pip'],
     callbacks.onLine
   )
-  callbacks.onLine(`Installing litert-lm==${LITERT_LM_PINNED_VERSION}...`)
-  await streamSpawn(
-    venv.pythonExe,
-    ['-m', 'pip', 'install', '--quiet', `litert-lm==${LITERT_LM_PINNED_VERSION}`],
-    callbacks.onLine
-  )
+  // One pip invocation for all of them, so the resolver sees the whole set
+  // at once and the marker below can only ever be written for a venv where
+  // every package installed together.
+  const specs = runtimePipSpecs()
+  callbacks.onLine(`Installing ${specs.join(', ')}...`)
+  await streamSpawn(venv.pythonExe, ['-m', 'pip', 'install', '--quiet', ...specs], callbacks.onLine)
+  // Last, and only on success: this file is what tells the next launch it
+  // does not need to do any of the above again, so writing it earlier would
+  // let a half-installed venv claim to be complete.
+  writeFileSync(join(venv.venvDir, RUNTIME_MARKER_FILENAME), runtimeMarkerContents(), 'utf-8')
   callbacks.onStepDone('litert-lm')
 
   return python

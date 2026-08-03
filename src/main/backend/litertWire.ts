@@ -56,39 +56,10 @@ export interface ChatCompletionRequestBody {
   temperature?: number
 }
 
-const TRANSCRIPTION_PROMPT =
-  'Transcribe the following audio verbatim, exactly as spoken. Output only the raw transcription text - no commentary, no preamble, no quotation marks, no markdown formatting. If the audio is silent, contains only background noise, or does not contain any intelligible speech, output nothing at all (an empty string) - never guess, invent, or hallucinate words that are not clearly present in the audio.'
-
 function vocabularyHint(vocabulary: string[] | undefined): string {
   const words = (vocabulary ?? []).map((w) => w.trim()).filter(Boolean)
   if (words.length === 0) return ''
   return ` The speaker commonly uses these terms - spell them correctly if you hear them: ${words.join(', ')}.`
-}
-
-export interface BuildTranscriptionRequestParams {
-  model: string
-  wavBase64: string
-  vocabulary?: string[]
-}
-
-/** Builds a chat-completions request carrying a WAV blob as an `input_audio` content part. */
-export function buildTranscriptionRequest(
-  params: BuildTranscriptionRequestParams
-): ChatCompletionRequestBody {
-  return {
-    model: params.model,
-    stream: true,
-    temperature: 0,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: TRANSCRIPTION_PROMPT + vocabularyHint(params.vocabulary) },
-          { type: 'input_audio', input_audio: { data: params.wavBase64, format: 'wav' } }
-        ]
-      }
-    ]
-  }
 }
 
 const CLEANUP_SYSTEM_PROMPT = `You are a dictation cleanup assistant, in the style of Google's Eloquent app. You are given raw, unpunctuated speech-to-text output. Rewrite it into clean, readable text by:

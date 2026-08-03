@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { LitertBackend } from './litertBackend'
+import {
+  DEFAULT_PARTIAL_INTERVAL_MS,
+  DEFAULT_PARTIAL_WINDOW_MS,
+  DEFAULT_PARTIAL_WINDOW_OVERLAP_MS,
+  LitertBackend
+} from './litertBackend'
 
 /** Encodes one OpenAI-style `chat.completion.chunk` SSE event carrying `delta`. */
 function sseChunk(delta: string): string {
@@ -38,24 +43,46 @@ function tone(length: number): Int16Array {
   return new Int16Array(length).fill(5000)
 }
 
-/** A response for the non-streaming (warmup-style) JSON fallback path. */
-function makeJsonResponse(content: string): Response {
-  return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
+/**
+ * A response from the speech-recognition route (see resources/asr.py and
+ * LitertBackend.transcribeAudio). Transcription no longer goes through
+ * chat-completions at all - the recogniser answers with one plain JSON
+ * object rather than an SSE token stream.
+ */
+function makeTranscriptResponse(text: string): Response {
+  return new Response(JSON.stringify({ text }), {
     status: 200,
     headers: { 'content-type': 'application/json' }
   })
 }
 
-/** Extracts the ms-duration of the `input_audio` WAV part of a captured fetch call's request body. */
+/**
+ * A transcription response that takes `delayMs` to arrive, for the tests
+ * that need a tick still in flight when endSession is called. The delay is
+ * in the body stream rather than around the fetch itself, so the request is
+ * genuinely issued and pending - which is the condition under test.
+ */
+function makeSlowTranscriptResponse(text: string, delayMs: number): Response {
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream({
+    async start(controller) {
+      await new Promise((r) => setTimeout(r, delayMs))
+      controller.enqueue(encoder.encode(JSON.stringify({ text })))
+      controller.close()
+    }
+  })
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'application/json' }
+  })
+}
+
+/** Extracts the ms-duration of the WAV a captured transcription call sent. */
 function audioMsFromFetchCall(call: unknown[], sampleRate: number): number {
   const init = call[1] as RequestInit
-  const body = JSON.parse(init.body as string) as {
-    messages: Array<{ content: Array<{ type: string; input_audio?: { data: string } }> }>
-  }
-  const parts = body.messages[0].content
-  const audioPart = parts.find((p) => p.type === 'input_audio')
-  if (!audioPart?.input_audio) throw new Error('no input_audio part in request body')
-  const wavBytes = Buffer.from(audioPart.input_audio.data, 'base64').length
+  const body = JSON.parse(init.body as string) as { wav?: string }
+  if (!body.wav) throw new Error('no wav in transcription request body')
+  const wavBytes = Buffer.from(body.wav, 'base64').length
   const pcmBytes = wavBytes - 44
   return (pcmBytes / 2 / sampleRate) * 1000
 }
@@ -73,20 +100,15 @@ describe('LitertBackend - endSession reusing an in-flight partial tick', () => {
   })
 
   /**
-   * Regression test for the "frozen transcript" bug: a mid-recording partial
-   * tick used to have its streamed output silently discarded (via a
-   * `!session.ended` guard) the moment `endSession` was called while it was
-   * still in flight, and `endSession` would then always kick off a second,
-   * fully redundant re-transcription of the exact same audio from scratch -
-   * so for a short recording (often exactly one tick in flight when the
-   * user stops) the live transcript showed nothing at all until that second
-   * request completed, doubling latency and making the streaming feature
-   * look completely broken. Fixed by having `endSession` await and reuse
-   * the in-flight tick's own promise when no new audio arrived after it
-   * took its buffer snapshot, and by no longer suppressing its stream.
+   * endSession once reused an in-flight tick's result for short recordings,
+   * to avoid a second identical request. That was removed when ticks and the
+   * final pass briefly ran on different models, and is deliberately left
+   * removed now they share one again: the recogniser answers in ~330ms, so
+   * the redundant call this saved is no longer worth the coupling between
+   * endSession and whatever a tick happens to have in flight.
    */
-  it('reuses the in-flight tick result (single fetch, no gap) when no new audio arrived after it started', async () => {
-    fetchMock.mockResolvedValue(makeStreamingResponse(['The', ' history'], 5))
+  it('runs its own final pass rather than reusing an in-flight tick', async () => {
+    fetchMock.mockResolvedValue(makeTranscriptResponse('The history'))
 
     const partials: string[] = []
     const backend = new LitertBackend({
@@ -111,12 +133,16 @@ describe('LitertBackend - endSession reusing an in-flight partial tick', () => {
 
     expect(final).toBe('The history')
     expect(partials).toContain('The history')
-    // The whole point of the fix: exactly one HTTP request total, not two.
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // The tick, then a distinct final request - not one reused for both.
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+    for (const call of fetchMock.mock.calls) {
+      expect(String(call[0])).toBe('http://test-sidecar/blurt/transcribe')
+    }
   })
 
-  it('still emits partial events for the in-flight tick even though the session is already ended (no silent suppression)', async () => {
-    fetchMock.mockResolvedValue(makeStreamingResponse(['Hello', ' world'], 5))
+  it('still emits the in-flight tick even though the session is already ended (no silent suppression)', async () => {
+    fetchMock.mockResolvedValue(makeTranscriptResponse('Hello world'))
 
     const partials: string[] = []
     const backend = new LitertBackend({
@@ -133,12 +159,18 @@ describe('LitertBackend - endSession reusing an in-flight partial tick', () => {
 
     await backend.endSession(sessionId)
 
-    // Before the fix, `partials` would only ever have received the final
-    // flushed value from endSession's own *separate* re-transcription - the
-    // in-flight tick's own progressive emissions ("Hello" alone, before
-    // " world" arrived) were dropped entirely by the `!session.ended` guard.
-    expect(partials.length).toBeGreaterThan(1)
-    expect(partials[0]).toBe('Hello')
+    // The guarded behaviour: a tick that was still in flight when the
+    // session ended must still deliver its result, rather than being
+    // dropped by the `!session.ended` check that used to sit here.
+    //
+    // This used to assert progressive emissions ("Hello" arriving before
+    // " world"), which was a property of streaming an SSE token feed from
+    // the chat model. The recogniser answers with a whole window at a time
+    // (see LitertBackend.transcribeAudio), so one tick is one emission by
+    // construction and the old assertion could only ever fail. What it was
+    // really protecting - that the emission happens at all after `ended` -
+    // is unchanged and is what is asserted now.
+    expect(partials).toContain('Hello world')
   })
 
   it('falls back to a fresh final re-transcription when more audio arrives after the in-flight tick snapshot', async () => {
@@ -146,8 +178,8 @@ describe('LitertBackend - endSession reusing an in-flight partial tick', () => {
     fetchMock.mockImplementation(async () => {
       call++
       return call === 1
-        ? makeStreamingResponse(['Hello'], 30)
-        : makeStreamingResponse(['Hello', ' world'], 5)
+        ? makeSlowTranscriptResponse('Hello', 30)
+        : makeTranscriptResponse('Hello world')
     })
 
     const backend = new LitertBackend({
@@ -194,7 +226,7 @@ describe('LitertBackend - rolling-window partial ticks', () => {
    * full session length.
    */
   it("keeps every partial tick's request audio bounded by partialWindowMs, regardless of total session length", async () => {
-    fetchMock.mockImplementation(async () => makeJsonResponse('word'))
+    fetchMock.mockImplementation(async () => makeTranscriptResponse('word'))
 
     const sampleRate = 16000
     const partialWindowMs = 1000
@@ -254,7 +286,7 @@ describe('LitertBackend - rolling-window partial ticks', () => {
       'today please continue' // tick5: window [140,200) - commits tick4's text first
     ]
     let call = 0
-    fetchMock.mockImplementation(async () => makeJsonResponse(rawPerTick[call++]))
+    fetchMock.mockImplementation(async () => makeTranscriptResponse(rawPerTick[call++]))
 
     const sampleRate = 1000 // 1 sample == 1ms, for easy arithmetic
     const backend = new LitertBackend({
@@ -311,7 +343,7 @@ describe('LitertBackend - spiral guard (minPartialIdleGapMs)', () => {
    * fetch's real async resolution.
    */
   it('does not launch the next tick until minPartialIdleGapMs has elapsed since the last completion', async () => {
-    fetchMock.mockImplementation(async () => makeJsonResponse('word'))
+    fetchMock.mockImplementation(async () => makeTranscriptResponse('word'))
 
     let currentNow = 1_000_000
     const backend = new LitertBackend({
@@ -375,8 +407,8 @@ describe('LitertBackend - endSession on a longer (multi-window) session', () => 
       // The 4th call (the tick still in flight when endSession is invoked)
       // is deliberately slow, so it's still pending when we call endSession
       // right after triggering it.
-      if (call === 4) return makeStreamingResponse(['slow'], 50)
-      return makeJsonResponse(`word${call}`)
+      if (call === 4) return makeSlowTranscriptResponse('slow', 50)
+      return makeTranscriptResponse(`word${call}`)
     })
 
     const backend = new LitertBackend({
@@ -485,5 +517,157 @@ describe('LitertBackend - blank input is never sent to a rewrite model', () => {
     const backend = makeBackend()
     await expect(backend.cleanup('hello there')).resolves.toBe('Hello there.')
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * Transcription moved off the language model and onto a dedicated
+ * recogniser (see resources/asr.py). What these pin down is the split
+ * itself: audio must reach the recogniser's route and nothing else, and the
+ * language model must keep every job that is not turning audio into words.
+ */
+describe('LitertBackend - transcription goes to the recogniser, not the LLM', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  function urlOf(call: unknown[]): string {
+    return String(call[0])
+  }
+
+  it('sends audio to /blurt/transcribe and never to chat completions', async () => {
+    fetchMock.mockResolvedValue(makeTranscriptResponse('hello world'))
+    const backend = new LitertBackend({
+      getBaseUrl: () => 'http://test-sidecar',
+      modelId: 'e2b',
+      partialIntervalMs: 100_000, // no partial ticks; just the final pass
+      streamThrottleMs: 1,
+      requestTimeoutMs: 5000
+    })
+
+    const sessionId = await backend.startSession({ sampleRate: 1000 })
+    backend.pushAudio(sessionId, tone(500))
+    await expect(backend.endSession(sessionId)).resolves.toBe('hello world')
+
+    const urls = fetchMock.mock.calls.map(urlOf)
+    expect(urls).toContain('http://test-sidecar/blurt/transcribe')
+    expect(urls.some((u) => u.includes('/v1/chat/completions'))).toBe(false)
+  })
+
+  it('still sends cleanup to the language model', async () => {
+    fetchMock.mockResolvedValue(makeStreamingResponse(['Hello', ' world.'], 1))
+    const backend = new LitertBackend({
+      getBaseUrl: () => 'http://test-sidecar',
+      modelId: 'e2b',
+      streamThrottleMs: 1,
+      requestTimeoutMs: 5000
+    })
+    await expect(backend.cleanup('hello world')).resolves.toBe('Hello world.')
+    expect(urlOf(fetchMock.mock.calls[0])).toBe('http://test-sidecar/v1/chat/completions')
+  })
+
+  /**
+   * The recogniser answers 503 when its model files are missing (see
+   * serve_gpu.py's transcribe route). That has to surface as a real
+   * rejection: silently handing the audio back to the language model is
+   * exactly the fallback this change exists to remove, and would quietly
+   * restore the worse transcription nobody asked for.
+   */
+  /**
+   * The recogniser answers 503 when its model files are missing (see
+   * serve_gpu.py's transcribe route). Two things have to hold. The failure
+   * has to reach the user - it does so on the out-of-band session-error
+   * channel, which is how every mid-session failure has always been
+   * reported (endSession itself resolves with whatever text it has rather
+   * than rejecting; see its catch blocks). And the audio must not then be
+   * handed to the language model instead: a silent fallback would restore
+   * exactly the worse transcription this change exists to remove, and hide
+   * that it had happened.
+   */
+  it('reports a missing recogniser and never falls back to the language model', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'The speech recognition model is not installed.' }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      })
+    )
+    const backend = new LitertBackend({
+      getBaseUrl: () => 'http://test-sidecar',
+      modelId: 'e2b',
+      partialIntervalMs: 100_000,
+      streamThrottleMs: 1,
+      requestTimeoutMs: 5000
+    })
+    const errors: string[] = []
+    backend.onError((_sid, err) => errors.push(err.message))
+
+    const sessionId = await backend.startSession({ sampleRate: 1000 })
+    backend.pushAudio(sessionId, tone(500))
+    await backend.endSession(sessionId)
+
+    expect(errors.join(' ')).toMatch(/not installed/)
+    expect(fetchMock.mock.calls.every((c) => !urlOf(c).includes('/v1/chat/completions'))).toBe(true)
+  })
+
+  it('reports a response with no transcript in it rather than treating it as silence', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ unexpected: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    )
+    const backend = new LitertBackend({
+      getBaseUrl: () => 'http://test-sidecar',
+      modelId: 'e2b',
+      partialIntervalMs: 100_000,
+      streamThrottleMs: 1,
+      requestTimeoutMs: 5000
+    })
+    const errors: string[] = []
+    backend.onError((_sid, err) => errors.push(err.message))
+
+    const sessionId = await backend.startSession({ sampleRate: 1000 })
+    backend.pushAudio(sessionId, tone(500))
+    await backend.endSession(sessionId)
+
+    expect(errors.join(' ')).toMatch(/no transcript/i)
+  })
+})
+
+/**
+ * The live transcript's cadence is a budget, not a preference: what the user
+ * sees is `max(interval, tickCost + minIdleGap)`. These constants were
+ * retuned once already, after transcription moved off the language model
+ * made a tick roughly three times cheaper, and the numbers only make sense
+ * together. Pinned here so a later change to one of them has to be
+ * deliberate.
+ */
+describe('live transcript cadence constants', () => {
+  it('keeps the commit boundary advancing (window must exceed its overlap)', () => {
+    // windowStart reaches back `overlap` ms into already-committed audio, so
+    // an overlap at or past the window size would leave each tick covering
+    // no new ground and nothing would ever commit.
+    expect(DEFAULT_PARTIAL_WINDOW_OVERLAP_MS).toBeLessThan(DEFAULT_PARTIAL_WINDOW_MS)
+  })
+
+  it('keeps consecutive ticks overlapping, so the shown text stays stable', () => {
+    // A tick fires every `interval` ms of new audio and re-reads the trailing
+    // `window` ms. With interval >= window, consecutive ticks would share no
+    // audio at all and the transcript would visibly jump rather than settle.
+    expect(DEFAULT_PARTIAL_INTERVAL_MS).toBeLessThan(DEFAULT_PARTIAL_WINDOW_MS)
+  })
+
+  /**
+   * Measured on a real Windows machine, warm: a 3s window costs ~557ms.
+   * The interval has to stay above that or the cadence stops being
+   * interval-bound and becomes whatever the hardware manages, which is the
+   * unpredictable behaviour the budget exists to avoid.
+   */
+  it('leaves the interval above the measured cost of one window', () => {
+    const measuredThreeSecondWindowMs = 557
+    expect(DEFAULT_PARTIAL_INTERVAL_MS).toBeGreaterThan(measuredThreeSecondWindowMs)
   })
 })

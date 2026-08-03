@@ -12,7 +12,6 @@ import type {
 } from '../../shared/backend'
 import {
   buildCleanupRequest,
-  buildTranscriptionRequest,
   buildTransformRequest,
   buildVoiceEditRequest,
   buildWarmupRequest,
@@ -36,26 +35,51 @@ import { log } from '../log'
 
 /**
  * How often (ms of *new* audio, not wall-clock time) to fire a partial
- * re-transcription tick. Deliberately short (down from an earlier 3000ms) -
- * each tick now streams its result in via SSE (see `runPartialTranscription`)
- * rather than blocking on the whole re-transcription, so a snappier tick
- * rate mostly just means the *next* re-transcription of the growing buffer
- * starts sooner; `partialInFlight` still skips a tick outright if the
- * previous one hasn't finished, so this self-throttles on slower hardware.
+ * re-transcription tick.
+ *
+ * This is what sets the live transcript's cadence, and it is a budget
+ * rather than a preference: the effective cadence is
+ * `max(interval, tickCost + minIdleGap)`, so setting it below what a tick
+ * actually costs buys nothing and just leaves ticks queueing.
+ *
+ * Was 1500ms, chosen when a tick meant a call into the 2.5 GB language
+ * model. Transcription now runs on a dedicated recogniser (see
+ * resources/asr.py), and a tick got roughly three times cheaper - measured
+ * on a real Windows machine, warm, against the window sizes below:
+ *
+ *     window   1s     2s     3s     4s
+ *     cost   335ms  405ms  557ms  731ms
+ *
+ * Note how little the cost falls with a shorter window: the encoder always
+ * processes the recogniser's full 30s mel grid whatever fraction of it
+ * holds real audio, so ~260ms of every tick is fixed and only the decode
+ * loop scales with how much was actually said.
+ *
+ * 700ms against a 3s window's measured 557ms leaves the cadence
+ * interval-bound with headroom, rather than pinned to whatever the machine
+ * happens to manage. `partialInFlight` still skips a tick outright if the
+ * previous one hasn't finished, so slower hardware degrades to its own
+ * natural rate instead of queueing.
  */
-const DEFAULT_PARTIAL_INTERVAL_MS = 1500
+export const DEFAULT_PARTIAL_INTERVAL_MS = 700
 /**
  * Bound on how much trailing audio a *partial* tick re-transcribes (see
  * `runPartialTranscription`'s window/commit logic), instead of the whole
- * session buffer. Sized against measured CPU throughput numbers: a ~4s
- * window keeps a tick's cost under the `DEFAULT_PARTIAL_INTERVAL_MS` cadence
- * indefinitely, regardless of how long the session has been running - the
- * fix for the "unbounded per-tick cost" finding. `endSession`'s final pass is
- * unaffected - it still
- * re-transcribes the *entire* buffer once, for accuracy (see its doc
- * comment).
+ * session buffer. This is what keeps a tick's cost flat no matter how long
+ * the session has been running - the fix for the "unbounded per-tick cost"
+ * finding.
+ *
+ * 3s rather than the earlier 4s, which buys ~175ms per tick (see the
+ * measured table on DEFAULT_PARTIAL_INTERVAL_MS) and so lets the cadence
+ * come down. Not shortened further: the recogniser sees only this window,
+ * and less audio means less context for it to resolve a word against, with
+ * more of the transcript's continuity resting on `stitchTranscript` at the
+ * seams. 3s keeps a normal spoken phrase intact inside one window.
+ *
+ * `endSession`'s final pass is unaffected - it still re-transcribes the
+ * *entire* buffer once, for accuracy (see its doc comment).
  */
-export const DEFAULT_PARTIAL_WINDOW_MS = 4000
+export const DEFAULT_PARTIAL_WINDOW_MS = 3000
 /**
  * How much already-committed audio a partial tick's window reaches back
  * into, so a word cut off right at the committed boundary gets a full
@@ -80,8 +104,13 @@ const RECENT_CHUNKS_PRUNE_SLACK_MS = 500
  * cost, but this still matters on CPU-only hardware where a tick can take
  * longer than the interval - it makes such hardware degrade to a slower,
  * stable cadence instead of pegging the CPU with zero-gap requests.
+ *
+ * Halved from 300ms alongside the cadence itself. It is pure overhead added
+ * to every tick, and at a 700ms interval a 300ms floor would have been most
+ * of the reduction this retune was for. 150ms still leaves real breathing
+ * room between requests on hardware slow enough to need it.
  */
-const DEFAULT_MIN_PARTIAL_IDLE_GAP_MS = 300
+const DEFAULT_MIN_PARTIAL_IDLE_GAP_MS = 150
 /** How often (ms) streamed partial/cleanup/transform/voiceEdit text is allowed to reach the renderer - see ThrottledTextEmitter. */
 const DEFAULT_STREAM_THROTTLE_MS = 100
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
@@ -397,25 +426,90 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     onStreamText: (text: string) => void
   ): Promise<string> {
     const wavBase64 = pcm16ToWavBase64(samples, session.sampleRate)
-    const request = buildTranscriptionRequest({
-      model: this.options.modelId,
-      wavBase64,
-      vocabulary: session.vocabulary
-    })
+    // The one place audio becomes text, so routing it here moves every
+    // caller at once: mid-recording partial ticks, the final full-buffer
+    // pass, and the spoken edit command. Cleanup, transforms and voice edit
+    // are untouched and still run on the language model.
+    //
+    // No streaming to reproduce. The recogniser returns the window's whole
+    // transcript in one response rather than token by token, and every tick
+    // already replaces what was shown rather than appending to it (see this
+    // method's doc comment), so a single emit is the complete update. The
+    // throttled emitter stays only to keep `onStreamText`'s contract
+    // identical for callers.
+    //
+    // `stripModelPreamble` is deliberately not applied. It exists because a
+    // chat model asked to transcribe sometimes answers conversationally
+    // ("Sure, here is the transcription:"); a recogniser emits speech tokens
+    // and nothing else, so running it here could only ever damage a genuine
+    // transcript that happened to begin with a matching phrase.
+    const text = await this.enqueue(() => this.transcribeAudio(wavBase64))
     const throttled = new ThrottledTextEmitter({
       intervalMs: this.streamThrottleMs,
       emit: onStreamText
     })
-    const raw = await this.enqueue(() =>
-      this.chatCompletion(request, (accumulated) => throttled.push(stripModelPreamble(accumulated)))
-    )
-    const text = stripModelPreamble(raw)
-    // Guarantees the exact final (preamble-stripped, fully-settled) value is
-    // delivered synchronously, even if the last streamed chunk differed
-    // slightly (e.g. a preamble line only becomes strippable once the whole
-    // first line has arrived) or no chunk streamed at all (non-SSE fallback).
     throttled.flush(text)
     return text
+  }
+
+  /**
+   * Posts one audio window to the sidecar's speech-recognition route (see
+   * resources/serve_gpu.py's "Speech recognition" doc comment) and returns
+   * the transcript.
+   *
+   * Failures are mapped onto the same typed errors the chat path uses, so
+   * everything downstream - session error reporting, the status pill, the
+   * retry logic - treats a recogniser problem exactly like an engine
+   * problem. They are the same process, so in practice they usually are the
+   * same problem.
+   */
+  private async transcribeAudio(wavBase64: string): Promise<string> {
+    const baseUrl = this.options.getBaseUrl()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs)
+    try {
+      const res = await fetch(`${baseUrl}/blurt/transcribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wav: wavBase64 }),
+        signal: controller.signal
+      })
+      const payload = (await res.json().catch(() => null)) as {
+        text?: string
+        error?: string
+      } | null
+      if (!res.ok) {
+        throw new RequestFailedError(
+          payload?.error ?? `Speech recognition failed (HTTP ${res.status})`
+        )
+      }
+      if (typeof payload?.text !== 'string') {
+        throw new ParseErrorBackendError(
+          'Speech recognition returned a response with no transcript in it.'
+        )
+      }
+      return payload.text.trim()
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new TimeoutBackendError(
+          `Speech recognition timed out after ${this.requestTimeoutMs}ms`
+        )
+      }
+      if (
+        err instanceof RequestFailedError ||
+        err instanceof ParseErrorBackendError ||
+        err instanceof TimeoutBackendError
+      ) {
+        throw err
+      }
+      throw new SidecarUnreachableError(
+        `Could not reach the speech recogniser at ${baseUrl}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /**
@@ -584,20 +678,20 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     // even though the sidecar and the throttled-emit plumbing were working
     // correctly the whole time (see litertBackend's onPartialTranscript
     // proof harnesses referenced in the fix's commit).
-    if (
-      session.committedAudioMs === 0 &&
-      session.partialInFlight &&
-      session.partialPromise &&
-      session.partialSnapshotChunkCount === session.chunks.length
-    ) {
-      void this.maybeDumpDebugWav(concatInt16(session.chunks), session.sampleRate)
-      try {
-        return await session.partialPromise
-      } catch (err) {
-        this.emitError(sessionId, err)
-        return session.lastTranscript
-      }
-    }
+    //
+    // REMOVED, and deliberately not restored: that reuse rested on the
+    // in-flight tick's result being what a fresh final pass would have
+    // produced. It no longer is. Ticks run on the smaller, faster recogniser
+    // and the final pass runs on the larger, more accurate one (see
+    // resources/asr.py), so reusing a tick would silently hand back the
+    // weaker model's transcript - measured at 6.26% WER against the final
+    // model's 3.46% - for exactly the short recordings where the saving
+    // looked most attractive. The redundancy the optimization removed was
+    // real; the redundancy is gone, so the optimization is too.
+    //
+    // The cost is that a short dictation now waits for one full pass on the
+    // larger model rather than reusing a tick already in flight. That is the
+    // price of the accuracy the final pass exists to provide.
 
     // Otherwise (session has grown past one window so a full pass is needed
     // for accuracy regardless, no tick in flight, or more audio arrived
