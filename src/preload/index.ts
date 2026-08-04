@@ -17,6 +17,7 @@ import type {
 } from '../shared/types'
 import type { InstalledModelInfo, ModelDownloadProgress } from '../shared/models'
 import type { HardwareProbeResult } from '../shared/hardware'
+import type { UpdateStatus } from '../shared/updater'
 
 /**
  * The renderer-facing API surface. Renderer code never touches Electron or
@@ -137,6 +138,18 @@ const pushToTalkApi = {
     ipcRenderer.invoke(IPC.pushToTalk.requestAccessibility)
 }
 
+const updateApi = {
+  getStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke(IPC.update.getStatus),
+  onStatusChanged: (listener: (status: UpdateStatus) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus): void =>
+      listener(status)
+    ipcRenderer.on(IPC.update.statusChanged, handler)
+    return () => ipcRenderer.removeListener(IPC.update.statusChanged, handler)
+  },
+  /** Quits and installs a downloaded update. Resolves false if there was nothing ready to install. */
+  restartToInstall: (): Promise<boolean> => ipcRenderer.invoke(IPC.update.restartToInstall)
+}
+
 const logApi = {
   /** Reports a renderer-side failure (e.g. audio capture) into main.log - see src/main/log.ts. */
   rendererError: (line: string): void => {
@@ -200,6 +213,7 @@ const api = {
   models: modelsApi,
   pushToTalk: pushToTalkApi,
   overlay: overlayApi,
+  update: updateApi,
   log: logApi
 }
 

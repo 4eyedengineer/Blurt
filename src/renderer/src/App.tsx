@@ -22,7 +22,10 @@ function App(): React.JSX.Element {
       <main className="app__content">
         {tab === 'dictate' && <DictateScreen session={session} />}
         {tab === 'history' && <HistoryScreen onOpenEntry={openHistoryEntry} />}
-        {tab === 'settings' && <SettingsScreen />}
+        {/* The phase is only for the update section's "Restart now", which
+            must not be offered while a dictation is still running - see
+            isDictationInProgress. */}
+        {tab === 'settings' && <SettingsScreen dictationPhase={session.phase} />}
       </main>
     </div>
   )

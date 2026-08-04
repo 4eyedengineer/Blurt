@@ -1,24 +1,40 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ModelId, PushToTalkStatus, SidecarMode } from '@shared/types'
 import { DEFAULT_MANAGED_COMMAND, PTT_KEY_OPTIONS, pttKeyLabel } from '@shared/types'
-import type { ModelDownloadState } from '@shared/models'
-import { getCatalogEntry } from '@shared/models'
+import type { ModelCatalogEntry, ModelDownloadState } from '@shared/models'
+import { MODEL_CATALOG } from '@shared/models'
 import type { HardwareProbeResult } from '@shared/hardware'
 import { checkModelRequirements, requiredDiskBytes } from '@shared/modelRequirements'
+import { describeUpdateStatus } from '@shared/updater'
 import { useSettings } from '../context/SettingsContext'
 import { useModelManager } from '../hooks/useModelManager'
 import { useBackendStatus } from '../hooks/useBackendStatus'
 import { useHardwareInfo } from '../hooks/useHardwareInfo'
 import { useAudioInputDevices } from '../hooks/useAudioInputDevices'
+import { useUpdateStatus } from '../hooks/useUpdateStatus'
+import { isDictationInProgress, type DictationPhase } from '../hooks/useDictationSession'
 import { Toggle } from '../components/Toggle'
 import { formatBytes } from '../lib/format'
 import './SettingsScreen.css'
 
-const MODEL_OPTIONS: Array<{ id: ModelId; label: string }> = [
-  { id: 'gemma-4-e2b', label: 'Gemma 4 E2B, fastest' },
-  { id: 'gemma-4-e4b', label: 'Gemma 4 E4B, balanced' },
-  { id: 'gemma-4-12b', label: 'Gemma 4 12B, best quality and slowest' }
-]
+/**
+ * The one thing the model catalog does not carry: which model to pick, as
+ * opposed to what each one is. That is UI guidance rather than a fact about
+ * the model, so it lives here and the names themselves come from
+ * `MODEL_CATALOG`.
+ *
+ * This screen used to hand-write the whole option list, labels included,
+ * which meant two sources of truth that nothing kept in agreement. Typing
+ * this as a total `Record<ModelId, string>` puts the link back: rows are
+ * generated from the catalog, so adding a model there makes it appear in
+ * Settings, and omitting its tagline is a compile error rather than a row
+ * that silently renders without one.
+ */
+const MODEL_TAGLINES: Record<ModelId, string> = {
+  'gemma-4-e2b': 'fastest',
+  'gemma-4-e4b': 'balanced',
+  'gemma-4-12b': 'best quality and slowest'
+}
 
 type HotkeyStatus = 'idle' | 'saved' | 'error'
 
@@ -44,7 +60,7 @@ function modelStateLabel(state: ModelDownloadState): string {
 }
 
 interface ModelRowProps {
-  option: (typeof MODEL_OPTIONS)[number]
+  entry: ModelCatalogEntry
   selected: boolean
   onSelect: () => void
   models: ReturnType<typeof useModelManager>
@@ -52,15 +68,14 @@ interface ModelRowProps {
 }
 
 function ModelRow({
-  option,
+  entry,
   selected,
   onSelect,
   models,
   hardware
 }: ModelRowProps): React.JSX.Element {
-  const installed = models.installed.some((m) => m.modelId === option.id)
-  const progress = models.progress[option.id]
-  const entry = getCatalogEntry(option.id)
+  const installed = models.installed.some((m) => m.modelId === entry.id)
+  const progress = models.progress[entry.id]
   const busy = progress?.state === 'downloading' || progress?.state === 'resolving'
   const pct =
     progress?.totalBytes && progress.totalBytes > 0
@@ -81,7 +96,9 @@ function ModelRow({
       <input type="radio" name="model" checked={selected} onChange={onSelect} />
       <div className="settings-screen__model-row">
         <div>
-          <span className="settings-screen__radio-title">{option.label}</span>
+          <span className="settings-screen__radio-title">
+            {entry.label}, {MODEL_TAGLINES[entry.id]}
+          </span>
           <span className="settings-screen__radio-desc">
             {modelStateLabel(progress?.state ?? 'idle')} · ~{formatBytes(totalDiskNeeded)} on disk
             {busy && pct !== null ? ` · ${pct}%` : ''}
@@ -115,7 +132,7 @@ function ModelRow({
               title={blocked ? requirements?.blockers.join(' ') : undefined}
               onClick={(e) => {
                 e.preventDefault()
-                models.download(option.id)
+                models.download(entry.id)
               }}
             >
               Download
@@ -126,7 +143,7 @@ function ModelRow({
               type="button"
               onClick={(e) => {
                 e.preventDefault()
-                models.cancelDownload(option.id)
+                models.cancelDownload(entry.id)
               }}
             >
               Cancel
@@ -137,7 +154,7 @@ function ModelRow({
               type="button"
               onClick={(e) => {
                 e.preventDefault()
-                models.remove(option.id)
+                models.remove(entry.id)
               }}
             >
               Delete
@@ -288,8 +305,13 @@ function AdvancedSection(): React.JSX.Element {
   )
 }
 
-export function SettingsScreen(): React.JSX.Element {
+export function SettingsScreen({
+  dictationPhase
+}: {
+  dictationPhase: DictationPhase
+}): React.JSX.Element {
   const { settings, update, addVocabularyWord, removeVocabularyWord, updateHotkey } = useSettings()
+  const updateStatus = useUpdateStatus()
   const models = useModelManager()
   const backendStatus = useBackendStatus()
   const hardware = useHardwareInfo()
@@ -329,10 +351,26 @@ export function SettingsScreen(): React.JSX.Element {
     setVocabInput('')
   }
 
+  // Tracked and cleared rather than fired and forgotten: pressing Save twice
+  // inside the window left two timers running, and the first one to fire
+  // cleared the status belonging to the second - so the reply to the save
+  // that mattered vanished early, or never appeared at all.
+  const hotkeyStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (hotkeyStatusTimerRef.current) clearTimeout(hotkeyStatusTimerRef.current)
+    },
+    []
+  )
+
   const saveHotkey = async (): Promise<void> => {
     const result = await updateHotkey(hotkeyInput.trim())
     setHotkeyStatus(result.ok ? 'saved' : 'error')
-    setTimeout(() => setHotkeyStatus('idle'), 2500)
+    if (hotkeyStatusTimerRef.current) clearTimeout(hotkeyStatusTimerRef.current)
+    hotkeyStatusTimerRef.current = setTimeout(() => {
+      setHotkeyStatus('idle')
+      hotkeyStatusTimerRef.current = null
+    }, 2500)
   }
 
   /**
@@ -367,12 +405,12 @@ export function SettingsScreen(): React.JSX.Element {
           </p>
         )}
         <div className="settings-screen__radio-group">
-          {MODEL_OPTIONS.map((opt) => (
+          {MODEL_CATALOG.map((entry) => (
             <ModelRow
-              key={opt.id}
-              option={opt}
-              selected={settings.modelId === opt.id}
-              onSelect={() => void update({ modelId: opt.id })}
+              key={entry.id}
+              entry={entry}
+              selected={settings.modelId === entry.id}
+              onSelect={() => void update({ modelId: entry.id })}
               models={models}
               hardware={hardware}
             />
@@ -455,7 +493,18 @@ export function SettingsScreen(): React.JSX.Element {
         />
 
         <p className="settings-screen__field-label">Custom vocabulary</p>
-        <p className="settings-screen__hint">Names and jargon to bias the recognizer towards.</p>
+        {/*
+          Says what these words actually do now. The old line, "Names and
+          jargon to bias the recognizer towards", described the design from
+          when Gemma did the transcribing and could be told what to listen
+          for. The recogniser that replaced it is handed a WAV and nothing
+          else, so these words never reach recognition at all - they are
+          passed to the cleanup pass afterwards, which can correct a spelling
+          but cannot change what was heard.
+        */}
+        <p className="settings-screen__hint">
+          Names and jargon to spell correctly when Blurt tidies up your text.
+        </p>
         <div className="settings-screen__inline-input">
           <input
             type="text"
@@ -541,7 +590,11 @@ export function SettingsScreen(): React.JSX.Element {
                 {/* The consequence, not the mechanism - someone picking a
                     hotkey needs to know this key can cost them focus, not
                     why Windows does it. */}
-                {keyId === 'AltRight' && pttStatus?.platform === 'win32' && (
+                {/* `platform`, not `pttStatus?.platform` - see its
+                    declaration. pttStatus arrives asynchronously and is null
+                    on first paint, so keying this off it made the note fade
+                    in a beat after the option it belongs to. */}
+                {keyId === 'AltRight' && platform === 'win32' && (
                   <span className="settings-screen__radio-desc">
                     Windows may move focus away when Alt is tapped on its own.
                   </span>
@@ -582,6 +635,50 @@ export function SettingsScreen(): React.JSX.Element {
           checked={settings.runInBackground}
           onChange={(checked) => void update({ runInBackground: checked })}
         />
+      </div>
+
+      <div className="settings-screen__group">
+        <h2>Updates</h2>
+        {/*
+          Reports only what the updater has actually observed - see
+          describeUpdateStatus. There is no "check now" button: a check runs
+          at startup and every few hours regardless, so the button would
+          mostly be a way to re-ask a question already answered on screen.
+        */}
+        <p className="settings-screen__hint">{describeUpdateStatus(updateStatus)}</p>
+        {updateStatus.state === 'downloading' && (
+          <div className="settings-screen__progress-track">
+            <div
+              className="settings-screen__progress-fill"
+              style={{ width: `${updateStatus.percent ?? 0}%` }}
+            />
+          </div>
+        )}
+        {updateStatus.state === 'ready' && (
+          <>
+            {/*
+              Offered, never forced. Quitting is what applies the update
+              anyway, so this is a shortcut for someone who would rather not
+              wait - and it is held back mid-dictation, which is reachable
+              from this screen because the global hotkey starts a dictation
+              from whatever tab is open.
+            */}
+            <button
+              type="button"
+              className="settings-screen__update-action"
+              disabled={isDictationInProgress(dictationPhase)}
+              onClick={() => void window.api.update.restartToInstall()}
+            >
+              Restart now
+            </button>
+            {/* A visible line rather than a `title` tooltip: a disabled
+                button does not fire the mouse events a tooltip needs, so the
+                explanation for why it is dead has to be on the page. */}
+            {isDictationInProgress(dictationPhase) && (
+              <p className="settings-screen__hint">Finish the current dictation first.</p>
+            )}
+          </>
+        )}
       </div>
 
       <div className="settings-screen__group">

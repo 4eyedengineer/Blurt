@@ -19,12 +19,23 @@ on:
     # main is where releases are cut from, so a release commit should
     # produce its installer without anyone remembering to trigger it.
     branches: [main, macos-support]
+    # A `v*` tag is what turns a build into a publish - see the packaging
+    # step. Branch pushes keep producing a downloadable artifact and nothing
+    # else, so ordinary work on main can never touch a release.
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
   build:
     name: nsis installer (x64)
     runs-on: windows-latest
+
+    # Needed only on the tag path, where electron-builder creates the draft
+    # release and uploads to it using the default GITHUB_TOKEN. The default
+    # for this repo is read-only, so without this the publish fails at the
+    # upload step, after a full ~10 minute build.
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -40,11 +51,20 @@ jobs:
 
       - run: npm run build
 
-      # `--publish never` is required, not optional. electron-builder detects
-      # CI and silently switches on implicit publishing, which then fails the
-      # whole step with "GitHub Personal Access Token is not set" *after* the
-      # installer has already been built - a confusing failure with nothing
-      # to do with packaging. This job produces an artifact and nothing else.
+      # Publish only on a `v*` tag; every other trigger builds an artifact and
+      # nothing else.
+      #
+      # The explicit `--publish` flag is required either way, not optional.
+      # electron-builder detects CI and silently switches on implicit
+      # publishing, which on a branch push then fails the whole step with
+      # "GitHub Personal Access Token is not set" *after* the installer has
+      # already been built - a confusing failure with nothing to do with
+      # packaging.
+      #
+      # On the tag path this uploads the installer, `latest.yml` and the
+      # `.blockmap` to a DRAFT release (see electron-builder.yml's `publish:`
+      # block). A draft's assets are not publicly readable, so nothing
+      # auto-updates until that draft is published by hand.
       #
       # CSC_IDENTITY_AUTO_DISCOVERY=false mirrors the build:win script: there
       # is no code-signing certificate, and without this electron-builder can
@@ -52,9 +72,18 @@ jobs:
       # SmartScreen will warn on first run exactly as it does for the
       # released build (see README's Install section).
       - name: Package installer
+        shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --win --publish never
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag build ($GITHUB_REF) - publishing to a draft release"
+            npx electron-builder --win --publish always
+          else
+            echo "branch build - artifact only"
+            npx electron-builder --win --publish never
+          fi
 
       - name: List build output
         shell: bash
@@ -79,6 +108,21 @@ jobs:
           echo "--- installer ---"
           ls dist/*.exe
           test -n "$(ls dist/*-setup.exe 2>/dev/null)" || { echo "MISSING *-setup.exe"; exit 1; }
+
+          # latest.yml IS the update feed. electron-updater fetches it to
+          # learn whether a newer version exists and to verify the download's
+          # sha512 - without it every installed copy silently stops updating,
+          # with nothing wrong on either side that anyone would notice until
+          # a release goes out and nobody receives it. It only gets generated
+          # because electron-builder.yml declares `publish:`, so this also
+          # catches that block being removed or mistyped.
+          echo "--- update feed ---"
+          test -f dist/latest.yml || { echo "MISSING latest.yml - auto-update would be dead"; exit 1; }
+          cat dist/latest.yml
+          # The blockmap is what makes an update a few MB instead of ~94 MB.
+          # Its absence degrades rather than breaks, so this warns.
+          ls dist/*-setup.exe.blockmap 2>/dev/null || \
+            echo "NOTE: no .blockmap - updates would download the full installer"
 
           echo "--- extraResources (sidecar wrapper must sit beside app.asar) ---"
           test -f dist/win-unpacked/resources/serve_gpu.py || { echo "MISSING serve_gpu.py"; exit 1; }
@@ -107,8 +151,15 @@ jobs:
           ls dist/win-unpacked/dxcompiler.dll dist/win-unpacked/dxil.dll 2>/dev/null || \
             echo "NOTE: dxcompiler/dxil not present - GPU (Dawn D3D12) path may be unavailable"
 
+      # latest.yml and the blockmap ride along so a branch build is a complete,
+      # testable update feed and not just an installer - serving these three
+      # files is enough to exercise the updater end to end without cutting a
+      # real release.
       - uses: actions/upload-artifact@v4
         with:
           name: blurt-windows-x64-setup
-          path: dist/*-setup.exe
+          path: |
+            dist/*-setup.exe
+            dist/*-setup.exe.blockmap
+            dist/latest.yml
           if-no-files-found: error

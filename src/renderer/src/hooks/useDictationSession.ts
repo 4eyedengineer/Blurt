@@ -73,6 +73,20 @@ export function canShowOriginal({ rawTranscript, displayText }: CanShowOriginalP
   return rawTranscript !== '' && rawTranscript !== displayText
 }
 
+/**
+ * Whether a dictation is actually in flight: audio being captured, or the
+ * model still working on what was captured. 'ready' does not count - the
+ * transcript is on screen and already saved to history, so nothing is lost by
+ * interrupting there.
+ *
+ * Used to hold back the "Restart now" update button in Settings. This state
+ * is genuinely reachable from that screen, not a theoretical worry: the
+ * global hotkey starts a dictation from whatever tab happens to be open.
+ */
+export function isDictationInProgress(phase: DictationPhase): boolean {
+  return phase !== 'idle' && phase !== 'ready'
+}
+
 export interface UseDictationSession {
   phase: DictationPhase
   liveText: string
@@ -142,10 +156,25 @@ export function useDictationSession(): UseDictationSession {
   const unsubscribePartialRef = useRef<() => void>(() => {})
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Tracked and cleared on re-arm, like revealTimerRef below. Untracked, a
+  // second copy inside the window inherited the first one's timer, so the
+  // "Copied!" confirmation for the newer copy disappeared early - after
+  // whatever was left of the older one rather than a full beat.
+  const copyFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const flashCopy = useCallback(() => {
     setCopyFlash(true)
-    setTimeout(() => setCopyFlash(false), 1500)
+    if (copyFlashTimerRef.current) clearTimeout(copyFlashTimerRef.current)
+    copyFlashTimerRef.current = setTimeout(() => {
+      setCopyFlash(false)
+      copyFlashTimerRef.current = null
+    }, 1500)
   }, [])
+  useEffect(
+    () => () => {
+      if (copyFlashTimerRef.current) clearTimeout(copyFlashTimerRef.current)
+    },
+    []
+  )
 
   const clearRevealTimer = useCallback(() => {
     if (revealTimerRef.current) {
@@ -230,10 +259,7 @@ export function useDictationSession(): UseDictationSession {
     // the model, press record, and the app is wedged.
     let sessionId: string
     try {
-      sessionId = await window.api.dictation.startSession({
-        sampleRate: 16000,
-        vocabulary: settings.customVocabulary
-      })
+      sessionId = await window.api.dictation.startSession({ sampleRate: 16000 })
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       setPhase('idle')
@@ -264,7 +290,7 @@ export function useDictationSession(): UseDictationSession {
       setSessionError(`Microphone capture failed: ${reason}`)
       void window.api.dictation.endSession(sessionId)
     }
-  }, [audio, settings.customVocabulary, settings.inputDeviceId, startNew])
+  }, [audio, settings.inputDeviceId, startNew])
 
   const stopRecording = useCallback(async () => {
     const sessionId = sessionIdRef.current
@@ -399,10 +425,7 @@ export function useDictationSession(): UseDictationSession {
     // editable by typing; only the spoken shortcut failed.
     let sessionId: string
     try {
-      sessionId = await window.api.dictation.startSession({
-        sampleRate: 16000,
-        vocabulary: settings.customVocabulary
-      })
+      sessionId = await window.api.dictation.startSession({ sampleRate: 16000 })
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       setPhase('ready')
@@ -438,7 +461,7 @@ export function useDictationSession(): UseDictationSession {
       setSessionError(`Microphone capture failed: ${reason}`)
       void window.api.dictation.endSession(sessionId)
     }
-  }, [audio, settings.customVocabulary, settings.inputDeviceId])
+  }, [audio, settings.inputDeviceId])
 
   const stopCommandRecording = useCallback(async () => {
     const sessionId = sessionIdRef.current

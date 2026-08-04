@@ -56,6 +56,13 @@ export const IPC = {
      */
     requestAccessibility: 'push-to-talk:request-accessibility'
   },
+  /** Self-update - see src/main/updater.ts. */
+  update: {
+    getStatus: 'update:get-status',
+    statusChanged: 'update:status-changed', // main -> renderer event
+    /** Quits and runs the downloaded installer. User-initiated only, and only offered while a dictation is not in progress. */
+    restartToInstall: 'update:restart-to-install'
+  },
   log: {
     /** renderer -> main: report a capture/other renderer-side failure to main.log. */
     rendererError: 'log:renderer-error',

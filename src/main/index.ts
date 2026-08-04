@@ -14,6 +14,8 @@ import { registerSettingsIpc } from './ipc/settingsIpc'
 import { registerModelManagerIpc } from './ipc/modelManagerIpc'
 import { registerPushToTalkIpc } from './ipc/pushToTalkIpc'
 import { registerLogIpc } from './ipc/logIpc'
+import { registerUpdaterIpc } from './ipc/updaterIpc'
+import { UpdateController } from './updater'
 import { applyGlobalShortcut } from './hotkey'
 import { createOverlayWindow } from './overlay'
 import { OverlayController } from './overlayController'
@@ -34,6 +36,7 @@ let mainWindow: BrowserWindow | null = null
 let overlayWindow: BrowserWindow | null = null
 let pushToTalkController: PushToTalkController | null = null
 let backendController: BackendController | null = null
+let updateController: UpdateController | null = null
 let tray: Tray | null = null
 /**
  * Set once a real quit is under way, so the main window's close handler
@@ -304,6 +307,18 @@ app.whenReady().then(async () => {
   registerModelManagerIpc(modelManager, settingsStore, () => mainWindow, venvPaths, controller)
   registerLogIpc(app.getPath('userData'))
 
+  // Started after the backend rather than before it: a check is a network
+  // round trip and a download is a background transfer, and neither should
+  // compete with getting the engine up, which is what the user is actually
+  // waiting on. Reports 'unsupported' and does nothing at all on a dev build
+  // or a non-Windows one - see describeUpdateSupport.
+  updateController = new UpdateController({
+    platform: process.platform,
+    isPackaged: app.isPackaged
+  })
+  registerUpdaterIpc(updateController, () => mainWindow)
+  updateController.start()
+
   // If a model finishes downloading while it's the currently-selected model
   // and the backend is sitting in an error state (most likely because that
   // exact model wasn't installed yet), automatically retry rather than
@@ -365,4 +380,8 @@ app.on('will-quit', () => {
   // nothing to dispose of in that case.
   backendController?.dispose()
   pushToTalkController?.dispose()
+  // Only stops the recurring check. A downloaded-but-not-yet-installed
+  // update is electron-updater's own `autoInstallOnAppQuit` business from
+  // here, and it deliberately outlives this handler.
+  updateController?.dispose()
 })

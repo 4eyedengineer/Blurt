@@ -60,6 +60,14 @@ The installer is not code-signed, so Windows SmartScreen will probably show a bl
 protected your PC" warning the first time you run it. This is normal for a small independently
 published app. Click **More info**, then **Run anyway**.
 
+From 1.4.2 onward the Windows build keeps itself up to date. It checks this repository's Releases
+at startup and every six hours, downloads anything newer in the background, and installs it the
+next time you quit. Settings shows what it is doing, and offers a **Restart now** if you would
+rather not wait. Because each release ships a block map, a typical update transfers a few MB rather
+than the whole installer. Nothing is sent anywhere: the check is a plain read of this repo's public
+release feed, and the download is verified against the SHA-512 published alongside it. Your models
+and history live outside the install directory and are untouched by an update.
+
 **macOS** (Apple Silicon, macOS 12.0 or later) is implemented but there is no macOS release yet,
 and none of it has run on real hardware - see [MACOS.md](MACOS.md) for the honest current state,
 and for building and running Blurt from source on a Mac in the meantime. Once a build is published,

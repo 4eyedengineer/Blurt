@@ -254,6 +254,33 @@
   border-color: var(--color-primary);
 }
 
+/*
+  Matches .settings-screen__model-actions button rather than inheriting it:
+  base.css's `button` rule is a font/color reset only, so an unclassed button
+  here would render with the browser's default chrome against a dark theme.
+  Unlike that rule this one has a disabled state, because this button really
+  does get disabled mid-dictation and needs to look it.
+*/
+.settings-screen__update-action {
+  margin-top: 8px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.settings-screen__update-action:hover:not(:disabled) {
+  border-color: var(--color-primary);
+}
+
+.settings-screen__update-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .settings-screen__progress-track {
   margin-top: 4px;
   height: 4px;
