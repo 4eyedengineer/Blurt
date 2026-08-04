@@ -172,8 +172,7 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
       streamRef.current = stream
 
       if (typeof AudioWorkletNode === 'undefined') {
-        stream.getTracks().forEach((track) => track.stop())
-        streamRef.current = null
+        stop()
         const reason = 'AudioWorklet is not supported in this environment'
         logCaptureFailure(reason)
         throw new Error(reason)
@@ -182,14 +181,20 @@ export function useAudioCapture(onChunk: (payload: AudioChunkPayload) => void): 
       try {
         await startWithWorklet(stream)
       } catch (err) {
-        stream.getTracks().forEach((track) => track.stop())
-        streamRef.current = null
+        // Full teardown via stop(), not just the stream. startWithWorklet
+        // assigns audioContextRef before either of the two things that can
+        // throw (addModule, resume), so undoing only the MediaStream here
+        // left a live AudioContext behind on every failure. Chromium caps a
+        // document at a handful of them, so a mic that fails repeatedly used
+        // to stop failing for its own reason and start failing because
+        // constructing the context itself no longer worked.
+        stop()
         const reason = err instanceof Error ? err.message : String(err)
         logCaptureFailure(`AudioWorklet: ${reason}`)
         throw new Error(reason)
       }
     },
-    [startWithWorklet]
+    [startWithWorklet, stop]
   )
 
   useEffect(() => stop, [stop])

@@ -86,7 +86,7 @@ export class OverlayController {
 
   private handleHoldEnd(): void {
     this.send(IPC.overlay.pttStop)
-    this.scheduleHide(STUCK_HIDE_MS)
+    this.scheduleHide(STUCK_HIDE_MS, { warnOnFire: true })
   }
 
   private handleAccidentalTap(): void {
@@ -159,11 +159,19 @@ export class OverlayController {
     }
   }
 
-  private scheduleHide(ms: number): void {
+  /**
+   * `warnOnFire` marks the one caller (`handleHoldEnd`) whose timer firing
+   * means something went wrong upstream rather than a result having been
+   * shown and read. It is passed explicitly because this used to infer it
+   * from `ms === STUCK_HIDE_MS` - which happened to work only because the
+   * three durations are distinct, and would have started mislabelling log
+   * lines the moment any two of them were tuned to the same value.
+   */
+  private scheduleHide(ms: number, { warnOnFire = false } = {}): void {
     this.clearHideTimer()
     this.hideTimer = setTimeout(() => {
-      if (ms === STUCK_HIDE_MS) {
-        log.warn(`overlay: no result ${STUCK_HIDE_MS}ms after key release - hiding anyway`)
+      if (warnOnFire) {
+        log.warn(`overlay: no result ${ms}ms after key release - hiding anyway`)
       }
       this.getOverlayWindow()?.hide()
       this.send(IPC.overlay.reset)

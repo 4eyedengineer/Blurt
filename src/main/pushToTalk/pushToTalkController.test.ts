@@ -157,6 +157,64 @@ describe('PushToTalkController - hold gesture detection', () => {
   })
 })
 
+describe('PushToTalkController - a hook whose start() fails', () => {
+  /** Like `fakeUiohook`, but `start()` throws for its first `failures` calls and succeeds after that. */
+  function flakyUiohook(failures: number): {
+    instance: UiohookInstanceLike
+    emitter: EventEmitter
+  } {
+    const emitter = new EventEmitter()
+    let attempts = 0
+    const instance: UiohookInstanceLike = {
+      start: () => {
+        attempts += 1
+        if (attempts <= failures) throw new Error('CGEventTap could not be created')
+      },
+      stop: () => {},
+      on: (event, listener) => emitter.on(event, listener),
+      removeListener: (event, listener) => emitter.removeListener(event, listener)
+    }
+    return { instance, emitter }
+  }
+
+  it('registers no key listeners at all when start() throws', () => {
+    const { instance, emitter } = flakyUiohook(1)
+    const controller = new PushToTalkController('AltRight', { load: loadOk(instance) })
+    controller.applySettings({ enabled: true, key: 'AltRight' })
+
+    // Listeners used to be attached before start(), so a throw left them
+    // behind with hookRunning still false - and both stopHook() and dispose()
+    // are gated on that flag, so nothing could ever remove them.
+    expect(emitter.listenerCount('keydown')).toBe(0)
+    expect(emitter.listenerCount('keyup')).toBe(0)
+  })
+
+  it('emits hold-start once per press after earlier failed starts, not once per attempt', () => {
+    // The real cost of the leak above: Node's EventEmitter appends duplicate
+    // identical listeners rather than deduping them, so every retry added
+    // another pair. Once start() finally succeeded, a single physical
+    // keypress emitted hold-start once per previous attempt, and each of
+    // those opens its own dictation session in the overlay.
+    const { instance, emitter } = flakyUiohook(2)
+    const controller = new PushToTalkController('AltRight', { load: loadOk(instance) })
+
+    // Two failed attempts, each reached by toggling the feature off and on.
+    controller.applySettings({ enabled: true, key: 'AltRight' })
+    controller.applySettings({ enabled: false, key: 'AltRight' })
+    controller.applySettings({ enabled: true, key: 'AltRight' })
+    controller.applySettings({ enabled: false, key: 'AltRight' })
+    // Third attempt succeeds.
+    controller.applySettings({ enabled: true, key: 'AltRight' })
+
+    expect(emitter.listenerCount('keydown')).toBe(1)
+
+    const events: string[] = []
+    controller.on('hold-start', () => events.push('hold-start'))
+    emitter.emit('keydown', { keycode: PTT_KEYCODES.AltRight })
+    expect(events).toEqual(['hold-start'])
+  })
+})
+
 describe('canStartGlobalHook', () => {
   it('always allows starting on every non-darwin platform, regardless of the accessibility flag', () => {
     for (const platform of ['win32', 'linux', 'freebsd', 'aix'] as NodeJS.Platform[]) {

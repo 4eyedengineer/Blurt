@@ -210,29 +210,8 @@ interface LitertSession {
   msSinceLastPartial: number
   hasAudio: boolean
   partialInFlight: boolean
-  /**
-   * The in-flight mid-recording partial tick's own streaming promise, if
-   * any - resolves to the tick's full merged (`committedText` + stitched
-   * window) display text, i.e. exactly what a fresh final transcription
-   * would be expected to show. `endSession` awaits and reuses this directly
-   * instead of discarding it and paying for a second full re-transcription
-   * of the same audio when nothing changed since it started (see
-   * `endSession`'s doc comment) - but only for short sessions
-   * (`committedAudioMs === 0`); once a session has grown past one window,
-   * `endSession` always pays for one accurate full-buffer pass instead (see
-   * its doc comment for why). Cleared whenever no tick is in flight.
-   */
-  partialPromise: Promise<string> | null
-  /**
-   * `chunks.length` at the moment the in-flight tick above took its
-   * buffer snapshot - lets `endSession` detect whether *more* audio arrived
-   * after that snapshot (in which case the tick's result is stale and a
-   * fresh final re-transcription covering the full buffer is still needed).
-   */
-  partialSnapshotChunkCount: number
   lastTranscript: string
   ended: boolean
-  vocabulary?: string[]
 }
 
 export interface LitertBackendOptions {
@@ -349,11 +328,8 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       msSinceLastPartial: 0,
       hasAudio: false,
       partialInFlight: false,
-      partialPromise: null,
-      partialSnapshotChunkCount: 0,
       lastTranscript: '',
-      ended: false,
-      vocabulary: opts?.vocabulary ?? this.options.getVocabulary?.()
+      ended: false
     })
     return id
   }
@@ -431,12 +407,13 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     // pass, and the spoken edit command. Cleanup, transforms and voice edit
     // are untouched and still run on the language model.
     //
-    // No streaming to reproduce. The recogniser returns the window's whole
-    // transcript in one response rather than token by token, and every tick
-    // already replaces what was shown rather than appending to it (see this
-    // method's doc comment), so a single emit is the complete update. The
-    // throttled emitter stays only to keep `onStreamText`'s contract
-    // identical for callers.
+    // No streaming to reproduce, and so nothing to throttle. The recogniser
+    // returns the window's whole transcript in one response rather than
+    // token by token, and every tick already replaces what was shown rather
+    // than appending to it (see this method's doc comment), so one direct
+    // call is the complete update. This used to route that single call
+    // through a ThrottledTextEmitter constructed and immediately flushed,
+    // which is the same thing with more moving parts.
     //
     // `stripModelPreamble` is deliberately not applied. It exists because a
     // chat model asked to transcribe sometimes answers conversationally
@@ -444,11 +421,7 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     // and nothing else, so running it here could only ever damage a genuine
     // transcript that happened to begin with a matching phrase.
     const text = await this.enqueue(() => this.transcribeAudio(wavBase64))
-    const throttled = new ThrottledTextEmitter({
-      intervalMs: this.streamThrottleMs,
-      emit: onStreamText
-    })
-    throttled.flush(text)
+    onStreamText(text)
     return text
   }
 
@@ -546,7 +519,6 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
    */
   private async runPartialTranscription(session: LitertSession): Promise<void> {
     session.partialInFlight = true
-    session.partialSnapshotChunkCount = session.chunks.length
     const tickAudioMs = session.totalAudioMs
 
     try {
@@ -583,23 +555,17 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       }
 
       const committedTextAtStart = session.committedText
-      const rawPromise = this.transcribeSamplesStreaming(session, samples, (windowText) => {
-        const merged = stitchTranscript(committedTextAtStart, windowText)
+      const windowText = await this.transcribeSamplesStreaming(session, samples, (streamed) => {
+        const merged = stitchTranscript(committedTextAtStart, streamed)
         session.lastTranscript = merged
         this.emitter.emit('partial', session.id, merged)
       })
-      const mergedPromise = rawPromise.then((windowText) =>
-        stitchTranscript(committedTextAtStart, windowText)
-      )
-      session.partialPromise = mergedPromise
-      const finalMerged = await mergedPromise
-      session.lastTickMergedText = finalMerged
+      session.lastTickMergedText = stitchTranscript(committedTextAtStart, windowText)
       session.lastTickAudioMs = tickAudioMs
     } catch (err) {
       this.emitError(session.id, err)
     } finally {
       session.partialInFlight = false
-      session.partialPromise = null
       session.lastPartialCompletionAtMs = this.now()
     }
   }
@@ -650,59 +616,20 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
       return session.lastTranscript
     }
 
-    // If a mid-recording partial tick is still in flight *and* no new audio
-    // arrived after it took its buffer snapshot, its result covers exactly
-    // the same audio a fresh final re-transcription would - so just await
-    // and reuse it instead of discarding it and paying for a second full
-    // round trip over the identical buffer. This is ONLY equivalent to a
-    // full-buffer final pass while `committedAudioMs === 0` - i.e. no
-    // rolling-window commit has ever happened yet, meaning every tick so far
-    // (including the in-flight one) had its window start at sample 0 and so
-    // covered the *whole* buffer, exactly like the pre-rolling-window
-    // design. Once a session has grown past one window's worth of audio and
-    // committing has kicked in, an in-flight tick's result is only the
-    // *current window's* stitched text - reusing it would mean skipping the
-    // "one accurate full-buffer final pass" this method promises for longer
-    // sessions (see the full-pass branch below), so this optimization is
-    // deliberately restricted to short sessions only.
+    // Wait for any in-flight partial tick to finish rather than racing it -
+    // both would hit the same session-less sidecar endpoint concurrently
+    // otherwise. Bounded by requestTimeoutMs so a stuck tick can't hang
+    // endSession forever.
     //
-    // This used to always discard the in-flight tick (via a `!session.ended`
-    // guard on its stream callback, removed) and unconditionally re-run a
-    // brand new transcription from scratch after it finished. For a short
-    // recording - very common, e.g. anyone's first "does this work?" test
-    // utterance - there is *often exactly one* tick in flight when the user
-    // stops, so 100% of the streaming window got thrown away: the renderer
-    // saw nothing at all from the moment recording stopped until this
-    // second, fully-redundant request completed, doubling real-world
-    // latency and making the live-streaming feature look completely broken
-    // even though the sidecar and the throttled-emit plumbing were working
-    // correctly the whole time (see litertBackend's onPartialTranscript
-    // proof harnesses referenced in the fix's commit).
-    //
-    // REMOVED, and deliberately not restored: that reuse rested on the
-    // in-flight tick's result being what a fresh final pass would have
-    // produced. It no longer is. Ticks run on the smaller, faster recogniser
-    // and the final pass runs on the larger, more accurate one (see
-    // resources/asr.py), so reusing a tick would silently hand back the
-    // weaker model's transcript - measured at 6.26% WER against the final
-    // model's 3.46% - for exactly the short recordings where the saving
-    // looked most attractive. The redundancy the optimization removed was
-    // real; the redundancy is gone, so the optimization is too.
-    //
-    // The cost is that a short dictation now waits for one full pass on the
-    // larger model rather than reusing a tick already in flight. That is the
-    // price of the accuracy the final pass exists to provide.
-
-    // Otherwise (session has grown past one window so a full pass is needed
-    // for accuracy regardless, no tick in flight, or more audio arrived
-    // after the last tick's snapshot so its result is stale) - serialize
-    // with any still-in-flight partial rather than racing it, both would hit
-    // the same sidecar session-less endpoint concurrently otherwise. This is
-    // the ONE O(session length) full-buffer pass a longer session still
-    // pays, deliberately, for final accuracy - but only once, not doubled on
-    // top of the (now bounded-cost) partial ticks. Bounded by
-    // requestTimeoutMs so a stuck partial can't
-    // hang endSession forever.
+    // Every session then pays exactly one full-buffer pass below, including
+    // short ones. There used to be a short-session shortcut that reused an
+    // already-in-flight tick's result instead, on the grounds that it
+    // covered the same audio a fresh pass would. That stopped being true
+    // when ticks and the final pass stopped being the same model: a tick
+    // sees only its rolling window (see runPartialTranscription), so reusing
+    // one would hand back a window's worth of text as if it were the whole
+    // dictation. Noted here because the shortcut is tempting on latency
+    // grounds and the reason it is gone is not visible from the code.
     const deadline = Date.now() + this.requestTimeoutMs
     while (session.partialInFlight && Date.now() < deadline) {
       await sleep(50)
@@ -790,9 +717,11 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
    * useOverlayPushToTalk) and that is worth seeing in main.log.
    */
   private refuseBlankRewrite(operation: string): string {
-    console.warn(
-      `[LitertBackend] ${operation}: input was blank - returning '' without a model call`
-    )
+    // log.warn, not console.warn: this used to be the latter, which reaches
+    // main.log only in dev (see log.ts's `mirrorToConsole`) and therefore
+    // nowhere at all in a packaged build - i.e. exactly the builds where the
+    // comment above's "worth seeing in main.log" mattered.
+    log.warn(`litertBackend: ${operation} input was blank - returning '' without a model call`)
     return ''
   }
 

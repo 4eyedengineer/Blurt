@@ -79,8 +79,19 @@ export function registerModelManagerIpc(
     // model gone it lands in an error state naming the missing model,
     // instead of continuing to report a healthy engine that is only healthy
     // because it is still holding a file the user asked to delete.
+    //
+    // `remove` is awaited, and that is load-bearing rather than tidiness.
+    // It is async (it retries the imported copy for up to 3s while the
+    // engine's file handle closes) and it can reject outright, since
+    // deleting the downloaded file is a bare `unlinkSync` that throws if
+    // Windows still has it open. Unawaited, that rejection went nowhere
+    // while this handler resolved successfully, so the renderer was told a
+    // deletion had happened that had not - the exact silent failure
+    // `remove`'s own doc comment promises not to allow. Awaiting also means
+    // the rebuild below runs after the files are actually gone rather than
+    // racing the retry loop.
     backend?.releaseModelFiles()
-    modelManager.remove(modelId)
+    await modelManager.remove(modelId)
     if (backend) await backend.rebuild()
   })
 

@@ -41,6 +41,27 @@ const UNLINK_RETRY_BUDGET_MS = 3000
 const UNLINK_RETRY_INTERVAL_MS = 150
 
 /**
+ * Minimum gap between byte-count progress emissions during a download.
+ *
+ * Every `setProgress` is forwarded to the renderer over IPC (see
+ * modelManagerIpc.ts), and this used to fire once per chunk off the response
+ * stream - on the order of 150,000 messages for the 2.5 GB E2B download, to
+ * move a bar that cannot repaint faster than the display. Five updates a
+ * second is smooth to a human and three orders of magnitude cheaper.
+ *
+ * Deliberately only throttles the byte counter. Every state transition
+ * (resolving, downloading, importing, done, error, cancelled) still emits
+ * immediately, so nothing that changes what the UI *says* is ever delayed or
+ * dropped. The 'importing' transition carries `received` directly, so a
+ * completed download always lands the bar on its true total rather than
+ * wherever the last throttled tick left it. The cancelled/error transitions
+ * report the last *emitted* count instead, so they can read up to one
+ * interval stale - which is fine, since a download that stopped early has no
+ * meaningful total to be accurate against.
+ */
+const PROGRESS_EMIT_INTERVAL_MS = 200
+
+/**
  * Deletes a file, retrying briefly while it is still locked.
  *
  * The caller stops the sidecar first, but `Sidecar.stop()` only sends a kill
@@ -375,13 +396,19 @@ export class ModelManager extends EventEmitter {
       const reader = res.body.getReader()
       let received = startByte
 
+      let lastProgressAtMs = 0
       for (;;) {
         const { value, done } = await reader.read()
         if (done) break
         if (value && value.length > 0) {
           await writeChunk(fileStream, Buffer.from(value))
           received += value.length
-          this.setProgress({ modelId, state: 'downloading', receivedBytes: received, totalBytes })
+          // Throttled - see PROGRESS_EMIT_INTERVAL_MS.
+          const nowMs = Date.now()
+          if (nowMs - lastProgressAtMs >= PROGRESS_EMIT_INTERVAL_MS) {
+            lastProgressAtMs = nowMs
+            this.setProgress({ modelId, state: 'downloading', receivedBytes: received, totalBytes })
+          }
         }
       }
       await closeStream(fileStream)

@@ -29,6 +29,41 @@ describe('JsonStore', () => {
     expect(store.read()).toEqual(DEFAULT)
   })
 
+  it('leaves no temp file behind after a successful write', () => {
+    // write() goes via `<path>.tmp` + rename so a reader can never catch the
+    // real file truncated (see its doc comment). The temp file is an
+    // implementation detail of that and must not survive into userData, where
+    // it would sit unread forever next to the file it was a draft of.
+    //
+    // Worth being clear about what this does NOT show: the atomicity itself
+    // is not observable from here, since demonstrating it would mean killing
+    // the process mid-write. This and the test below cover the invariants
+    // that are checkable - no debris, and a readable file at every point a
+    // test can look - and both would also have passed against the previous
+    // non-atomic implementation.
+    const store = new JsonStore<Demo>(filePath, DEFAULT)
+    store.write({ name: 'a', count: 1 })
+    store.write({ name: 'b', count: 2 })
+    expect(readdirSync(dir)).toEqual(['settings.json'])
+    expect(JSON.parse(readFileSync(filePath, 'utf-8'))).toEqual({ name: 'b', count: 2 })
+  })
+
+  it('keeps the previous file, and no temp file, when a write cannot be serialized', () => {
+    const store = new JsonStore<Demo>(filePath, DEFAULT)
+    store.write({ name: 'survivor', count: 7 })
+
+    // A circular value makes JSON.stringify throw inside write(), standing in
+    // for any mid-write failure. What matters is that the file already on
+    // disk is still the last thing that wrote successfully rather than an
+    // empty or half-written one.
+    const circular = { name: 'bad', count: 0 } as Demo & { self?: unknown }
+    circular.self = circular
+    expect(() => store.write(circular)).not.toThrow()
+
+    expect(JSON.parse(readFileSync(filePath, 'utf-8'))).toEqual({ name: 'survivor', count: 7 })
+    expect(readdirSync(dir)).toEqual(['settings.json'])
+  })
+
   it('reads and merges plain UTF-8 JSON with no BOM', () => {
     writeFileSync(filePath, JSON.stringify({ name: 'hello' }), 'utf-8')
     const store = new JsonStore<Demo>(filePath, DEFAULT)

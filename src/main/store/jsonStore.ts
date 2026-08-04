@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
 import { log } from '../log'
 
@@ -71,14 +71,41 @@ export class JsonStore<T> {
     }
   }
 
+  /**
+   * Writes via a temp file and a rename, rather than straight onto the live
+   * path.
+   *
+   * `writeFileSync` truncates the destination before it writes, so the file
+   * is briefly empty and then partial. Interrupt it there - a crash, a
+   * forced quit, a power cut - and what survives is a truncated JSON file,
+   * which is precisely the state `read()` above has a whole quarantine path
+   * to cope with. A rename is atomic on both NTFS and APFS, so a reader
+   * either sees the entire previous version or the entire new one, and there
+   * is no window in which it can see half of either.
+   *
+   * This matters most for `history.json`, which is rewritten in full after
+   * every single dictation, so it is the file most often mid-write when
+   * something goes wrong.
+   */
   write(value: T): void {
     this.cache = value
+    const tempPath = `${this.filePath}.tmp`
     try {
       mkdirSync(dirname(this.filePath), { recursive: true })
-      writeFileSync(this.filePath, JSON.stringify(value, null, 2), 'utf-8')
+      writeFileSync(tempPath, JSON.stringify(value, null, 2), 'utf-8')
+      renameSync(tempPath, this.filePath)
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       log.error(`jsonStore: failed to write ${this.filePath}: ${reason}`)
+      // A temp file left behind by a failed write is dead weight that would
+      // never be read or cleaned up otherwise. Best-effort, and deliberately
+      // silent: the write has already been reported, and a failure to tidy
+      // up after it is not separately actionable.
+      try {
+        if (existsSync(tempPath)) unlinkSync(tempPath)
+      } catch {
+        // Nothing further this can do.
+      }
     }
   }
 }

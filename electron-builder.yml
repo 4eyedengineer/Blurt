@@ -1,5 +1,30 @@
 appId: com.blurt.app
 productName: Blurt
+# Where the app looks for its own updates, and where CI publishes them.
+#
+# Declaring this is what makes electron-builder emit `latest.yml` (version,
+# installer filename, sha512, release date) and a `.blockmap` next to the
+# installer. `latest.yml` is the whole update feed - electron-updater fetches
+# it from the release, compares versions, and verifies the download against
+# that sha512 before running it. Without a `publish:` block electron-builder
+# does not generate either file, which is why the v1.4.1 and earlier releases
+# carry only a bare .exe and cannot be updated from.
+#
+# The blockmap is what keeps updates cheap: electron-updater diffs it against
+# the installed version's copy and fetches only the changed blocks, so a
+# release that touches a little code transfers a few MB rather than the whole
+# ~94 MB package.
+#
+# `releaseType: draft` is deliberate. CI attaches the installer, latest.yml
+# and blockmap to a draft release, and a draft's assets are not publicly
+# readable - so no running copy of Blurt can see the update until the draft is
+# published by hand. Publishing is therefore the single deliberate act that
+# ships an update to everyone, rather than a side effect of pushing a tag.
+publish:
+  provider: github
+  owner: 4eyedengineer
+  repo: Blurt
+  releaseType: draft
 # Electron-builder's default "asarIntegrity" feature embeds a SHA256 hash of
 # app.asar's header into the exe (via a resedit-injected INTEGRITY
 # resource), which Electron validates at startup - found the hard way: with
@@ -8,9 +33,21 @@ productName: Blurt
 # silent tamper-response exit, not a crash) on every launch, while the exact
 # same app.asar loaded fine via a plain `electron.exe <path-to-asar>`
 # (bypasses the embedded-hash check entirely) - isolating the fault to this
-# specific mechanism rather than the app's own code. Disabling it trades
-# away that anti-tampering check (irrelevant for this app: no auto-update,
-# no untrusted redistribution) for an app that actually starts.
+# specific mechanism rather than the app's own code. Disabling it trades away
+# that anti-tampering check for an app that actually starts, which is not a
+# trade so much as the only option: with it on there is no working app to
+# protect.
+#
+# That trade used to be justified here with "irrelevant for this app: no
+# auto-update, no untrusted redistribution". Half of that is no longer true -
+# Blurt now updates itself from GitHub Releases (see `publish:` below), so it
+# does ingest a package it did not build. What actually guards that path is
+# the sha512 electron-builder writes into latest.yml, which electron-updater
+# checks before running the installer, fetched over TLS from GitHub. That
+# covers a corrupted or truncated download. It does not cover a compromised
+# GitHub account, and neither would asarIntegrity, which only ever validated
+# the asar against a hash embedded in the very exe an attacker would also be
+# replacing.
 #
 # NOTE for the mac: build added below - this is a top-level setting, not a
 # per-platform one, so it silently applies there too, not just to win:. The
@@ -59,6 +96,16 @@ files:
 extraResources:
   - from: resources
     to: .
+    # `files:` above does not apply to extraResources - this entry has its own
+    # filter, and with none set it copies literally everything under
+    # resources/. That includes resources/__pycache__/, which CPython writes
+    # there the first time serve_gpu.py imports asr.py, i.e. the first time
+    # anyone runs the app from source. It is git-ignored, so a clean CI
+    # checkout never has it and this looks fine there, while a build made on a
+    # machine that has actually run Blurt quietly ships a stale .pyc.
+    filter:
+      - '**/*'
+      - '!__pycache__'
 win:
   executableName: blurt
   target:

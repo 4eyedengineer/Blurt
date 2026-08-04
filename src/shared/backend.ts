@@ -36,13 +36,23 @@ export interface AudioChunkPayload {
 
 export type TransformMode = 'keypoints' | 'formal' | 'short' | 'long'
 
+/**
+ * Deliberately just the sample rate.
+ *
+ * This used to also carry `vocabulary` ("proper nouns the recognizer should
+ * bias towards") and `language`. Neither survived the move to a dedicated
+ * recogniser: `/blurt/transcribe` is handed a WAV and nothing else (see
+ * resources/asr.py), so both were stored on the session and then read by
+ * nobody, while the renderer went on threading the user's custom vocabulary
+ * through on every dictation. Custom vocabulary still has a real effect, but
+ * only downstream, as a spelling hint in the cleanup prompt (see
+ * `buildCleanupRequest`) - so that is where it is passed, and it is not
+ * pretended to reach recognition. `language` had no meaning to add either:
+ * the recogniser is English-only.
+ */
 export interface StartSessionOptions {
   /** Sample rate of the PCM audio that will be pushed via pushAudio. */
   sampleRate?: number
-  /** BCP-47ish language hint, e.g. "en-US". Optional, backend may ignore. */
-  language?: string
-  /** Custom vocabulary / proper nouns the recognizer should bias towards. */
-  vocabulary?: string[]
 }
 
 /**

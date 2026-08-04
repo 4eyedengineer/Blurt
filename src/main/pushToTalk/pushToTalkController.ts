@@ -265,16 +265,26 @@ export class PushToTalkController extends EventEmitter {
       )
       return
     }
-    this.uiohook.on('keydown', this.keydownHandler)
-    this.uiohook.on('keyup', this.keyupHandler)
+    // start() first, listeners only once it has actually succeeded. The
+    // other order leaked them: a throw here leaves `hookRunning` false, and
+    // both `stopHook` and `dispose` are gated on that flag, so nothing ever
+    // removed the handlers. Toggling the feature off and on again then came
+    // straight back through this method and registered the same two
+    // functions a second time - and Node's EventEmitter appends duplicate
+    // identical listeners rather than deduping them, so once start()
+    // eventually succeeded a single physical keypress emitted 'hold-start'
+    // once per failed attempt, each one opening its own dictation session.
     try {
       this.uiohook.start()
-      this.hookRunning = true
-      log.info(`push-to-talk: hook started (key=${this.keyId})`)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       log.error(`push-to-talk: failed to start hook: ${message}`)
+      return
     }
+    this.uiohook.on('keydown', this.keydownHandler)
+    this.uiohook.on('keyup', this.keyupHandler)
+    this.hookRunning = true
+    log.info(`push-to-talk: hook started (key=${this.keyId})`)
   }
 
   private stopHook(): void {

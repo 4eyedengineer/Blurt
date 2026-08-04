@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildCleanupRequest,
-  buildSilentWavBase64,
   buildTransformRequest,
   buildVoiceEditRequest,
   buildWarmupRequest,
@@ -44,24 +43,21 @@ describe('request builders', () => {
     expect(req.messages[1].content).toContain('uppercase everything')
   })
 
-  it('builds a warmup request that includes BOTH a text part and a tiny silent input_audio part', () => {
-    // Regression coverage for the "audio submodel never gets warmed up" gap
-    // (the "Gap found" finding) - a text-only warmup loads the text backbone
-    // but likely leaves the (separately, lazily loaded) audio submodel cold
-    // for the user's first real utterance.
+  it('builds a text-only warmup request, carrying no audio', () => {
+    // The inverse of what this test used to assert. Warmup deliberately
+    // carried a silent input_audio part while Gemma did the transcribing, to
+    // force its lazily-loaded audio submodel to load ahead of the user's
+    // first utterance. Transcription now runs on a separate recogniser (see
+    // resources/asr.py) and nothing sends audio to the LLM at all, so that
+    // part was pulling a multi-GB submodel into memory on every startup to
+    // warm a path with no callers. Asserted rather than just deleted so a
+    // future "warmup should probably include audio" instinct trips a test
+    // that explains why it should not.
     const req = buildWarmupRequest('gemma-4-e2b')
     expect(req.stream).toBe(false)
-    expect(Array.isArray(req.messages[0].content)).toBe(true)
-    const parts = req.messages[0].content as Array<Record<string, unknown>>
-    expect(parts.some((p) => p.type === 'text')).toBe(true)
-    const audioPart = parts.find((p) => p.type === 'input_audio') as
-      { input_audio: { data: string; format: string } } | undefined
-    expect(audioPart).toBeDefined()
-    expect(audioPart!.input_audio.format).toBe('wav')
-    // The embedded audio should itself be a well-formed (if silent) WAV.
-    const decoded = Buffer.from(audioPart!.input_audio.data, 'base64')
-    expect(decoded.toString('ascii', 0, 4)).toBe('RIFF')
-    expect(decoded.toString('ascii', 8, 12)).toBe('WAVE')
+    expect(req.messages).toHaveLength(1)
+    expect(req.messages[0].content).toBe('Hi')
+    expect(JSON.stringify(req)).not.toContain('input_audio')
   })
 })
 
@@ -178,18 +174,6 @@ describe('PCM/WAV encoding', () => {
     const base64 = pcm16ToWavBase64(samples, 16000)
     const decoded = Buffer.from(base64, 'base64')
     expect(decoded).toEqual(pcm16ToWavBuffer(samples, 16000))
-  })
-
-  it('buildSilentWavBase64 produces a well-formed WAV of pure silence at the requested duration', () => {
-    const base64 = buildSilentWavBase64(300, 16000)
-    const decoded = Buffer.from(base64, 'base64')
-    expect(decoded.toString('ascii', 0, 4)).toBe('RIFF')
-    const expectedSamples = Math.round((300 / 1000) * 16000)
-    expect(decoded.readUInt32LE(40)).toBe(expectedSamples * 2) // data chunk size
-    // Every sample should be exactly 0 (silence).
-    for (let i = 0; i < expectedSamples; i++) {
-      expect(decoded.readInt16LE(44 + i * 2)).toBe(0)
-    }
   })
 })
 

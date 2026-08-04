@@ -12,16 +12,16 @@
  *     (`text/event-stream`) chunks shaped like OpenAI's
  *     `chat.completion.chunk` objects, terminated by `data: [DONE]`. Matches
  *     exactly - no adjustments needed here.
- *   - Audio input is a user-message content part:
- *     `{ type: "input_audio", input_audio: { data: "<base64>", format: "wav" } }`.
- *     Confirmed correct, BUT: `format` is read and never validated/branched
- *     on server-side - the engine just base64-decodes `data` and requires it
- *     to be a real RIFF/WAV container (any declared sample rate works,
- *     no need to resample to 16kHz). Headerless/raw PCM16 (even with
- *     `format:"pcm16"` set) silently returns `content: null` - HTTP 200, no
- *     error. `pcm16ToWavBuffer` below already emits a proper 44-byte RIFF
- *     header, so this was correct from the start; documented here as a
- *     tripwire for anyone tempted to "optimize" it away.
+ *   - Audio input was a user-message content part,
+ *     `{ type: "input_audio", input_audio: { data: "<base64>", format: "wav" } }`,
+ *     and worked: the engine base64-decodes `data` and requires a real
+ *     RIFF/WAV container at any sample rate (headerless PCM16 silently
+ *     returns `content: null` on an HTTP 200). Nothing sends audio to the
+ *     LLM any more - transcription moved to a dedicated recogniser on the
+ *     same sidecar process (see resources/asr.py) - so the request type and
+ *     its builders are gone rather than kept warm. Recorded here because it
+ *     is a verified fact about this server that would otherwise have to be
+ *     rediscovered, not because anything still depends on it.
  *   - `GET /v1/models` is available and used as the "is the server up yet"
  *     health check (see sidecar.ts) - confirmed, though note it returns 200
  *     almost immediately even before the model is actually loaded (loading
@@ -40,13 +40,10 @@ import type { TransformMode } from '../../shared/backend'
 // Request types + builders
 // ---------------------------------------------------------------------------
 
-export type ChatMessageContentPart =
-  | { type: 'text'; text: string }
-  | { type: 'input_audio'; input_audio: { data: string; format: 'wav' } }
-
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
-  content: string | ChatMessageContentPart[]
+  /** Always plain text. The multi-part content array only ever existed to carry `input_audio`, which nothing sends any more - see this file's header. */
+  content: string
 }
 
 export interface ChatCompletionRequestBody {
@@ -156,34 +153,22 @@ export function buildTransformRequest(
  * ~1.4s once warm. Non-streaming so the caller doesn't need SSE plumbing
  * just to throw the result away.
  *
- * Includes a tiny (~0.3s) silent `input_audio` part alongside the text part,
- * not just text: per the HuggingFace model-card note, the audio submodel is
- * loaded lazily and *separately* from the text backbone to save memory, so a
- * text-only warmup does not force it to load - the user's first real
- * dictation utterance would otherwise still pay that hidden cold-start cost.
- * Silence is intentionally fine here (cheap to synthesize, cheap to
- * transcribe) - this is an internal warmup request, not a user session, so
- * `LitertBackend`'s silence guard (which exists to avoid hallucinated
- * "transcripts" from a broken mic capture path) does not apply and is never
- * consulted for this request.
+ * Text only, deliberately. This used to also carry ~0.3s of silent
+ * `input_audio`, because the audio submodel loads lazily and separately from
+ * the text backbone (per the HuggingFace model card) and a text-only warmup
+ * leaves it cold. That was the right thing to do while Gemma did the
+ * transcribing. It no longer does (see resources/asr.py), so the audio part
+ * was paying to pull a multi-GB submodel into memory at every startup to
+ * warm a path nothing calls. What the LLM is actually asked for now -
+ * cleanup, transforms, voice edit - is all text, and the text backbone is
+ * what this warms.
  */
 export function buildWarmupRequest(model: string): ChatCompletionRequestBody {
   return {
     model,
     stream: false,
     temperature: 0,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'Hi' },
-          {
-            type: 'input_audio',
-            input_audio: { data: buildSilentWavBase64(), format: 'wav' }
-          }
-        ]
-      }
-    ]
+    messages: [{ role: 'user', content: 'Hi' }]
   }
 }
 
@@ -410,18 +395,6 @@ export function sliceTrailingWindow(
   }
 
   return outOffset === out.length ? out : out.subarray(0, outOffset)
-}
-
-/**
- * ~0.3s of pure PCM16 silence, WAV-encoded and base64'd - used by
- * `buildWarmupRequest` to force the sidecar's audio submodel to load during
- * warmup instead of on the user's first real dictation. Deliberately cheap
- * (silence compresses/transcribes fast) since all this needs to do is touch
- * the audio code path, not produce a meaningful transcript.
- */
-export function buildSilentWavBase64(durationMs = 300, sampleRate = 16000): string {
-  const numSamples = Math.round((durationMs / 1000) * sampleRate)
-  return pcm16ToWavBase64(new Int16Array(numSamples), sampleRate)
 }
 
 /** Encodes mono PCM16 samples as a standard 44-byte-header WAV file. */

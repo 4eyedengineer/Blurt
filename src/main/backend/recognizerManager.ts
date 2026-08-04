@@ -63,6 +63,15 @@ export const RECOGNIZER_FILES = [
 /** Roughly what RECOGNIZER_FILES weighs, for the progress bar's total before any response arrives. */
 export const RECOGNIZER_APPROX_BYTES = 661_000_000
 
+/**
+ * Minimum gap between byte-count status emissions while downloading. Same
+ * reasoning as `PROGRESS_EMIT_INTERVAL_MS` in modelManager.ts: every emit is
+ * a status event, and one per chunk is roughly 40,000 of them across this
+ * ~661 MB set to animate a bar nobody can read that fast. State transitions
+ * (downloading, ready, error) are never throttled.
+ */
+const PROGRESS_EMIT_INTERVAL_MS = 200
+
 export interface RecognizerPaths {
   /** Directory holding RECOGNIZER_FILES - onnx-asr loads the model from here. */
   modelDir: string
@@ -191,6 +200,7 @@ export class RecognizerManager extends EventEmitter {
     const reader = res.body.getReader()
     let received = 0
 
+    let lastProgressAtMs = 0
     try {
       for (;;) {
         const { value, done } = await reader.read()
@@ -200,11 +210,16 @@ export class RecognizerManager extends EventEmitter {
           stream.write(Buffer.from(value), (writeErr) => (writeErr ? reject(writeErr) : resolve()))
         })
         received += value.length
-        this.setStatus({
-          state: 'downloading',
-          receivedBytes: alreadyReceived + received,
-          totalBytes: RECOGNIZER_APPROX_BYTES
-        })
+        // Throttled - see PROGRESS_EMIT_INTERVAL_MS.
+        const nowMs = Date.now()
+        if (nowMs - lastProgressAtMs >= PROGRESS_EMIT_INTERVAL_MS) {
+          lastProgressAtMs = nowMs
+          this.setStatus({
+            state: 'downloading',
+            receivedBytes: alreadyReceived + received,
+            totalBytes: RECOGNIZER_APPROX_BYTES
+          })
+        }
       }
     } finally {
       await new Promise<void>((resolve) => stream.close(() => resolve()))

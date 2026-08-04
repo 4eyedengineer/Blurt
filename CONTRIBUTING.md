@@ -187,13 +187,11 @@ Everything the app needs from "the AI" goes through one interface, defined in
 `src/shared/backend.ts`:
 
 ```ts
-export type AudioChunk = Int16Array | Buffer
+export type AudioChunk = Int16Array
 export type TransformMode = 'keypoints' | 'formal' | 'short' | 'long'
 
 export interface StartSessionOptions {
   sampleRate?: number
-  language?: string
-  vocabulary?: string[]
 }
 
 export interface InferenceBackend {
@@ -365,23 +363,27 @@ Verified against a real `litert-lm` 0.14.0 pip install and a real Gemma 4 E2B mo
 
 - `startSession` allocates an in-memory buffer for the session's PCM16 audio (no request to the
   sidecar yet), plus a small rolling "recent audio" buffer used for partial ticks.
-- `pushAudio` appends to both buffers. Once ~1.5 seconds of _new_ audio has accumulated (and the
-  spiral-guard idle gap has elapsed since the last tick completed), a partial tick fires: only a
-  bounded trailing window of audio (`DEFAULT_PARTIAL_WINDOW_MS`, ~4s, not the whole session) is
-  WAV-encoded, base64'd, and sent as one transcription chat-completion, whose SSE response streams
-  into `onPartialTranscript` as it arrives (throttled), stitched against text already committed
-  from earlier windows. These requests are serialized: if the previous partial request is still in
-  flight when the next mark is hit, that tick is skipped rather than firing a second overlapping
-  request.
-- `endSession` waits for any in-flight partial to finish. For a **short session** (one that never
-  needed more than one window), it reuses that in-flight tick's result directly instead of paying
-  for a second, fully redundant full-buffer request. For a **longer session**, it instead pays for
-  exactly one final full-buffer transcription, streamed the same way. This deliberately chooses
-  accuracy over the (now seam-artifact-prone) stitched partial text, but only once.
+- `pushAudio` appends to both buffers. Once `DEFAULT_PARTIAL_INTERVAL_MS` (700ms) of _new_ audio
+  has accumulated (and the spiral-guard idle gap has elapsed since the last tick completed), a
+  partial tick fires: only a bounded trailing window of audio (`DEFAULT_PARTIAL_WINDOW_MS`, 3s,
+  not the whole session, plus `DEFAULT_PARTIAL_WINDOW_OVERLAP_MS` of already-committed audio so a
+  word cut off at the seam gets a second chance) is WAV-encoded, base64'd, and POSTed to the
+  sidecar's `/blurt/transcribe` route. That returns the window's whole transcript in one response
+  rather than token by token, so there is nothing to stream; the result is stitched against text
+  already committed from earlier windows and emitted on `onPartialTranscript`. These requests are
+  serialized: if the previous partial is still in flight when the next mark is hit, that tick is
+  skipped rather than firing a second overlapping request.
+- `endSession` waits for any in-flight partial to finish, then pays for exactly one final
+  full-buffer transcription, for every session. There used to be a short-session shortcut that
+  reused an in-flight tick's result instead of re-transcribing, on the grounds that it covered the
+  same audio. That stopped holding once ticks became rolling-window: a tick sees only its window,
+  so reusing one would return a fragment as though it were the whole dictation.
 - `cleanup` sends a system prompt instructing the model to strip filler words
   (um/uh/like/you know), collapse self-corrections/repeated false starts, and fix
   punctuation/capitalization while preserving meaning, plus a custom-vocabulary hint built from
-  `settings.customVocabulary`. Output is expected to be the cleaned text only.
+  `settings.customVocabulary`. Output is expected to be the cleaned text only. Note that this is
+  the _only_ place custom vocabulary has any effect: the recogniser is handed a WAV and nothing
+  else, so those words cannot bias what is heard, only how it is spelled afterwards.
 - `transform` sends a mode-specific prompt (Key Points / Formal / Short / Long).
 - `voiceEdit` sends the text + the spoken/typed command and expects only the edited text back.
 - All four strip a defensive `stripModelPreamble()` pass over the response. It removes
@@ -565,6 +567,37 @@ npm run build:win    # NSIS installer, per electron-builder.yml
 
 See [WINDOWS.md](WINDOWS.md) for the full build how-to, including the Visual Studio Build Tools /
 `uiohook-napi` caveat and the SmartScreen warning.
+
+## Cutting a release
+
+Releases exist to be auto-updated into, so the sequence matters more than it used to.
+
+1. Bump the version: `npm version <x.y.z> --no-git-tag-version`, and commit it as `Release x.y.z`.
+2. Push the commit, then push a matching `vx.y.z` tag.
+3. The tag triggers `.github/workflows/build-windows.yml`, which builds on a real Windows runner
+   and attaches three files to a **draft** GitHub release: the installer, `latest.yml`, and the
+   installer's `.blockmap`.
+4. Check the draft, then publish it. **Publishing is what ships the update.** Every installed copy
+   of Blurt polls this repo's public `releases.atom`, which lists published releases only, so a
+   draft is invisible to it until that moment.
+
+A push to `main` without a tag still builds, but only uploads a workflow artifact and touches no
+release. That artifact now includes `latest.yml` and the blockmap too, which is enough to serve as
+a complete update feed locally if you want to exercise the updater without cutting a real release.
+
+Two things that will silently break auto-update rather than fail loudly, both guarded by the
+workflow's verify step:
+
+- **A missing `latest.yml`.** It is the entire update feed - version, filename, and the SHA-512
+  electron-updater checks before running the installer. It only gets generated because
+  `electron-builder.yml` declares a `publish:` block; delete that block and every installed copy
+  quietly stops updating with nothing visibly wrong.
+- **Skipping a version number.** electron-updater compares semver against the running build, so a
+  release whose `package.json` version was not bumped is simply never offered.
+
+Auto-update is Windows-only. macOS goes through Squirrel.Mac, which will not replace an unsigned
+app, and Blurt's mac build has no certificate - `describeUpdateSupport` in `src/shared/updater.ts`
+reports that on screen rather than letting a Mac user watch a download that can never apply.
 
 ## Known deviations / notes
 
