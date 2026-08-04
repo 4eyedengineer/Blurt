@@ -51,6 +51,37 @@ jobs:
 
       - run: npm run build
 
+      # Create the draft release BEFORE electron-builder runs, so it attaches
+      # to this one instead of making its own.
+      #
+      # Observed on the v1.4.2 build, which is why this exists: electron-builder
+      # produced two draft releases for the same tag, in the same second, with
+      # the assets split across them - installer and latest.yml on one, the
+      # blockmap on the other. Its `getOrCreateRelease` lists releases and
+      # reuses a matching draft, but a draft has no git tag to find until it is
+      # published, so with none pre-existing, concurrent uploads each created
+      # one. Publishing either half would have shipped an incomplete feed.
+      #
+      # Idempotent: if a release for this tag already exists (a re-run, or a
+      # tag pushed twice) it is left exactly as-is rather than recreated.
+      - name: Ensure a single draft release exists
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '[.[] | select(.tag_name=="'"$TAG"'")] | length')
+          if [[ "$EXISTING" -gt 0 ]]; then
+            echo "a release for $TAG already exists ($EXISTING) - leaving it alone"
+          else
+            gh release create "$TAG" --draft --title "Blurt ${TAG#v}" \
+              --notes "Draft created by CI. Assets are attached by electron-builder; publish this release to ship the update."
+            echo "created the draft release for $TAG"
+          fi
+
       # Publish only on a `v*` tag; every other trigger builds an artifact and
       # nothing else.
       #
@@ -150,6 +181,37 @@ jobs:
           echo "--- d3d/dxc shipped for the GPU path ---"
           ls dist/win-unpacked/dxcompiler.dll dist/win-unpacked/dxil.dll 2>/dev/null || \
             echo "NOTE: dxcompiler/dxil not present - GPU (Dawn D3D12) path may be unavailable"
+
+      # The publish half of "Verify packaged output": that step proves the three
+      # files were BUILT, this proves they all landed on ONE release. The v1.4.2
+      # build passed every packaging check and still produced a split feed (see
+      # the pre-create step above), because nothing was looking at the release
+      # itself. Publishing an incomplete draft is silent - the installer is
+      # there, the app looks fine, and either updates never appear or every one
+      # of them downloads the full ~94 MB.
+      - name: Verify the published draft
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          COUNT=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '[.[] | select(.tag_name=="'"$TAG"'")] | length')
+          if [[ "$COUNT" -ne 1 ]]; then
+            echo "EXPECTED exactly 1 release for $TAG, found $COUNT - the assets are probably split across them"
+            gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq '.[] | select(.tag_name=="'"$TAG"'") | "  id=\(.id) draft=\(.draft) assets=\([.assets[].name]|join(","))"'
+            exit 1
+          fi
+          ASSETS=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[] | select(.tag_name=="'"$TAG"'") | .assets[].name')
+          echo "$ASSETS"
+          for want in "latest.yml" "-setup.exe" "-setup.exe.blockmap"; do
+            echo "$ASSETS" | grep -q -- "$want" || { echo "MISSING asset matching '$want'"; exit 1; }
+          done
+          echo "draft release for $TAG carries a complete update feed"
 
       # latest.yml and the blockmap ride along so a branch build is a complete,
       # testable update feed and not just an installer - serving these three
