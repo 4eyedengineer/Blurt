@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { applyVocabularyCorrections, parseVocabulary } from './vocabulary'
+import {
+  applyVocabularyCorrections,
+  buildVocabularyEntries,
+  editDistance,
+  findMisrecognitions,
+  parseVocabulary,
+  soundex
+} from './vocabulary'
 
 describe('parseVocabulary', () => {
   it('treats a plain entry as spelling guidance', () => {
@@ -111,5 +118,93 @@ describe('applyVocabularyCorrections', () => {
   it('leaves the text alone when there is nothing to do', () => {
     expect(applyVocabularyCorrections('untouched', [])).toBe('untouched')
     expect(applyVocabularyCorrections('', qwen)).toBe('')
+  })
+})
+
+describe('soundex', () => {
+  /**
+   * The case the feature exists for. These are three edits apart on a
+   * four-letter word, so no edit-distance threshold could safely connect
+   * them - the recogniser's mistake is phonetic, not orthographic.
+   */
+  it('puts the recogniser’s spellings and the real one in the same bucket', () => {
+    expect(soundex('Quin')).toBe(soundex('Qwen'))
+    expect(soundex('Quinn')).toBe(soundex('Qwen'))
+    expect(editDistance('quinn', 'qwen')).toBe(3)
+  })
+
+  it('separates words that do not sound alike', () => {
+    expect(soundex('Kubernetes')).not.toBe(soundex('Qwen'))
+    expect(soundex('Parakeet')).not.toBe(soundex('Gemma'))
+  })
+
+  it('is stable for the classic reference values', () => {
+    expect(soundex('Robert')).toBe('R163')
+    expect(soundex('Rupert')).toBe('R163')
+    expect(soundex('Ashcraft')).toBe('A261')
+    expect(soundex('Tymczak')).toBe('T522')
+  })
+})
+
+describe('findMisrecognitions', () => {
+  /** Verbatim rawTranscripts from a real history.json, trimmed to the relevant clause. */
+  const REAL_HISTORY = [
+    'Can we fit Quin three point six twenty seven B on the sixteen gigabyte card',
+    'which is good also quinn three point six test',
+    'Can you wire it up to the same Quinn three point six model that you are using?',
+    'The thinking with llama swapping is to use Gemma 31B as the orchestrator agent'
+  ]
+
+  it('finds every spelling the recogniser actually used', () => {
+    expect(findMisrecognitions('Qwen', REAL_HISTORY)).toEqual(['quinn', 'quin'])
+  })
+
+  it('orders by how often each one appeared', () => {
+    // "quinn" twice, "quin" once - the common one is the one worth seeing first.
+    expect(findMisrecognitions('Qwen', REAL_HISTORY)[0]).toBe('quinn')
+  })
+
+  it('finds ordinary letter-level slips too, not only phonetic ones', () => {
+    expect(findMisrecognitions('Kubernetes', ['deploy the Kubernets cluster'])).toEqual([
+      'kubernets'
+    ])
+  })
+
+  it('never proposes the word itself', () => {
+    expect(findMisrecognitions('Gemma', ['we are running Gemma today'])).toEqual([])
+  })
+
+  it('returns nothing when history has never contained anything like it', () => {
+    expect(findMisrecognitions('Qwen', REAL_HISTORY.slice(3))).toEqual([])
+    expect(findMisrecognitions('Qwen', [])).toEqual([])
+  })
+
+  it('ignores a target too short to match on without coincidence', () => {
+    expect(findMisrecognitions('AI', REAL_HISTORY)).toEqual([])
+  })
+})
+
+describe('buildVocabularyEntries', () => {
+  /**
+   * End to end, this is the fix for the reported failure: the user types
+   * "Qwen" and nothing else, and both spellings the recogniser had used stop
+   * appearing.
+   */
+  it('turns one typed word into the spelling plus a correction per misrecognition', () => {
+    const entries = buildVocabularyEntries('Qwen', ['quinn', 'quin'])
+    expect(entries).toEqual(['Qwen', 'quinn -> Qwen', 'quin -> Qwen'])
+
+    const { corrections } = parseVocabulary(entries)
+    expect(
+      applyVocabularyCorrections('also quinn three point six, and Quin 30B', corrections)
+    ).toBe('also Qwen three point six, and Qwen 30B')
+  })
+
+  it('is just the spelling when history found nothing', () => {
+    expect(buildVocabularyEntries('Kubernetes', [])).toEqual(['Kubernetes'])
+  })
+
+  it('ignores a blank word', () => {
+    expect(buildVocabularyEntries('   ', ['quin'])).toEqual([])
   })
 })

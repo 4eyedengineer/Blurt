@@ -12,6 +12,7 @@ import { useBackendStatus } from '../hooks/useBackendStatus'
 import { useHardwareInfo } from '../hooks/useHardwareInfo'
 import { useAudioInputDevices } from '../hooks/useAudioInputDevices'
 import { useUpdateStatus } from '../hooks/useUpdateStatus'
+import { buildVocabularyEntries, findMisrecognitions } from '@shared/vocabulary'
 import { isDictationInProgress, type DictationPhase } from '../hooks/useDictationSession'
 import { Toggle } from '../components/Toggle'
 import { formatBytes } from '../lib/format'
@@ -317,6 +318,8 @@ export function SettingsScreen({
   const hardware = useHardwareInfo()
   const inputDevices = useAudioInputDevices()
   const [vocabInput, setVocabInput] = useState('')
+  /** Misrecognitions the last Add pulled in from history - shown once, so the user sees what was inferred on their behalf. */
+  const [vocabFound, setVocabFound] = useState<string[]>([])
   const [hotkeyInput, setHotkeyInput] = useState(settings.hotkey)
   const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus>('idle')
   const [pttStatus, setPttStatus] = useState<PushToTalkStatus | null>(null)
@@ -344,11 +347,43 @@ export function SettingsScreen({
     setHotkeyInput(settings.hotkey)
   }
 
-  const addWord = (): void => {
+  /**
+   * Adds the spelling the user typed, plus a correction for every way the
+   * recogniser has actually written it before.
+   *
+   * The user never types a misspelling, because they cannot know one. The
+   * first version of this feature asked them to, and it failed immediately:
+   * an entry of `Quin -> Qwen` did nothing for a dictation that came back
+   * "quinn". History is the authority on what the recogniser writes, and the
+   * app has all of it - so it looks the answer up instead of asking.
+   *
+   * Falls back to the plain spelling when history has nothing to offer (a
+   * fresh install, or a word never dictated yet), which is the old behaviour
+   * and still correct - there is simply nothing to correct yet.
+   */
+  const addWord = async (): Promise<void> => {
     const word = vocabInput.trim()
     if (!word) return
-    void addVocabularyWord(word)
     setVocabInput('')
+
+    let found: string[] = []
+    try {
+      const history = await window.api.history.list()
+      found = findMisrecognitions(
+        word,
+        // Raw, not cleaned: cleanup capitalizes and reflows, and what has to
+        // be matched is exactly what the recogniser emitted.
+        history.map((entry) => entry.rawTranscript).filter(Boolean)
+      )
+    } catch {
+      // A history read that fails costs the corrections, not the word - add
+      // the spelling anyway rather than losing what the user typed.
+    }
+
+    for (const entry of buildVocabularyEntries(word, found)) {
+      await addVocabularyWord(entry)
+    }
+    setVocabFound(found)
   }
 
   // Tracked and cleared rather than fired and forgotten: pressing Save twice
@@ -500,30 +535,42 @@ export function SettingsScreen({
           for. The recogniser that replaced it is handed a WAV and nothing
           else, so these words never reach recognition at all.
 
-          The arrow half is the more useful of the two and is worth the extra
-          sentence: a plain word can only ask the cleanup model to respect a
-          spelling, which does nothing when the recogniser heard a different
-          word entirely. Naming what it writes is what actually fixes it (see
-          shared/vocabulary.ts).
+          One field, and it takes the word you WANT - never a misspelling. A
+          previous version taught the `heard -> wanted` syntax here, which
+          made the user responsible for predicting a speech recogniser; the
+          first real attempt at it missed, because the entry said "Quin" and
+          the recogniser wrote "quinn". The syntax still works and generated
+          entries are stored in it, but nothing asks anyone to type it.
         */}
         <p className="settings-screen__hint">
-          Names and jargon to spell correctly. To fix a word Blurt keeps mishearing, write{' '}
-          <code>Quin -&gt; Qwen</code>.
+          Names and jargon to spell correctly. Blurt checks your history for the ways it has
+          misheard each one, and fixes those too.
         </p>
         <div className="settings-screen__inline-input">
           <input
             type="text"
             value={vocabInput}
-            placeholder="Word, or Quin -> Qwen"
+            placeholder="Add a word…"
             onChange={(e) => setVocabInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') addWord()
+              if (e.key === 'Enter') void addWord()
             }}
           />
-          <button type="button" onClick={addWord}>
+          <button type="button" onClick={() => void addWord()}>
             Add
           </button>
         </div>
+        {/*
+          Shown because the app just made a decision on the user's behalf.
+          Silently inventing entries would be the same "thoughtless" mistake
+          in the other direction - they are all listed below and individually
+          removable, and this says where they came from.
+        */}
+        {vocabFound.length > 0 && (
+          <p className="settings-screen__hint">
+            Also correcting what Blurt had written instead: {vocabFound.join(', ')}.
+          </p>
+        )}
         <ul className="settings-screen__vocab-list">
           {settings.customVocabulary.map((word) => (
             <li key={word}>
