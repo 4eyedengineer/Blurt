@@ -523,7 +523,28 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
 
     try {
       const plainWindowStartMs = Math.max(0, tickAudioMs - this.partialWindowMs)
-      if (plainWindowStartMs > session.committedAudioMs) {
+      // Commit as soon as the *overlap-preserving* window would breach
+      // partialWindowMs, not once the plain window has already overrun the
+      // commit boundary. The difference is one tick's worth of audio and it
+      // decides whether `stitchTranscript` has anything to work with.
+      //
+      // Under the old condition (`plainWindowStartMs > committedAudioMs`)
+      // the window is anchored to "now" while the overlap is measured back
+      // from `committedAudioMs`, so as audio accrues between commits the
+      // partialWindowMs cap eats the overlap first: the tick immediately
+      // before a commit had a windowStartMs that had crept all the way up to
+      // committedAudioMs itself, i.e. ZERO overlap. With no repeated words at
+      // the seam, stitchTranscript finds no match and falls back to plain
+      // concatenation - which is how a word ends up duplicated or a
+      // half-decoded fragment ends up spliced into the live transcript, once
+      // every commit cycle.
+      //
+      // Committing `partialWindowOverlapMs` of audio earlier keeps
+      // windowStartMs pinned at `committedAudioMs - overlap` instead, so
+      // every tick carries the full overlap it was designed to. The
+      // `Math.max` below is unchanged and still caps the window, so a tick
+      // that ran long is bounded exactly as before.
+      if (plainWindowStartMs + this.partialWindowOverlapMs > session.committedAudioMs) {
         session.committedText = session.lastTickMergedText || session.committedText
         session.committedAudioMs = session.lastTickAudioMs
       }
@@ -556,12 +577,31 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
 
       const committedTextAtStart = session.committedText
       const windowText = await this.transcribeSamplesStreaming(session, samples, (streamed) => {
+        // An empty window transcript is not an update, it is an absence of
+        // one, and `stitchTranscript(committed, '')` returns `committed` -
+        // so showing it would rewind the live transcript to the last commit
+        // boundary, visibly deleting every word since. The recogniser
+        // returns '' for any window it cannot decode (a pause, a cough, a
+        // breath), all of which pass the RMS silence guard above.
+        if (!streamed) return
         const merged = stitchTranscript(committedTextAtStart, streamed)
         session.lastTranscript = merged
         this.emitter.emit('partial', session.id, merged)
       })
-      session.lastTickMergedText = stitchTranscript(committedTextAtStart, windowText)
-      session.lastTickAudioMs = tickAudioMs
+      // Same reason, and this half is the one that did lasting damage: on an
+      // empty window this used to set `lastTickMergedText` to the committed
+      // text alone while still advancing `lastTickAudioMs` to `tickAudioMs`.
+      // The next commit then promoted that pair together - a boundary that
+      // says "text up to here is final" attached to text that stops up to a
+      // whole window earlier. Everything in between was dropped from the
+      // teleprompter permanently, because committed text is never re-decoded.
+      //
+      // A window that decoded to nothing teaches us nothing about where the
+      // transcript has got to, so it leaves the commit candidate alone.
+      if (windowText) {
+        session.lastTickMergedText = stitchTranscript(committedTextAtStart, windowText)
+        session.lastTickAudioMs = tickAudioMs
+      }
     } catch (err) {
       this.emitError(session.id, err)
     } finally {

@@ -278,12 +278,16 @@ describe('LitertBackend - rolling-window partial ticks', () => {
    * (bounded) window covers.
    */
   it("stitches committed text from earlier windows with each new window's transcript", async () => {
+    // One word per 20ms of audio: hello[0,20) world[20,40) how[40,60)
+    // are[60,80) you[80,100) doing[100,120) today[120,140) please[140,160)
+    // continue[160,180) now[180,200). Each entry below is what a recogniser
+    // handed that tick's window would say.
     const rawPerTick = [
-      'hello', // tick1: window [0,40)
-      'hello world how', // tick2: window [0,80) (no commit yet)
-      'how are you', // tick3: window [60,120) - commits tick2's text first
-      'how are you doing today', // tick4: window [60,160) (no new commit yet)
-      'today please continue' // tick5: window [140,200) - commits tick4's text first
+      'hello world', // tick1: window [0,40)
+      'world how are', // tick2: window [20,80)
+      'world how are you doing', // tick3: window [20,120)
+      'doing today please', // tick4: window [100,160)
+      'doing today please continue now' // tick5: window [100,200)
     ]
     let call = 0
     fetchMock.mockImplementation(async () => makeTranscriptResponse(rawPerTick[call++]))
@@ -315,8 +319,122 @@ describe('LitertBackend - rolling-window partial ticks', () => {
     // stitchTranscript should dedupe that overlap every time, so the final
     // displayed text reads as one continuous transcript with no repeats.
     expect(partials[partials.length - 1]).toBe(
-      'hello world how are you doing today please continue'
+      'hello world how are you doing today please continue now'
     )
+  })
+
+  /**
+   * A window that decodes to nothing used to cost the live transcript
+   * everything since the last commit, permanently.
+   *
+   * `stitchTranscript(committed, '')` returns `committed`, so an empty window
+   * transcript was stored as the commit candidate (dropping every word the
+   * uncommitted region had already shown) while `lastTickAudioMs` still
+   * advanced to that tick's audio position. The next commit promoted the two
+   * together: a boundary saying "final up to here" attached to text that
+   * stopped up to a whole window earlier. Committed text is never re-decoded,
+   * so those words were gone.
+   *
+   * The recogniser returns '' for any window it cannot make out - a pause, a
+   * breath, a cough - none of which the RMS silence guard catches, so this is
+   * an ordinary event rather than an edge case.
+   */
+  it('does not lose committed words when one window decodes to nothing', async () => {
+    // Same 20ms-per-word audio as the test above. Tick 3's window decodes to
+    // nothing; ticks 4 and 5 then have to carry on as if it had never fired.
+    const rawPerTick = [
+      'hello world', // tick1: window [0,40)
+      'world how are', // tick2: window [20,80)
+      '', // tick3: window [20,120) - undecodable
+      'are you doing today please', // tick4: window [60,160)
+      'doing today please continue now' // tick5: window [100,200)
+    ]
+    let call = 0
+    fetchMock.mockImplementation(async () => makeTranscriptResponse(rawPerTick[call++]))
+
+    const sampleRate = 1000
+    const backend = new LitertBackend({
+      getBaseUrl: () => 'http://test-sidecar',
+      modelId: 'e2b',
+      partialIntervalMs: 40,
+      partialWindowMs: 100,
+      partialWindowOverlapMs: 20,
+      minPartialIdleGapMs: 0,
+      streamThrottleMs: 1,
+      requestTimeoutMs: 5000
+    })
+
+    const partials: string[] = []
+    const sessionId = await backend.startSession({ sampleRate })
+    backend.onPartialTranscript((_sid, text) => partials.push(text))
+
+    for (let i = 0; i < 5; i++) {
+      backend.pushAudio(sessionId, tone(40))
+      await new Promise((r) => setTimeout(r, 20))
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+    // Previously: 'hello world doing today please continue now' - "how are
+    // you" deleted by the empty tick, three words the speaker actually said.
+    expect(partials[partials.length - 1]).toBe(
+      'hello world how are you doing today please continue now'
+    )
+    // The empty tick must not reach the renderer either: shown on its own it
+    // would rewind the teleprompter to the last commit boundary and then jump
+    // forward again on the next tick. Five ticks, four updates.
+    expect(partials).toHaveLength(4)
+    expect(partials.every((p, i) => i === 0 || p.length >= partials[i - 1].length)).toBe(true)
+  })
+
+  /**
+   * `partialWindowOverlapMs` exists so a word cut off at the commit boundary
+   * is heard whole by the next window, and `stitchTranscript` has repeated
+   * words to align the seam on. Both depend on the window genuinely reaching
+   * back past the boundary.
+   *
+   * It did not, once per commit cycle. The window is anchored to "now" while
+   * the overlap is measured back from the commit boundary, so as audio
+   * accrued between commits the `partialWindowMs` cap ate into the overlap
+   * from the front - by the tick before each commit it had shrunk from 800ms
+   * to 200ms at the shipped constants. Committing a window's-worth of audio
+   * earlier keeps the window pinned to `boundary - overlap` instead.
+   *
+   * Asserted through the one externally visible consequence: a tick whose
+   * window has been clipped to exactly `partialWindowMs` is a tick that lost
+   * overlap, because the cap is the only thing that clips it.
+   */
+  it('never lets the window cap eat into the overlap', async () => {
+    fetchMock.mockImplementation(async () => makeTranscriptResponse('word'))
+
+    const sampleRate = 1000
+    // Scaled 1:10 from the shipped 700/3000/800 so the ratios that produce
+    // the squeeze are preserved.
+    const partialWindowMs = 300
+    const backend = new LitertBackend({
+      getBaseUrl: () => 'http://test-sidecar',
+      modelId: 'e2b',
+      partialIntervalMs: 70,
+      partialWindowMs,
+      partialWindowOverlapMs: 80,
+      minPartialIdleGapMs: 0,
+      streamThrottleMs: 1,
+      requestTimeoutMs: 5000
+    })
+
+    const sessionId = await backend.startSession({ sampleRate })
+    for (let i = 0; i < 10; i++) {
+      backend.pushAudio(sessionId, tone(70))
+      await new Promise((r) => setTimeout(r, 20))
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(10)
+    const windowMs = fetchMock.mock.calls.map((call) => audioMsFromFetchCall(call, sampleRate))
+    // Previously [70, 140, 210, 280, 150, 220, 290, 300, 150, 220] - the 300
+    // is the clipped tick, and it is the one whose overlap had collapsed.
+    expect(windowMs).toEqual([70, 140, 150, 220, 290, 150, 220, 290, 150, 220])
+    for (const ms of windowMs) {
+      expect(ms).toBeLessThan(partialWindowMs)
+    }
   })
 })
 

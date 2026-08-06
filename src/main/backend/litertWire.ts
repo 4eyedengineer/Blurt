@@ -53,48 +53,62 @@ export interface ChatCompletionRequestBody {
   temperature?: number
 }
 
+/**
+ * "if you hear them" until the recogniser took over - the hint used to ride
+ * along with audio. Cleanup only ever sees text, so the instruction is about
+ * spelling what is already written, not about listening.
+ */
 function vocabularyHint(vocabulary: string[] | undefined): string {
   const words = (vocabulary ?? []).map((w) => w.trim()).filter(Boolean)
   if (words.length === 0) return ''
-  return ` The speaker commonly uses these terms - spell them correctly if you hear them: ${words.join(', ')}.`
+  return `Spell these terms this way wherever they appear: ${words.join(', ')}.`
 }
 
 /**
- * Written for text that has ALREADY been punctuated by the recogniser.
+ * Written for text that has ALREADY been punctuated by the recogniser (see
+ * resources/asr.py), which is why it reads as a list of things to leave alone
+ * rather than a rewrite instruction. An earlier version opened "You are given
+ * raw, unpunctuated speech-to-text output" - true only while Gemma did the
+ * transcribing - and a model handed finished prose under that premise invents
+ * work: expanding contractions, swapping conjunctions for synonyms, deleting
+ * hedges the speaker actually said. All three were observed in real
+ * dictations, and all three were already forbidden by that prompt's own
+ * rules, which is the tell that the premise was the problem. The line giving
+ * the model permission to return the input unchanged does most of the work.
  *
- * The previous version opened "You are given raw, unpunctuated speech-to-text
- * output" - true when Gemma itself did the transcribing, and false the moment
- * a dedicated recogniser took over (see resources/asr.py). Parakeet returns
- * correct punctuation, capitalization and number formatting, so this prompt
- * was handing a model finished prose, telling it the prose was raw, and
- * asking it to clean it up. With nothing legitimate left to fix, it invented
- * work: expanding contractions ("It's" -> "It is"), swapping conjunctions
- * ("as" -> "because"), and deleting hedges the speaker actually said
- * ("any sort of words" -> "any words"). All three observed in real
- * dictations, and all three forbidden by the old prompt's own closing line -
- * which is the tell that the problem was the premise, not the rules.
+ * Numbers are the exception, because the recogniser is wrong in both
+ * directions there. Across 184 dictations in a real history.json: Parakeet
+ * spells quantities out on its own ("three point six", "twenty eight
+ * gigabytes"), and Gemma, told the formatting was already correct, converted
+ * digits the other way ("28 gigabits" -> "twenty-eight gigabits"). Nothing
+ * here can reach the recogniser, so this prompt is the only place either can
+ * be fixed - and it has to be stated as an exception, since under a blanket
+ * "change nothing else" the model correctly left "three point six" alone.
  *
- * Hence the explicit prohibitions and, most importantly, the line giving the
- * model permission to do nothing. "Rewrite this" with no defects present is
- * an instruction to change something; "return it verbatim, that is the
- * expected outcome" is not.
+ * Keep the prompt itself instructional. Rationale, history and evidence
+ * belong in this comment, where they cost nothing; every sentence inside the
+ * template literal is paid for on every dictation and competes with the rules
+ * for the model's attention.
  */
-const CLEANUP_SYSTEM_PROMPT = `You are a dictation cleanup assistant. The text you are given already comes from a speech recognizer that produced correct punctuation, capitalization and number formatting. It is NOT raw unpunctuated output, and it usually needs very little changing.
+const CLEANUP_SYSTEM_PROMPT = `Clean up dictated text.
 
-Your only job is to remove disfluency:
-- Filler words (um, uh, erm) that carry no meaning.
-- False starts and self-corrections (e.g. "I want- I want to go" -> "I want to go"; keep only the corrected version).
+Remove disfluency:
+- Filler words (um, uh, erm).
+- False starts and self-corrections: keep only the corrected version.
 - Accidentally repeated words.
 
-Change NOTHING else. Specifically:
-- Keep contractions exactly as spoken. Do not expand "it's" to "it is".
-- Keep the speaker's own word choices. Do not swap "as" for "because", or replace any word with a synonym.
-- Keep hedges and qualifiers like "really", "sort of", "quite", "just" - these are how the speaker talks.
-- Do not restructure, reorder, merge or split sentences that are already grammatical.
+Change nothing else:
+- Keep contractions as spoken.
+- Keep the speaker's own words. No synonyms.
+- Keep hedges and qualifiers.
+- Keep sentence structure, order and boundaries.
+- Keep the existing punctuation and capitalization.
 
-If the text contains no disfluency, return it completely unchanged. Returning the input verbatim is the correct and expected outcome most of the time.
+Write numbers as digits. Spoken "point" is a decimal point ("three point six" -> "3.6"); spoken "dot" separates version numbers ("one dot four dot two" -> "1.4.2"). Never spell a number out as words. Leave a number as a word only where it is not a quantity ("one of them", "no one").
 
-Output ONLY the text. No preamble, no explanation, no quotation marks, no markdown.`
+If there is no disfluency, return the input unchanged.
+
+Output only the text. No preamble, explanation, quotation marks or markdown.`
 
 export interface BuildCleanupRequestParams {
   model: string
@@ -115,14 +129,19 @@ export function buildCleanupRequest(params: BuildCleanupRequestParams): ChatComp
   }
 }
 
+/**
+ * The text these act on arrives as the user message, so each prompt says what
+ * to produce and stops - "the following text" described a single-message
+ * layout this has never used.
+ */
 const TRANSFORM_PROMPTS: Record<TransformMode, string> = {
   keypoints:
-    'Rewrite the following text as a concise bullet-point summary of its key points, one bullet per point, using "- " as the bullet marker. Output ONLY the bullet list, nothing else.',
+    'Rewrite the text as a bullet-point summary of its key points, one point per bullet, using "- " as the marker. Output only the bullet list.',
   formal:
-    'Rewrite the following text in a more formal, professional register - expand contractions, remove slang, and tighten wording. Preserve the original meaning. Output ONLY the rewritten text, nothing else.',
+    'Rewrite the text in a formal, professional register: expand contractions, remove slang, tighten wording. Preserve the meaning. Output only the rewritten text.',
   short:
-    'Rewrite the following text to be significantly shorter and more concise, keeping only the essential meaning. Output ONLY the shortened text, nothing else.',
-  long: 'Rewrite the following text with more detail and elaboration, expanding on its ideas while staying faithful to the original meaning. Output ONLY the expanded text, nothing else.'
+    'Rewrite the text to be significantly shorter, keeping only the essential meaning. Output only the shortened text.',
+  long: 'Rewrite the text with more detail, expanding on its ideas while staying faithful to the meaning. Output only the expanded text.'
 }
 
 export interface BuildTransformRequestParams {
@@ -188,8 +207,10 @@ export function buildVoiceEditRequest(
     messages: [
       {
         role: 'system',
+        // "spoken or typed" told the model how the command reached it, which
+        // is not something it can act on - both arrive here as the same text.
         content:
-          'You apply a spoken or typed edit command to a piece of text and return the edited result. Apply exactly what the command asks (e.g. replacing words, deleting a sentence, changing case) and change nothing else. Output ONLY the edited text, nothing else - no preamble, no explanation, no quotation marks.'
+          'Apply the command to the text and return the result. Do exactly what the command asks and change nothing else. Output only the edited text. No preamble, explanation or quotation marks.'
       },
       { role: 'user', content: `Text:\n${params.text}\n\nCommand: ${params.command}` }
     ]

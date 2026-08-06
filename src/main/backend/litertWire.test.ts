@@ -22,7 +22,21 @@ describe('request builders', () => {
     const req = buildCleanupRequest({ model: 'gemma-4-e2b', text: 'hello' })
     const system = req.messages[0]
     expect(system.role).toBe('system')
-    expect(system.content).not.toContain('commonly uses')
+    expect(system.content).not.toContain('Spell these terms')
+  })
+
+  it('appends the custom vocabulary as spelling guidance for text, not audio', () => {
+    const req = buildCleanupRequest({
+      model: 'gemma-4-e2b',
+      text: 'hello',
+      vocabulary: ['Kubernetes', 'LiteRT']
+    })
+    const system = String(req.messages[0].content)
+    expect(system).toContain('Spell these terms this way wherever they appear: Kubernetes, LiteRT.')
+    // The hint rode along with audio while the LLM did the transcribing; it
+    // now runs on text the recogniser has already produced, so it must not
+    // ask the model to listen for anything.
+    expect(system).not.toMatch(/hear/i)
   })
 
   it('builds a distinct prompt per transform mode', () => {
@@ -266,17 +280,16 @@ describe('cleanup prompt after the recogniser change', () => {
 
   it('does not tell the model its input is unpunctuated, which stopped being true', () => {
     // The old opening line - "You are given raw, unpunctuated speech-to-text
-    // output" - is the false premise that produced the rewording. Matching
-    // the bare phrase is too blunt: the current prompt says the input is
-    // *not* raw unpunctuated output, which is the correction, so what has to
-    // be absent is the affirmative claim.
-    expect(system()).not.toMatch(/given raw,? unpunctuated/i)
-    expect(system()).toMatch(/NOT raw unpunctuated/)
+    // output" - is the false premise that produced the rewording.
+    expect(system()).not.toMatch(/raw,? unpunctuated/i)
   })
 
-  it('states that the input is already punctuated', () => {
-    expect(system()).toMatch(/already/i)
-    expect(system()).toMatch(/punctuation/i)
+  it('tells the model to leave the punctuation it was given alone', () => {
+    // The correction is stated as an instruction rather than as a claim about
+    // where the text came from: the model cannot verify the provenance, and
+    // "keep the existing punctuation" is the only part of it that is
+    // actionable anyway.
+    expect(system()).toMatch(/keep the existing punctuation/i)
   })
 
   /**
@@ -285,8 +298,31 @@ describe('cleanup prompt after the recogniser change', () => {
    * makes leaving it alone an acceptable answer.
    */
   it('gives the model permission to return the text unchanged', () => {
-    expect(system()).toMatch(/unchanged/i)
-    expect(system()).toMatch(/verbatim/i)
+    expect(system()).toMatch(/return the input unchanged/i)
+  })
+
+  /**
+   * Both directions, because both were observed: the recogniser spells
+   * quantities out on its own ("three point six"), and the language model
+   * converted digits it was given back into words ("28" -> "twenty-eight").
+   */
+  it('pins number formatting to digits in both directions', () => {
+    const s = system()
+    expect(s).toMatch(/numbers as digits/i)
+    expect(s).toMatch(/never spell a number out/i)
+    expect(s).toMatch(/3\.6/)
+    expect(s).toMatch(/1\.4\.2/)
+  })
+
+  /**
+   * The prompt is paid for on every dictation and competes with its own rules
+   * for the model's attention, so the rationale lives in the source comment
+   * rather than in the string. This is a ceiling, not a target - it exists to
+   * catch explanation drifting back in, and should only ever be raised
+   * deliberately.
+   */
+  it('stays short enough to be read as instructions rather than prose', () => {
+    expect(system().length).toBeLessThan(1000)
   })
 
   it('forbids each rewording actually observed in real dictations', () => {
