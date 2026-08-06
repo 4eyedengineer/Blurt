@@ -12,7 +12,7 @@ import { useBackendStatus } from '../hooks/useBackendStatus'
 import { useHardwareInfo } from '../hooks/useHardwareInfo'
 import { useAudioInputDevices } from '../hooks/useAudioInputDevices'
 import { useUpdateStatus } from '../hooks/useUpdateStatus'
-import { buildVocabularyEntries, findMisrecognitions } from '@shared/vocabulary'
+import { findMisrecognitions, formatCorrection, historyWordSuggestions } from '@shared/vocabulary'
 import { isDictationInProgress, type DictationPhase } from '../hooks/useDictationSession'
 import { Toggle } from '../components/Toggle'
 import { formatBytes } from '../lib/format'
@@ -317,9 +317,32 @@ export function SettingsScreen({
   const backendStatus = useBackendStatus()
   const hardware = useHardwareInfo()
   const inputDevices = useAudioInputDevices()
-  const [vocabInput, setVocabInput] = useState('')
-  /** Misrecognitions the last Add pulled in from history - shown once, so the user sees what was inferred on their behalf. */
-  const [vocabFound, setVocabFound] = useState<string[]>([])
+  const [vocabHeard, setVocabHeard] = useState('')
+  const [vocabWanted, setVocabWanted] = useState('')
+  /** Other spellings history has for the word just corrected - offered as a one-click follow-up, never applied on its own. */
+  const [vocabAlso, setVocabAlso] = useState<{ wanted: string; words: string[] } | null>(null)
+  /**
+   * Raw transcripts from history, read once when Settings opens.
+   *
+   * Raw and not cleaned: cleanup capitalizes and reflows, and the word that
+   * has to be matched is exactly the one the recogniser emitted.
+   */
+  const [historyRaws, setHistoryRaws] = useState<string[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.history
+      .list()
+      .then((entries) => {
+        if (!cancelled) setHistoryRaws(entries.map((e) => e.rawTranscript).filter(Boolean))
+      })
+      // Suggestions are a convenience; losing them must not break the screen,
+      // and both fields still accept anything typed by hand.
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [])
   const [hotkeyInput, setHotkeyInput] = useState(settings.hotkey)
   const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus>('idle')
   const [pttStatus, setPttStatus] = useState<PushToTalkStatus | null>(null)
@@ -348,42 +371,47 @@ export function SettingsScreen({
   }
 
   /**
-   * Adds the spelling the user typed, plus a correction for every way the
-   * recogniser has actually written it before.
+   * Adds one correction: what Blurt writes, and what it should write instead.
    *
-   * The user never types a misspelling, because they cannot know one. The
-   * first version of this feature asked them to, and it failed immediately:
-   * an entry of `Quin -> Qwen` did nothing for a dictation that came back
-   * "quinn". History is the authority on what the recogniser writes, and the
-   * app has all of it - so it looks the answer up instead of asking.
+   * Two labelled fields rather than one, because a single box could not say
+   * which word it wanted. It first asked for a `heard -> wanted` syntax, which
+   * made the user responsible for predicting a recogniser and failed on the
+   * first real attempt ("Quin" typed, "quinn" produced). It then asked for
+   * just the correct word and inferred the rest from history, which worked but
+   * left the box itself ambiguous - the honest question "what do I type?" has
+   * no answer when the label is "Add a word".
    *
-   * Falls back to the plain spelling when history has nothing to offer (a
-   * fresh install, or a word never dictated yet), which is the old behaviour
-   * and still correct - there is simply nothing to correct yet.
+   * Neither field is a guess now. The left one is a word the user has read in
+   * their own transcript, autocompleted from history so it can be picked
+   * rather than spelled.
    */
-  const addWord = async (): Promise<void> => {
-    const word = vocabInput.trim()
-    if (!word) return
-    setVocabInput('')
+  const addCorrection = async (): Promise<void> => {
+    const heard = vocabHeard.trim()
+    const wanted = vocabWanted.trim()
+    const entry = formatCorrection(heard, wanted)
+    if (!entry) return
 
-    let found: string[] = []
-    try {
-      const history = await window.api.history.list()
-      found = findMisrecognitions(
-        word,
-        // Raw, not cleaned: cleanup capitalizes and reflows, and what has to
-        // be matched is exactly what the recogniser emitted.
-        history.map((entry) => entry.rawTranscript).filter(Boolean)
-      )
-    } catch {
-      // A history read that fails costs the corrections, not the word - add
-      // the spelling anyway rather than losing what the user typed.
-    }
+    await addVocabularyWord(entry)
+    setVocabHeard('')
+    setVocabWanted('')
 
-    for (const entry of buildVocabularyEntries(word, found)) {
-      await addVocabularyWord(entry)
+    // Offered, never applied. Anchoring on a word the user has just confirmed
+    // is wrong makes the search far safer than running it from the correct
+    // spelling did - that direction proposed rewriting every "proceed" in
+    // support of "Parakeet" - but a suggestion the user can decline is still
+    // the right shape for a fuzzy match.
+    const others = findMisrecognitions(heard, historyRaws).filter(
+      (word) => word !== wanted.toLowerCase()
+    )
+    setVocabAlso({ wanted, words: others })
+  }
+
+  const acceptAlso = async (): Promise<void> => {
+    if (!vocabAlso) return
+    for (const heard of vocabAlso.words) {
+      await addVocabularyWord(formatCorrection(heard, vocabAlso.wanted))
     }
-    setVocabFound(found)
+    setVocabAlso(null)
   }
 
   // Tracked and cleared rather than fired and forgotten: pressing Save twice
@@ -529,46 +557,69 @@ export function SettingsScreen({
 
         <p className="settings-screen__field-label">Custom vocabulary</p>
         {/*
-          Says what these words actually do now. The old line, "Names and
-          jargon to bias the recognizer towards", described the design from
-          when Gemma did the transcribing and could be told what to listen
-          for. The recogniser that replaced it is handed a WAV and nothing
-          else, so these words never reach recognition at all.
+          The labels are the feature. Every earlier version of this control
+          was one text box, and the question it could never answer was "what
+          do I type?" - the correct word, or the wrong one? Naming both sides
+          removes the question rather than documenting an answer to it.
 
-          One field, and it takes the word you WANT - never a misspelling. A
-          previous version taught the `heard -> wanted` syntax here, which
-          made the user responsible for predicting a speech recogniser; the
-          first real attempt at it missed, because the entry said "Quin" and
-          the recogniser wrote "quinn". The syntax still works and generated
-          entries are stored in it, but nothing asks anyone to type it.
+          These words never reach recognition. The recogniser is handed a WAV
+          and nothing else, so this is a correction applied to what it wrote,
+          which is also why the left field can be autocompleted from history:
+          the app knows exactly what it has written before.
         */}
-        <p className="settings-screen__hint">
-          Names and jargon to spell correctly. Blurt checks your history for the ways it has
-          misheard each one, and fixes those too.
-        </p>
-        <div className="settings-screen__inline-input">
-          <input
-            type="text"
-            value={vocabInput}
-            placeholder="Add a word…"
-            onChange={(e) => setVocabInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void addWord()
-            }}
-          />
-          <button type="button" onClick={() => void addWord()}>
+        <p className="settings-screen__hint">Fix words Blurt gets wrong.</p>
+        <div className="settings-screen__correction">
+          <label>
+            <span className="settings-screen__field-label">Blurt writes</span>
+            <input
+              type="text"
+              list="vocab-history-words"
+              value={vocabHeard}
+              onChange={(e) => setVocabHeard(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void addCorrection()
+              }}
+            />
+          </label>
+          <span className="settings-screen__correction-arrow" aria-hidden="true">
+            →
+          </span>
+          <label>
+            <span className="settings-screen__field-label">I mean</span>
+            <input
+              type="text"
+              value={vocabWanted}
+              onChange={(e) => setVocabWanted(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void addCorrection()
+              }}
+            />
+          </label>
+          <button type="button" onClick={() => void addCorrection()}>
             Add
           </button>
         </div>
         {/*
-          Shown because the app just made a decision on the user's behalf.
-          Silently inventing entries would be the same "thoughtless" mistake
-          in the other direction - they are all listed below and individually
-          removable, and this says where they came from.
+          A native datalist rather than a custom dropdown: it filters as you
+          type, needs no state, and stays a plain text input for anything not
+          in the list. Rarest words first - the ones a recogniser mangles are
+          the ones it does not know, which is the bottom of a frequency count.
         */}
-        {vocabFound.length > 0 && (
+        <datalist id="vocab-history-words">
+          {historyWordSuggestions(historyRaws).map((word) => (
+            <option key={word} value={word} />
+          ))}
+        </datalist>
+        {vocabAlso && vocabAlso.words.length > 0 && (
           <p className="settings-screen__hint">
-            Also correcting what Blurt had written instead: {vocabFound.join(', ')}.
+            Blurt has also written this as {vocabAlso.words.join(', ')}.{' '}
+            <button
+              type="button"
+              className="settings-screen__logs-link"
+              onClick={() => void acceptAlso()}
+            >
+              Fix those too
+            </button>
           </p>
         )}
         <ul className="settings-screen__vocab-list">

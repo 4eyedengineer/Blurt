@@ -344,3 +344,60 @@
 .settings-screen__logs-link:hover {
   color: var(--color-text);
 }
+
+/* Two labelled fields plus the arrow between them. Grid rather than flex so
+   the two inputs stay equal width regardless of their labels, and the arrow
+   and button size to their content. */
+.settings-screen__correction {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.settings-screen__correction label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-screen__correction .settings-screen__field-label {
+  margin-top: 0;
+}
+
+.settings-screen__correction input {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.settings-screen__correction input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+/* Aligned to the inputs, not the labels above them. */
+.settings-screen__correction-arrow {
+  padding-bottom: 9px;
+  color: var(--color-text-faint);
+  font-size: 13px;
+}
+
+.settings-screen__correction button {
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.settings-screen__correction button:hover {
+  border-color: var(--color-primary);
+}

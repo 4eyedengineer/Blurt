@@ -245,16 +245,56 @@ export function findMisrecognitions(target: string, transcripts: string[]): stri
 }
 
 /**
- * The vocabulary entries to store for `word`: the spelling itself, plus one
- * correction per misrecognition found.
+ * One correction, in the stored `string[]` form.
  *
- * Returns entries in the stored `string[]` form rather than a richer type, so
- * what the user ends up seeing in Settings is exactly what is written to
- * disk - a correction that misfires can be deleted like any other entry,
- * without needing UI that knows it was generated rather than typed.
+ * Formatting rather than storing a richer type keeps what the user sees in
+ * Settings identical to what is written to disk: an entry that misfires can be
+ * deleted like any other, and no UI has to know whether it was typed or
+ * suggested. Returns '' when either side is missing, so a half-filled form is
+ * a no-op rather than a broken entry.
  */
-export function buildVocabularyEntries(word: string, misrecognitions: string[]): string[] {
-  const wanted = word.trim()
-  if (!wanted) return []
-  return [wanted, ...misrecognitions.map((heard) => `${heard} ${CORRECTION_SEPARATOR} ${wanted}`)]
+export function formatCorrection(from: string, to: string): string {
+  const heard = from.trim()
+  const wanted = to.trim()
+  if (!heard || !wanted) return ''
+  return `${heard} ${CORRECTION_SEPARATOR} ${wanted}`
+}
+
+/**
+ * Ceiling on the suggestion list, to bound the DOM for a very long history.
+ *
+ * Deliberately far above a realistic vocabulary: 199 real dictations produced
+ * 1186 distinct words. An earlier 300 was chosen as "a list rather than a
+ * dump" and was simply wrong, because it silently decided WHICH words could
+ * be suggested. Most words in a history appear once, so the alphabetical
+ * tiebreak below ran out somewhere in the a's, and "quinn" - the word this
+ * whole feature exists to fix - was not in the list at all.
+ */
+const MAX_SUGGESTIONS = 5000
+
+/**
+ * Distinct words from past transcripts, rarest first, to autocomplete the
+ * "Blurt writes" field.
+ *
+ * The order is presentation, not filtering: a datalist narrows to what the
+ * user has typed, so a word only has to be present to be findable. Rarest
+ * first still earns its place - a word the recogniser mangles is one it does
+ * not know, so jargon and product names sort above "the" and "model" for
+ * anyone browsing the list rather than typing into it - but the cap above is
+ * what decides inclusion, and it must stay high enough never to be the thing
+ * that answers "can I fix this word?".
+ */
+export function historyWordSuggestions(transcripts: string[]): string[] {
+  const counts = new Map<string, number>()
+  for (const transcript of transcripts) {
+    for (const token of tokenize(transcript)) {
+      if (token.length < MIN_CANDIDATE_LENGTH) continue
+      counts.set(token, (counts.get(token) ?? 0) + 1)
+    }
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+    .slice(0, MAX_SUGGESTIONS)
+    .map(([token]) => token)
 }

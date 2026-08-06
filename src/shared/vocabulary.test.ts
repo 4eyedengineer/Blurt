@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyVocabularyCorrections,
-  buildVocabularyEntries,
+  formatCorrection,
+  historyWordSuggestions,
   editDistance,
   findMisrecognitions,
   parseVocabulary,
@@ -184,27 +185,71 @@ describe('findMisrecognitions', () => {
   })
 })
 
-describe('buildVocabularyEntries', () => {
-  /**
-   * End to end, this is the fix for the reported failure: the user types
-   * "Qwen" and nothing else, and both spellings the recogniser had used stop
-   * appearing.
-   */
-  it('turns one typed word into the spelling plus a correction per misrecognition', () => {
-    const entries = buildVocabularyEntries('Qwen', ['quinn', 'quin'])
-    expect(entries).toEqual(['Qwen', 'quinn -> Qwen', 'quin -> Qwen'])
+describe('formatCorrection', () => {
+  it('writes the stored form', () => {
+    expect(formatCorrection('quinn', 'Qwen')).toBe('quinn -> Qwen')
+  })
 
+  it('trims what the user typed', () => {
+    expect(formatCorrection('  quinn ', ' Qwen  ')).toBe('quinn -> Qwen')
+  })
+
+  /** A half-filled form is a no-op, not a broken entry with a blank side. */
+  it('returns nothing when either side is missing', () => {
+    expect(formatCorrection('quinn', '')).toBe('')
+    expect(formatCorrection('', 'Qwen')).toBe('')
+  })
+
+  /**
+   * End to end, this is the reported failure fixed: the user reads "quinn" in
+   * their own transcript, says they meant "Qwen", and both spellings stop
+   * appearing once the offered follow-up is accepted too.
+   */
+  it('round-trips through the parser and corrects the text', () => {
+    const entries = [formatCorrection('quinn', 'Qwen'), formatCorrection('quin', 'Qwen')]
     const { corrections } = parseVocabulary(entries)
     expect(
       applyVocabularyCorrections('also quinn three point six, and Quin 30B', corrections)
     ).toBe('also Qwen three point six, and Qwen 30B')
   })
+})
 
-  it('is just the spelling when history found nothing', () => {
-    expect(buildVocabularyEntries('Kubernetes', [])).toEqual(['Kubernetes'])
+describe('historyWordSuggestions', () => {
+  const HISTORY = [
+    'the model is the thing we run',
+    'the model quinn is the one',
+    'the model handles the parakeet'
+  ]
+
+  /**
+   * Rarest first, because a word the recogniser mangles is one it does not
+   * know - jargon and product names sit at the bottom of a frequency count,
+   * while "the" piles up at the top and is never what anyone is fixing.
+   */
+  it('offers the rare words before the common ones', () => {
+    const suggestions = historyWordSuggestions(HISTORY)
+    expect(suggestions.indexOf('quinn')).toBeLessThan(suggestions.indexOf('the'))
+    expect(suggestions.indexOf('parakeet')).toBeLessThan(suggestions.indexOf('model'))
   })
 
-  it('ignores a blank word', () => {
-    expect(buildVocabularyEntries('   ', ['quin'])).toEqual([])
+  it('lists each word once', () => {
+    const suggestions = historyWordSuggestions(HISTORY)
+    expect(new Set(suggestions).size).toBe(suggestions.length)
+  })
+
+  it('handles empty history', () => {
+    expect(historyWordSuggestions([])).toEqual([])
+  })
+
+  /**
+   * Regression: the cap was 300 and the tiebreak alphabetical, so on a real
+   * 199-dictation history of 1186 distinct words the list ran out in the a's
+   * and "quinn" - the word the feature exists for - could not be suggested at
+   * all. Inclusion must never be decided by the cap at a realistic size.
+   */
+  it('still contains a rare late-alphabet word in a history far larger than any real one', () => {
+    const filler = Array.from({ length: 1500 }, (_, i) => `alpha${i} beta${i} gamma${i}`)
+    const suggestions = historyWordSuggestions([...filler, 'the quinn model'])
+    expect(suggestions).toContain('quinn')
   })
 })
