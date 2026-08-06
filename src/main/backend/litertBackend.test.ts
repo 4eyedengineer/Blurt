@@ -438,6 +438,76 @@ describe('LitertBackend - rolling-window partial ticks', () => {
   })
 })
 
+describe('LitertBackend - custom vocabulary', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function backendWithVocabulary(vocabulary: string[]): LitertBackend {
+    return new LitertBackend({
+      getBaseUrl: () => 'http://test-sidecar',
+      modelId: 'e2b',
+      getVocabulary: () => vocabulary,
+      partialIntervalMs: 40,
+      partialWindowMs: 100,
+      partialWindowOverlapMs: 20,
+      minPartialIdleGapMs: 0,
+      streamThrottleMs: 1,
+      requestTimeoutMs: 5000
+    })
+  }
+
+  /**
+   * Corrections are applied where audio becomes text, so the live transcript
+   * carries them too. Fixing them only in the cleanup pass would leave the
+   * term visibly wrong on screen for the whole utterance.
+   */
+  it('corrects the live transcript, not just the final text', async () => {
+    fetchMock.mockImplementation(async () => makeTranscriptResponse('we tried Quin 30B today'))
+    const backend = backendWithVocabulary(['Quin -> Qwen'])
+
+    const partials: string[] = []
+    const sessionId = await backend.startSession({ sampleRate: 1000 })
+    backend.onPartialTranscript((_sid, text) => partials.push(text))
+
+    backend.pushAudio(sessionId, tone(40))
+    await new Promise((r) => setTimeout(r, 30))
+
+    expect(partials[partials.length - 1]).toBe('we tried Qwen 30B today')
+    await expect(backend.endSession(sessionId)).resolves.toBe('we tried Qwen 30B today')
+  })
+
+  /**
+   * A correction has already been applied to the transcript by the time
+   * cleanup runs, so repeating it in the prompt would spend budget asking the
+   * model to fix something that is no longer there. Only plain spellings are
+   * worth the tokens.
+   */
+  it('sends spellings to the cleanup prompt and keeps corrections out of it', async () => {
+    fetchMock.mockImplementation(async () => makeStreamingResponse(['ok']))
+    const backend = backendWithVocabulary(['Kubernetes', 'Quin -> Qwen'])
+
+    await backend.cleanup('some text')
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string) as {
+      messages: Array<{ content: string }>
+    }
+    // Asserted on the hint line rather than the whole prompt: the prompt's
+    // own number examples contain "->", so its absence proves nothing.
+    const system = body.messages[0].content
+    expect(system).toContain('Spell these terms this way wherever they appear: Kubernetes.')
+    expect(system).not.toContain('Qwen')
+    expect(system).not.toContain('Quin')
+  })
+})
+
 describe('LitertBackend - spiral guard (minPartialIdleGapMs)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 

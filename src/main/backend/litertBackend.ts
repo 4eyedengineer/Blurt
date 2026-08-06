@@ -28,6 +28,7 @@ import {
   stripModelPreamble,
   type ChatCompletionRequestBody
 } from './litertWire'
+import { applyVocabularyCorrections, parseVocabulary } from '../../shared/vocabulary'
 import { shouldLaunchPartialTick } from './partialTickScheduler'
 import { ThrottledTextEmitter } from './streamThrottle'
 import { stitchTranscript } from './transcriptStitcher'
@@ -420,9 +421,22 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     // ("Sure, here is the transcription:"); a recogniser emits speech tokens
     // and nothing else, so running it here could only ever damage a genuine
     // transcript that happened to begin with a matching phrase.
-    const text = await this.enqueue(() => this.transcribeAudio(wavBase64))
+    const raw = await this.enqueue(() => this.transcribeAudio(wavBase64))
+    // Custom-vocabulary corrections land here rather than in the cleanup
+    // prompt, for two measured reasons (see shared/vocabulary.ts): telling
+    // the model the *correct* spelling fixes nothing, because the correct
+    // spelling is exactly what is absent from the text, and telling it the
+    // wrong one still left one of two occurrences unfixed. Applying them at
+    // the one place audio becomes text also means the live transcript shows
+    // them, instead of the term staying wrong on screen for the whole
+    // utterance and only being fixed in the final paste.
+    const text = applyVocabularyCorrections(raw, this.vocabulary().corrections)
     onStreamText(text)
     return text
+  }
+
+  private vocabulary(): ReturnType<typeof parseVocabulary> {
+    return parseVocabulary(this.options.getVocabulary?.())
   }
 
   /**
@@ -732,7 +746,11 @@ export class LitertBackend implements InferenceBackend, BackendErrorSource {
     const request = buildCleanupRequest({
       model: this.options.modelId,
       text,
-      vocabulary: this.options.getVocabulary?.()
+      // Spellings only. A `heard -> wanted` correction has already been
+      // applied to the transcript by the time this runs, and putting it in
+      // the prompt as well would spend budget telling the model to fix
+      // something that is no longer there.
+      vocabulary: this.vocabulary().spellings
     })
     return this.runStreamingRequest(request, operationId)
   }

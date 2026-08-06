@@ -498,18 +498,23 @@ export function SettingsScreen({
           jargon to bias the recognizer towards", described the design from
           when Gemma did the transcribing and could be told what to listen
           for. The recogniser that replaced it is handed a WAV and nothing
-          else, so these words never reach recognition at all - they are
-          passed to the cleanup pass afterwards, which can correct a spelling
-          but cannot change what was heard.
+          else, so these words never reach recognition at all.
+
+          The arrow half is the more useful of the two and is worth the extra
+          sentence: a plain word can only ask the cleanup model to respect a
+          spelling, which does nothing when the recogniser heard a different
+          word entirely. Naming what it writes is what actually fixes it (see
+          shared/vocabulary.ts).
         */}
         <p className="settings-screen__hint">
-          Names and jargon to spell correctly when Blurt tidies up your text.
+          Names and jargon to spell correctly. To fix a word Blurt keeps mishearing, write{' '}
+          <code>Quin -&gt; Qwen</code>.
         </p>
         <div className="settings-screen__inline-input">
           <input
             type="text"
             value={vocabInput}
-            placeholder="Add a word…"
+            placeholder="Word, or Quin -> Qwen"
             onChange={(e) => setVocabInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') addWord()
